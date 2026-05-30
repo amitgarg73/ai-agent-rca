@@ -1254,12 +1254,27 @@ elif page == "RCA View":
             if prev_agent and prev_agent not in rendered_agents:
                 _render_agent_evals(prev_agent)
                 rendered_agents.add(prev_agent)
-            a_color = AGENT_COLORS.get(agent, "#94a3b8")
+            a_color   = AGENT_COLORS.get(agent, "#94a3b8")
+            # Eval summary badge for this agent (shown in header so visible without scrolling)
+            agent_evs = evals_by_agent.get(agent.lower(), [])
+            n_pass    = sum(1 for e in agent_evs if e["passed"])
+            n_fail    = sum(1 for e in agent_evs if not e["passed"])
+            eval_pill = ""
+            if agent_evs:
+                eval_pill = (
+                    f'<span style="margin-left:10px;font-size:0.72rem;font-weight:600">'
+                    f'<span style="color:#10b981">✓{n_pass}</span>'
+                    f'<span style="color:#94a3b8"> / </span>'
+                    f'<span style="color:#ef4444">✗{n_fail}</span>'
+                    f'<span style="color:#94a3b8;font-weight:400"> evals below</span>'
+                    f'</span>'
+                )
             st.markdown(
                 f'<div style="margin:14px 0 4px 0;padding:3px 0 3px 8px;'
                 f'border-left:3px solid {a_color};background:#f8fafc;">'
                 f'<span style="color:{a_color};font-weight:700;font-size:0.78rem;'
                 f'text-transform:uppercase;letter-spacing:0.08em">{agent} agent</span>'
+                f'{eval_pill}'
                 f'</div>',
                 unsafe_allow_html=True,
             )
