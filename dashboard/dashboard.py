@@ -420,8 +420,9 @@ def _render_call_chain_html(
     root_agent,
     agent_stats: dict,
     sess_row: dict = None,
+    sess_traces: list = None,
 ) -> str:
-    """Pure HTML/CSS pipeline cards — no Plotly dependency."""
+    """Pure HTML/CSS pipeline cards rendered via st.components.v1.html."""
     if not agents_present:
         return ""
 
@@ -439,108 +440,204 @@ def _render_call_chain_html(
 
     trades = int((sess_row or {}).get("trades_executed", 0))
 
-    def _card_style(a):
-        if a == root_agent:
-            return "background:#fff7ed;border:2px solid #f59e0b;"
-        evs = evals_by_agent.get(a.lower(), [])
-        if not evs:
-            return "background:#f8fafc;border:2px solid #cbd5e1;"
-        if any(not e["passed"] for e in evs):
-            return "background:#fef2f2;border:2px solid #ef4444;"
-        return "background:#f0fdf4;border:2px solid #10b981;"
+    def _agent_tools(a):
+        if not sess_traces:
+            return []
+        tools, seen = [], set()
+        for t in sess_traces:
+            if (t.get("agent") or "").lower() == a.lower():
+                tn = t.get("tool_name")
+                if tn and tn not in seen:
+                    tools.append(tn)
+                    seen.add(tn)
+        return tools[:3]
 
-    def _badge_color(a):
+    def _has_parallel(a):
+        if not sess_traces:
+            return False
+        tool_traces = [
+            t for t in sess_traces
+            if (t.get("agent") or "").lower() == a.lower()
+            and t.get("tool_name") and t.get("created_at")
+        ]
+        if len(tool_traces) < 2:
+            return False
+        try:
+            dts = sorted(
+                [(pd.to_datetime(t["created_at"]), float(t.get("latency_ms") or 0))
+                 for t in tool_traces],
+                key=lambda x: x[0],
+            )
+            for i in range(len(dts) - 1):
+                end_i = dts[i][0] + pd.Timedelta(milliseconds=dts[i][1])
+                if end_i > dts[i + 1][0]:
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def _border_color(a):
         if a == root_agent:
             return "#f59e0b"
         evs = evals_by_agent.get(a.lower(), [])
         if not evs:
-            return "#94a3b8"
+            return "#cbd5e1"
         return "#ef4444" if any(not e["passed"] for e in evs) else "#10b981"
+
+    def _bg_color(a):
+        if a == root_agent:
+            return "#fff7ed"
+        evs = evals_by_agent.get(a.lower(), [])
+        if not evs:
+            return "#f8fafc"
+        return "#fef2f2" if any(not e["passed"] for e in evs) else "#f0fdf4"
+
+    css = (
+        "*{box-sizing:border-box;margin:0;padding:0;}"
+        "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;"
+        "background:#f8fafc;padding:16px 12px 10px;}"
+        ".pipeline{display:flex;align-items:stretch;justify-content:space-evenly;}"
+        ".card{flex:1;min-width:0;max-width:200px;border-radius:10px;"
+        "display:flex;flex-direction:column;min-height:220px;cursor:pointer;}"
+        ".card:hover{filter:brightness(0.97);}"
+        ".banner{font-size:10px;font-weight:700;color:#b45309;background:#fef3c7;"
+        "text-align:center;padding:5px 8px;border-radius:8px 8px 0 0;letter-spacing:.5px;}"
+        ".banner-ghost{padding:5px 8px;font-size:10px;visibility:hidden;}"
+        ".body{display:flex;flex-direction:column;align-items:center;justify-content:center;"
+        "padding:12px 10px;flex:1;gap:4px;text-align:center;}"
+        ".dot{width:11px;height:11px;border-radius:50%;margin:0 auto 5px;}"
+        ".name{font-size:13px;font-weight:700;color:#1e293b;letter-spacing:.4px;}"
+        ".metrics{font-size:11px;color:#64748b;margin-top:1px;}"
+        ".tools{font-size:10px;color:#94a3b8;margin-top:5px;line-height:1.6;}"
+        ".badge{font-size:9px;padding:2px 7px;border-radius:10px;margin-top:3px;display:inline-block;}"
+        ".par{background:#ede9fe;color:#7c3aed;}"
+        ".seq{background:#f1f5f9;color:#64748b;}"
+        ".evals{font-size:10px;margin-top:5px;line-height:1.7;}"
+        ".pass{color:#10b981;}"
+        ".fail{color:#ef4444;}"
+        ".hint{font-size:9px;color:#94a3b8;margin-top:6px;}"
+        ".arrow{display:flex;align-items:center;padding:0 10px;color:#94a3b8;"
+        "font-size:22px;flex-shrink:0;align-self:center;}"
+        ".terminal{flex:0 0 90px;border-radius:10px;display:flex;flex-direction:column;"
+        "align-items:center;justify-content:center;padding:14px 10px;min-height:220px;}"
+        ".ticon{font-size:20px;}"
+        ".tlabel{font-size:13px;font-weight:700;margin-top:4px;}"
+        ".tsub{font-size:11px;color:#64748b;margin-top:3px;}"
+        ".legend{display:flex;gap:14px;margin-top:10px;flex-wrap:wrap;}"
+        ".li{font-size:11px;color:#64748b;}"
+    )
+
+    # JS: click card → try to scroll parent page to matching agent expander
+    js = (
+        "document.querySelectorAll('.card').forEach(function(card){"
+        "card.addEventListener('click',function(){"
+        "var name=card.dataset.agent;"
+        "try{"
+        "var exps=window.parent.document.querySelectorAll('[data-testid=\"stExpander\"]');"
+        "for(var i=0;i<exps.length;i++){"
+        "if(exps[i].textContent.toLowerCase().indexOf(name)>-1){"
+        "exps[i].scrollIntoView({behavior:'smooth',block:'start'});break;}}"
+        "}catch(e){}"
+        "});});"
+    )
 
     cards_html = ""
     for i, a in enumerate(agents_present):
-        evs   = evals_by_agent.get(a.lower(), [])
-        stats = agent_stats.get(a.lower(), {})
-        n_p   = sum(1 for e in evs if e["passed"])
-        n_f   = sum(1 for e in evs if not e["passed"])
-        tok   = stats.get("tokens", 0)
-        lat_s = (stats.get("latency_ms", 0) or 0) // 1000
-        cost  = agent_cost.get(a.lower(), agent_cost.get(a, 0))
-        badge = _badge_color(a)
-        style = _card_style(a)
+        evs    = evals_by_agent.get(a.lower(), [])
+        stats  = agent_stats.get(a.lower(), {})
+        cost   = agent_cost.get(a.lower(), agent_cost.get(a, 0))
+        tok    = stats.get("tokens", 0)
+        lat_s  = (stats.get("latency_ms", 0) or 0) // 1000
+        tools  = _agent_tools(a)
+        is_par = _has_parallel(a)
+        border = _border_color(a)
+        bg     = _bg_color(a)
 
-        root_badge = (
-            '<div style="font-size:10px;font-weight:700;color:#b45309;'
-            'background:#fef3c7;border-radius:4px;padding:1px 6px;margin-bottom:4px;'
-            'display:inline-block;">ROOT CAUSE</div><br>'
-            if a == root_agent else ""
+        passed_names = [e["name"].split(".")[-1] for e in evs if e["passed"]]
+        failed_names = [e["name"].split(".")[-1] for e in evs if not e["passed"]]
+
+        banner = (
+            '<div class="banner">ROOT CAUSE</div>'
+            if a == root_agent
+            else '<div class="banner-ghost">x</div>'
         )
-        eval_line = f'<span style="color:#10b981">&#10003; {n_p}</span>&nbsp;&nbsp;<span style="color:#ef4444">&#10007; {n_f}</span>' if evs else '<span style="color:#94a3b8">no evals</span>'
 
-        card = f"""
-        <div style="{style}border-radius:10px;padding:12px 14px;min-width:130px;
-                     text-align:center;position:relative;">
-          {root_badge}
-          <div style="width:14px;height:14px;border-radius:50%;background:{badge};
-                      margin:0 auto 6px;"></div>
-          <div style="font-size:13px;font-weight:700;color:#1e293b;letter-spacing:.5px;">
-            {a.upper()}
-          </div>
-          <div style="font-size:11px;color:#64748b;margin-top:4px;">${cost:.4f}</div>
-          <div style="font-size:11px;color:#64748b;">{tok:,} tok &nbsp;·&nbsp; {lat_s}s</div>
-          <div style="font-size:11px;margin-top:4px;">{eval_line}</div>
-        </div>"""
-        cards_html += card
+        tools_html = (
+            '<br>'.join(tools)
+            if tools else '<span style="color:transparent;">—</span>'
+        )
+
+        exec_badge = ""
+        if tools:
+            exec_badge = (
+                '<span class="badge par">&#x2016; parallel tools</span>'
+                if is_par else
+                '<span class="badge seq">&#8594; sequential</span>'
+            )
+
+        eval_parts = []
+        if passed_names:
+            eval_parts.append(f'<span class="pass">&#10003; {len(passed_names)} passed</span>')
+        if failed_names:
+            short = ', '.join(n.replace('_', ' ') for n in failed_names[:2])
+            if len(failed_names) > 2:
+                short += f' +{len(failed_names)-2}'
+            eval_parts.append(f'<span class="fail">&#10007; {short}</span>')
+        if not evs:
+            eval_parts.append('<span style="color:#cbd5e1">no evals</span>')
+        evals_html = '<br>'.join(eval_parts)
+
+        cards_html += (
+            f'<div class="card" data-agent="{a.lower()}" '
+            f'style="border:2px solid {border};background:{bg};">'
+            f'{banner}'
+            f'<div class="body">'
+            f'<div class="dot" style="background:{border};"></div>'
+            f'<div class="name">{a.upper()}</div>'
+            f'<div class="metrics">${cost:.4f} &middot; {tok:,}t &middot; {lat_s}s</div>'
+            f'<div class="tools">{tools_html}</div>'
+            f'{exec_badge}'
+            f'<div class="evals">{evals_html}</div>'
+            f'<div class="hint">click &#8595; agent details</div>'
+            f'</div></div>'
+        )
 
         if i < len(agents_present) - 1:
-            cards_html += """
-            <div style="display:flex;align-items:center;padding:0 6px;color:#94a3b8;
-                        font-size:20px;align-self:center;">&#8594;</div>"""
+            cards_html += '<div class="arrow">&#8594;</div>'
 
-    terminal_label = "OUTPUT" if trades > 0 else "WASTE"
-    terminal_bg    = "#f0fdf4" if trades > 0 else "#fef2f2"
-    terminal_border= "#10b981" if trades > 0 else "#ef4444"
-    terminal_color = "#16a34a" if trades > 0 else "#dc2626"
-    terminal_icon  = "&#10003;" if trades > 0 else "&#10007;"
-    terminal_sub   = f"{trades} trade{'s' if trades != 1 else ''}" if trades > 0 else "0 trades"
+    term_label  = "OUTPUT" if trades > 0 else "WASTE"
+    term_bg     = "#f0fdf4" if trades > 0 else "#fef2f2"
+    term_border = "#10b981" if trades > 0 else "#ef4444"
+    term_color  = "#16a34a" if trades > 0 else "#dc2626"
+    term_icon   = "&#10003;" if trades > 0 else "&#10007;"
+    term_sub    = f"{trades} trade{'s' if trades != 1 else ''}" if trades > 0 else "0 trades"
 
-    cards_html += f"""
-        <div style="display:flex;align-items:center;padding:0 6px;color:#94a3b8;
-                    font-size:20px;align-self:center;">&#8594;</div>
-        <div style="background:{terminal_bg};border:2px solid {terminal_border};
-                    border-radius:10px;padding:12px 14px;min-width:100px;text-align:center;">
-          <div style="font-size:18px;color:{terminal_color};">{terminal_icon}</div>
-          <div style="font-size:13px;font-weight:700;color:{terminal_color};">{terminal_label}</div>
-          <div style="font-size:11px;color:#64748b;margin-top:4px;">{terminal_sub}</div>
-        </div>"""
+    cards_html += (
+        '<div class="arrow">&#8594;</div>'
+        f'<div class="terminal" style="border:2px solid {term_border};background:{term_bg};">'
+        f'<div class="ticon" style="color:{term_color};">{term_icon}</div>'
+        f'<div class="tlabel" style="color:{term_color};">{term_label}</div>'
+        f'<div class="tsub">{term_sub}</div>'
+        f'</div>'
+    )
 
-    legend = """
-    <div style="display:flex;gap:18px;margin-top:10px;flex-wrap:wrap;">
-      <span style="font-size:11px;color:#64748b;">
-        <span style="color:#10b981;">&#9679;</span> All evals passed
-      </span>
-      <span style="font-size:11px;color:#64748b;">
-        <span style="color:#ef4444;">&#9679;</span> Evals failed
-      </span>
-      <span style="font-size:11px;color:#64748b;">
-        <span style="color:#f59e0b;">&#9679;</span> Root cause
-      </span>
-      <span style="font-size:11px;color:#64748b;">
-        <span style="color:#94a3b8;">&#9679;</span> No eval data
-      </span>
-    </div>"""
+    legend = (
+        '<div class="legend">'
+        '<span class="li"><span style="color:#10b981">&#9679;</span> All evals passed</span>'
+        '<span class="li"><span style="color:#ef4444">&#9679;</span> Evals failed</span>'
+        '<span class="li"><span style="color:#f59e0b">&#9679;</span> Root cause</span>'
+        '<span class="li"><span style="color:#cbd5e1">&#9679;</span> No eval data</span>'
+        '<span class="li"><span style="background:#ede9fe;color:#7c3aed;padding:0 5px;'
+        'border-radius:8px;font-size:9px;">&#x2016; parallel</span> tools ran in parallel</span>'
+        '</div>'
+    )
 
     return (
-        '<html><head><style>'
-        'body{margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f8fafc;}'
-        '</style></head><body>'
-        '<div style="background:#f8fafc;border-radius:12px;padding:16px 20px;">'
-        '<div style="display:flex;align-items:stretch;flex-wrap:nowrap;gap:0;overflow-x:auto;">'
-        f"{cards_html}"
-        '</div>'
-        f"{legend}"
-        '</div>'
-        '</body></html>'
+        f'<html><head><style>{css}</style></head><body>'
+        f'<div class="pipeline">{cards_html}</div>'
+        f'{legend}'
+        f'<script>{js}</script>'
+        f'</body></html>'
     )
 
 
@@ -1547,10 +1644,9 @@ Each card shows cost, token count, latency, and eval pass/fail counts inline.
 """,
     )
 
-    _chain_html = _render_call_chain_html(agents_present, evals_by_agent, root_agent, agent_stats, sess_row)
+    _chain_html = _render_call_chain_html(agents_present, evals_by_agent, root_agent, agent_stats, sess_row, sess_traces)
     if _chain_html:
-        _chain_height = 60 + len(agents_present) * 5 + 170  # scales with agent count
-        st_components.html(_chain_html, height=_chain_height, scrolling=False)
+        st_components.html(_chain_html, height=310, scrolling=False)
     else:
         st.info("No trace data available to build call chain.")
 
