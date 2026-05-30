@@ -879,11 +879,26 @@ elif page == "RCA View":
 
     st.divider()
 
+    st.markdown(
+        '<div style="background:#f0fdf4;border-left:4px solid #10b981;padding:12px 16px;'
+        'border-radius:0 6px 6px 0;margin-bottom:16px;font-size:0.88rem;color:#064e3b">'
+        '<b>How to read this:</b> &nbsp;'
+        'The <b>Call Stack</b> shows every step the agent took, in order — the ROOT CAUSE row is '
+        'where execution broke down. '
+        'The <b>Eval Scores</b> are automated quality checks run per agent: '
+        'a failing eval (✗) tells you <i>which agent stage was affected</i>, '
+        'while the ROOT CAUSE row tells you <i>which specific step caused it</i>. '
+        'Together they answer: what failed, where, and what downstream stages never got to run.'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
     # Two-column: call stack + evals
     lcol, rcol = st.columns([3, 2])
 
     with lcol:
         st.markdown("#### Call Stack")
+        st.caption("Chronological execution trace. Highlighted step = where the failure originated.")
         annotated = build_annotated_call_stack(sess_traces, inc_obj) if sess_traces else inc_obj.call_stack
 
         for frame in annotated:
@@ -901,7 +916,10 @@ elif page == "RCA View":
                 css = "trace-row"
 
             agent   = frame.get("agent","")
-            step    = frame.get("tool_name") or frame.get("step_name") or frame.get("step_type","")
+            def _str(v):
+                import math
+                return None if (v is None or (isinstance(v, float) and math.isnan(v))) else str(v)
+            step    = _str(frame.get("tool_name")) or _str(frame.get("step_name")) or frame.get("step_type","")
             lat     = int(frame.get("latency_ms") or frame.get("duration_ms") or 0)
             tok     = int(frame.get("tokens") or 0)
             outcome = frame.get("outcome","")
@@ -926,9 +944,8 @@ elif page == "RCA View":
     with rcol:
         st.markdown("#### Eval Scores")
         st.caption(
-            "Automated quality checks run per agent at session end. "
-            "Each score is 0–1. Failed evals (✗) identify which agent "
-            "stage broke down, linking to the ROOT CAUSE step in the call stack."
+            "One score per agent check. ✓ = passed threshold. ✗ = failed. "
+            "A failing eval names the affected agent — match it to the call stack to see the exact step."
         )
 
         if not evals_df.empty:
