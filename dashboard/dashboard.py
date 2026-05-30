@@ -933,11 +933,6 @@ elif page == "RCA View":
         evs = evals_by_agent.get(key, [])
         if not evs:
             return
-        st.markdown(
-            f'<div style="margin:2px 0 2px 20px;font-size:0.76rem;color:#6b7280;'
-            f'font-style:italic">▸ {agent_name} evals</div>',
-            unsafe_allow_html=True,
-        )
         for ev in evs:
             passed = ev["passed"]
             score  = ev["score"]
@@ -983,10 +978,20 @@ elif page == "RCA View":
         outcome  = frame.get("outcome", "")
         root_tag = " ← ROOT CAUSE" if is_root else ""
 
-        # When agent changes, flush the previous agent's evals inline
-        if prev_agent and agent != prev_agent and prev_agent not in rendered_agents:
-            _render_agent_evals(prev_agent)
-            rendered_agents.add(prev_agent)
+        # New agent: flush previous agent's evals, then render a section header
+        if agent != prev_agent:
+            if prev_agent and prev_agent not in rendered_agents:
+                _render_agent_evals(prev_agent)
+                rendered_agents.add(prev_agent)
+            a_color = AGENT_COLORS.get(agent, "#94a3b8")
+            st.markdown(
+                f'<div style="margin:14px 0 4px 0;padding:3px 0 3px 8px;'
+                f'border-left:3px solid {a_color};background:#f8fafc;">'
+                f'<span style="color:{a_color};font-weight:700;font-size:0.78rem;'
+                f'text-transform:uppercase;letter-spacing:0.08em">{agent} agent</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
 
         st.markdown(
             f'<div class="trace-row {css}">'
