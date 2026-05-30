@@ -34,63 +34,56 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-/* Base */
-[data-testid="stAppViewContainer"] { background: #0f172a; color: #e2e8f0; }
-[data-testid="stSidebar"] { background: #1e293b; }
-[data-testid="stSidebar"] * { color: #e2e8f0 !important; }
-[data-testid="stSidebar"] h1,
-[data-testid="stSidebar"] h2,
-[data-testid="stSidebar"] h3,
-[data-testid="stSidebar"] p,
-[data-testid="stSidebar"] label,
-[data-testid="stSidebar"] span { color: #e2e8f0 !important; }
+/* Hide Streamlit header bar */
+[data-testid="stHeader"] { display: none; }
 
 /* KPI cards */
 .kpi-card {
-    background: #1e293b; border: 1px solid #334155;
+    background: #f8fafc; border: 1px solid #e2e8f0;
     border-radius: 8px; padding: 14px 18px; text-align: center;
 }
-.kpi-label { font-size: 0.7rem; color: #94a3b8; text-transform: uppercase;
+.kpi-label { font-size: 0.7rem; color: #64748b; text-transform: uppercase;
              letter-spacing: 0.08em; margin-bottom: 4px; }
-.kpi-value { font-size: 1.8rem; font-weight: 700; color: #f1f5f9; line-height: 1; }
-.kpi-sub   { font-size: 0.75rem; color: #64748b; margin-top: 4px; }
+.kpi-value { font-size: 1.8rem; font-weight: 700; color: #0f172a; line-height: 1; }
+.kpi-sub   { font-size: 0.75rem; color: #94a3b8; margin-top: 4px; }
 
 /* Severity badges */
-.badge-critical { background:#450a0a; color:#fca5a5; border:1px solid #ef4444;
+.badge-critical { background:#fee2e2; color:#991b1b; border:1px solid #fca5a5;
                   padding:2px 10px; border-radius:12px; font-size:0.72rem; font-weight:600; }
-.badge-warning  { background:#431407; color:#fed7aa; border:1px solid #f59e0b;
+.badge-warning  { background:#fef9c3; color:#92400e; border:1px solid #fcd34d;
                   padding:2px 10px; border-radius:12px; font-size:0.72rem; font-weight:600; }
-.badge-info     { background:#0c1a2e; color:#93c5fd; border:1px solid #3b82f6;
+.badge-info     { background:#dbeafe; color:#1e40af; border:1px solid #93c5fd;
                   padding:2px 10px; border-radius:12px; font-size:0.72rem; font-weight:600; }
-.badge-sim      { background:#1a0f2e; color:#c4b5fd; border:1px solid #8b5cf6;
+.badge-sim      { background:#ede9fe; color:#5b21b6; border:1px solid #c4b5fd;
                   padding:2px 10px; border-radius:12px; font-size:0.72rem; font-weight:600; }
 
 /* Trace tree */
-.trace-row { font-family: 'Courier New', monospace; font-size: 0.78rem;
-             padding: 4px 8px; border-left: 2px solid #334155; margin: 2px 0; }
-.trace-error  { border-left-color: #ef4444; background: #1a0505; }
-.trace-success { border-left-color: #10b981; background: #051a0f; }
-.trace-root   { border-left-color: #f59e0b; background: #1a0e05; border-width: 3px; }
+.trace-row { font-family: 'Courier New', monospace; font-size: 0.78rem; color: #1e293b;
+             padding: 4px 8px; border-left: 2px solid #cbd5e1; margin: 2px 0;
+             background: #f8fafc; }
+.trace-error  { border-left-color: #ef4444; background: #fff5f5; color: #7f1d1d; }
+.trace-success { border-left-color: #10b981; background: #f0fdf4; }
+.trace-root   { border-left-color: #f59e0b; background: #fffbeb; border-width: 3px; font-weight: 600; }
 
 /* Score bar */
-.score-bar-wrap { background: #334155; border-radius: 4px; height: 6px; margin: 4px 0; }
+.score-bar-wrap { background: #e2e8f0; border-radius: 4px; height: 6px; margin: 4px 0; }
 .score-bar-fill { height: 6px; border-radius: 4px; }
 
 /* Callout */
-.callout { background: #1e293b; border-left: 3px solid #3b82f6;
+.callout { background: #f0f9ff; border-left: 3px solid #3b82f6;
            padding: 10px 14px; border-radius: 0 6px 6px 0;
-           margin: 8px 0; font-size: 0.9rem; }
-.callout-critical { border-left-color: #ef4444; }
-.callout-warning  { border-left-color: #f59e0b; }
+           margin: 8px 0; font-size: 0.9rem; color: #1e293b; }
+.callout-critical { border-left-color: #ef4444; background: #fff5f5; }
+.callout-warning  { border-left-color: #f59e0b; background: #fffbeb; }
 
 /* Fix box */
-.fix-box { background: #052e16; border: 1px solid #10b981; border-radius: 6px;
+.fix-box { background: #f0fdf4; border: 1px solid #6ee7b7; border-radius: 6px;
            padding: 12px 16px; font-family: monospace; font-size: 0.82rem;
-           white-space: pre-wrap; color: #bbf7d0; }
+           white-space: pre-wrap; color: #064e3b; }
 
 /* Sim live indicator */
-.sim-live { background: #1a0f2e; border: 1px solid #8b5cf6; border-radius: 6px;
-            padding: 10px 16px; color: #c4b5fd; font-size: 0.9rem; }
+.sim-live { background: #faf5ff; border: 1px solid #c4b5fd; border-radius: 6px;
+            padding: 10px 16px; color: #5b21b6; font-size: 0.9rem; }
 </style>
 """, unsafe_allow_html=True)
 
