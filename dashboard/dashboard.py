@@ -477,6 +477,11 @@ def _build_call_chain_fig(
         customdata.append("<br>".join(parts))
     customdata.append(terminal_label)
 
+    def _hex_to_rgba(hex_color: str, alpha: float = 0.5) -> str:
+        h = hex_color.lstrip("#")
+        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+        return f"rgba({r},{g},{b},{alpha})"
+
     # Links: agent[i] → agent[i+1], last agent → terminal
     src, tgt, vals, colors, labels = [], [], [], [], []
     for i, a in enumerate(agents_present):
@@ -485,7 +490,7 @@ def _build_call_chain_fig(
         src.append(i)
         tgt.append(tgt_idx)
         vals.append(cost)
-        colors.append(AGENT_COLORS.get(a, "#94a3b8") + "99")
+        colors.append(_hex_to_rgba(AGENT_COLORS.get(a, "#94a3b8")))
         labels.append(f"${cost:.4f}")
 
     fig = go.Figure(go.Sankey(
