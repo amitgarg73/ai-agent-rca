@@ -681,7 +681,12 @@ def _build_timeline_fig(traces: list):
         # minimum bar width: 3% of total duration so short agents are still visible
         bar_dur   = max(max_end - min_start, total_dur * 0.03, 1.0)
         bar_color = "#ef4444" if n_err > 0 else AGENT_COLORS.get(agent, "#94a3b8")
-        bar_text  = f"{n_steps} step{'s' if n_steps != 1 else ''}" + (f"  {n_err} err" if n_err else "")
+        # only show text if bar is wide enough to avoid Plotly rotating it vertically
+        _bar_pct  = bar_dur / (total_dur or 1)
+        bar_text  = (
+            f"{n_steps} step{'s' if n_steps != 1 else ''}" + (f"  {n_err} err" if n_err else "")
+            if _bar_pct >= 0.08 else ""
+        )
         fig.add_trace(go.Bar(
             x=[bar_dur], y=[agent.upper()], base=[min_start],
             orientation="h",
@@ -1523,7 +1528,7 @@ Read the fix, then scroll down to the Agent Breakdown to verify your understandi
     tok_str  = f"{summary['tokens_wasted']:,} tokens" if summary["tokens_wasted"] else ""
     trades   = int(sess_row.get("trades_executed", 0))
     what_happened = (
-        f"**{inc_obj.pattern_name}** — {inc_obj.root_cause}. "
+        f"<b>{inc_obj.pattern_name}:</b> {inc_obj.root_cause}. "
         f"Session ran {dur_str}, spent {cost_str}"
         f"{' (' + tok_str + ')' if tok_str else ''}, produced {trades} trade(s)."
     )
