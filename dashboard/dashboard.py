@@ -962,9 +962,10 @@ elif page == "RCA View":
     prev_agent: str | None = None
 
     for frame in annotated:
+        error_val   = _str(frame.get("error"))          # None if null/NaN, string if real
         is_root     = frame.get("is_root", False)
         is_relevant = frame.get("is_relevant", False)
-        is_err      = frame.get("outcome") == "error" or bool(frame.get("error"))
+        is_err      = frame.get("outcome") == "error" or bool(error_val)
 
         if is_root:
             css = "trace-root"
@@ -975,11 +976,11 @@ elif page == "RCA View":
         else:
             css = "trace-row"
 
-        agent   = frame.get("agent", "")
-        step    = _str(frame.get("tool_name")) or _str(frame.get("step_name")) or frame.get("step_type", "")
-        lat     = int(frame.get("latency_ms") or frame.get("duration_ms") or 0)
-        tok     = int(frame.get("tokens") or 0)
-        outcome = frame.get("outcome", "")
+        agent    = frame.get("agent", "")
+        step     = _str(frame.get("tool_name")) or _str(frame.get("step_name")) or frame.get("step_type", "")
+        lat      = int(frame.get("latency_ms") or frame.get("duration_ms") or 0)
+        tok      = int(frame.get("tokens") or 0)
+        outcome  = frame.get("outcome", "")
         root_tag = " ← ROOT CAUSE" if is_root else ""
 
         # When agent changes, flush the previous agent's evals inline
@@ -999,9 +1000,9 @@ elif page == "RCA View":
             unsafe_allow_html=True,
         )
 
-        if frame.get("error"):
+        if error_val:
             with st.expander(f"Error: {step}", expanded=is_root):
-                st.error(frame["error"])
+                st.error(error_val)
 
         prev_agent = agent
 

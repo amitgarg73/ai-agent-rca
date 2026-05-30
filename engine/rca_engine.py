@@ -3,8 +3,19 @@ RCA engine — enriches an Incident with a structured call stack and root cause 
 Reads c_traces for the incident's session, identifies the failure chain.
 """
 from __future__ import annotations
+import math
 
 from engine.pattern_detector import Incident
+
+
+def _real_error(v) -> str | None:
+    """Return error string only if it's a real non-null, non-NaN value."""
+    if v is None:
+        return None
+    if isinstance(v, float) and math.isnan(v):
+        return None
+    s = str(v).strip()
+    return s if s else None
 
 SEVERITY_COLORS = {
     "critical": "#EF4444",
@@ -39,7 +50,7 @@ def build_annotated_call_stack(
     first_error_seen = False
 
     for t in sorted_traces:
-        is_error   = bool(t.get("error")) or t.get("outcome") == "error"
+        is_error   = bool(_real_error(t.get("error"))) or t.get("outcome") == "error"
         is_root    = False
         is_relevant = False
 

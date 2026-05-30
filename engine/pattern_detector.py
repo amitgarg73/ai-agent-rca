@@ -4,6 +4,7 @@ Writes incidents to c_incidents. Each detector returns an Incident or None.
 """
 from __future__ import annotations
 
+import math
 import statistics
 import uuid
 from dataclasses import dataclass, field
@@ -11,6 +12,15 @@ from datetime import datetime, timezone
 from collections import Counter
 
 from engine.eval_engine import EvalResult, REQUIRED_AGENTS, COST_ANOMALY_SIGMA
+
+
+def _real_error(v) -> str | None:
+    if v is None:
+        return None
+    if isinstance(v, float) and math.isnan(v):
+        return None
+    s = str(v).strip()
+    return s if s else None
 
 TOOL_RETRY_THRESHOLD   = 3
 CONTEXT_SPIRAL_TOKENS  = 40_000
@@ -79,7 +89,7 @@ def detect_tool_timeout_loop(
     tool_errors: dict[str, list[dict]] = {}
     for t in sorted(traces, key=lambda x: x.get("created_at", "")):
         if (t.get("step_type") or "") == "tool_call" and (
-            t.get("outcome") == "error" or t.get("error")
+            t.get("outcome") == "error" or bool(_real_error(t.get("error")))
         ):
             tool = t.get("tool_name") or "unknown_tool"
             tool_errors.setdefault(tool, []).append(t)
@@ -253,7 +263,7 @@ def detect_silent_exit(
     # Only fire if no other pattern already explains it
     has_tool_errors = any(
         (t.get("step_type") or "") == "tool_call" and (
-            t.get("outcome") == "error" or t.get("error")
+            t.get("outcome") == "error" or bool(_real_error(t.get("error")))
         )
         for t in traces
     )
