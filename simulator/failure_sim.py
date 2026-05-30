@@ -77,6 +77,7 @@ def _session(label: list[str], cost: float, tokens_in: int, tokens_out: int,
         "terminal_reason":     reason if reason is not None else "",
         "started_at":          _ts(-latency_ms // 1000),
         "completed_at":        _now(),
+        "is_simulated":        True,
     }
 
 
