@@ -670,50 +670,40 @@ def _build_timeline_fig(traces: list):
     total_dur = df["end_s"].max() or 1.0
     label_threshold = total_dur * 0.06  # only label bars wider than 6% of total
 
+    # One bar per agent spanning its full execution window
     fig = go.Figure()
     for agent in agents:
-        adf   = df[df["agent"] == agent]
-        color = AGENT_COLORS.get(agent, "#94a3b8")
-        for _, row in adf.iterrows():
-            bar_color = "#ef4444" if row["is_err"] else color
-            dur       = max(float(row["end_s"]) - float(row["start_s"]), 2.0)
-            step_name = str(row["step"])
-            bar_text  = step_name if dur >= label_threshold else ""
-            fig.add_trace(go.Bar(
-                x=[dur], y=[agent.upper()], base=[float(row["start_s"])],
-                orientation="h",
-                marker_color=bar_color,
-                marker_line_width=0,
-                text=bar_text,
-                textposition="inside",
-                insidetextanchor="start",
-                textfont=dict(size=9, color="#ffffff"),
-                hovertemplate=(
-                    f"<b>{agent}</b> · {step_name}<br>"
-                    f"Start: {row['start_s']:.1f}s<br>"
-                    f"Duration: {int(row['latency_ms'])}ms<br>"
-                    f"Outcome: {row.get('outcome') or 'unknown'}<br>"
-                    "<extra></extra>"
-                ),
-                showlegend=False,
-            ))
-
-        # Error count annotation at right edge of agent row
-        n_err = int(adf["is_err"].sum())
-        if n_err:
-            fig.add_annotation(
-                x=1.01, y=agent.upper(),
-                xref="paper", yref="y",
-                text=f"⚠ {n_err} error{'s' if n_err > 1 else ''}",
-                showarrow=False,
-                font=dict(size=10, color="#ef4444"),
-                xanchor="left",
-            )
+        adf       = df[df["agent"] == agent]
+        min_start = float(adf["start_s"].min())
+        max_end   = float(adf["end_s"].max())
+        n_steps   = len(adf)
+        n_err     = int(adf["is_err"].sum())
+        # minimum bar width: 3% of total duration so short agents are still visible
+        bar_dur   = max(max_end - min_start, total_dur * 0.03, 1.0)
+        bar_color = "#ef4444" if n_err > 0 else AGENT_COLORS.get(agent, "#94a3b8")
+        bar_text  = f"{n_steps} step{'s' if n_steps != 1 else ''}" + (f"  {n_err} err" if n_err else "")
+        fig.add_trace(go.Bar(
+            x=[bar_dur], y=[agent.upper()], base=[min_start],
+            orientation="h",
+            marker_color=bar_color,
+            marker_line_width=0,
+            text=bar_text,
+            textposition="inside",
+            insidetextanchor="middle",
+            textfont=dict(size=10, color="#ffffff"),
+            hovertemplate=(
+                f"<b>{agent.upper()}</b><br>"
+                f"Start: {min_start:.1f}s  End: {max_end:.1f}s<br>"
+                f"Steps: {n_steps}  Errors: {n_err}<br>"
+                "<extra></extra>"
+            ),
+            showlegend=False,
+        ))
 
     fig.update_layout(
         paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff", font_color="#1e293b",
-        height=max(200, len(agents) * 80 + 50),
-        margin=dict(t=10, b=35, l=10, r=90),
+        height=max(180, len(agents) * 70 + 60),
+        margin=dict(t=10, b=40, l=10, r=20),
         barmode="overlay",
         xaxis=dict(title="Seconds from session start", gridcolor="#e2e8f0", tickfont=dict(size=10)),
         yaxis=dict(
@@ -1649,7 +1639,7 @@ Each card shows cost, token count, latency, and eval pass/fail counts inline.
 """,
     )
 
-    _chain_html = _render_call_chain_html(agents_present, evals_by_agent, root_agent, agent_stats, sess_row, sess_traces)
+    _chain_html = _render_call_chain_html(_agent_order, evals_by_agent, root_agent, agent_stats, sess_row, sess_traces)
     if _chain_html:
         st_components.html(_chain_html, height=310, scrolling=False)
     else:
@@ -1782,42 +1772,54 @@ Inside each card:
                 )
                 _ti = 0
                 while _ti < len(_tool_calls):
-                    _t        = _tool_calls[_ti]
-                    _is_err   = bool(_str(_t.get("error"))) or _t.get("outcome") == "error"
-                    _tn       = _t.get("tool_name") or "tool"
-                    _lat      = int(_t.get("latency_ms") or 0)
+                    _t  = _tool_calls[_ti]
+                    _tn = _str(_t.get("tool_name")) or "tool"
+                    # count consecutive calls to the same tool (any outcome)
                     _tj = _ti + 1
-                    while _tj < len(_tool_calls) and _is_err:
-                        _t2 = _tool_calls[_tj]
-                        _t2_err = bool(_str(_t2.get("error"))) or _t2.get("outcome") == "error"
-                        if _t2_err and _t2.get("tool_name") == _tn:
+                    while _tj < len(_tool_calls):
+                        if (_str(_tool_calls[_tj].get("tool_name")) or "tool") == _tn:
                             _tj += 1
                         else:
                             break
-                    _count = _tj - _ti
-                    if _count > 1 and _is_err:
+                    _count   = _tj - _ti
+                    _group   = _tool_calls[_ti:_tj]
+                    _n_err_g = sum(1 for _t2 in _group if bool(_str(_t2.get("error"))) or _t2.get("outcome") == "error")
+                    _avg_lat = sum(int(_t2.get("latency_ms") or 0) for _t2 in _group) // _count
+
+                    if _count >= 3:
+                        # collapsed summary row
+                        if _n_err_g:
+                            _status = f'<span style="color:#ef4444">{_n_err_g}/{_count} errors</span>'
+                        else:
+                            _status = f'<span style="color:#10b981">all ok</span>'
                         st.markdown(
-                            f'<div class="trace-row trace-error">'
-                            f'<b>{_tn}</b> &nbsp; <code>{_lat}ms</code> &nbsp;'
-                            f'<span style="color:#ef4444">error x{_count}</span> '
-                            f'<span style="color:#94a3b8;font-size:0.73rem">(repeated, collapsed)</span>'
+                            f'<div class="trace-row">'
+                            f'<b>{_tn}</b> &nbsp; <code>× {_count}</code> &nbsp;'
+                            f'<code>~{_avg_lat}ms avg</code> &nbsp;'
+                            f'{_status} '
+                            f'<span style="color:#94a3b8;font-size:0.73rem">(collapsed)</span>'
                             f'</div>',
                             unsafe_allow_html=True,
                         )
-                        with st.expander(f"Error — {_tn} x{_count}", expanded=_is_root):
-                            st.error(_str(_t.get("error")))
-                    else:
-                        _out_col = "#ef4444" if _is_err else "#10b981"
-                        st.markdown(
-                            f'<div class="trace-row {"trace-error" if _is_err else ""}">'
-                            f'<b>{_tn}</b> &nbsp; <code>{_lat}ms</code> &nbsp;'
-                            f'<span style="color:{_out_col}">{_t.get("outcome", "")}</span>'
-                            f'</div>',
-                            unsafe_allow_html=True,
-                        )
-                        if _is_err and _str(_t.get("error")):
-                            with st.expander(f"Error — {_tn}", expanded=_is_root):
+                        if _n_err_g and _str(_t.get("error")):
+                            with st.expander(f"Error — {_tn} × {_count}", expanded=_is_root):
                                 st.error(_str(_t.get("error")))
+                    else:
+                        for _t2 in _group:
+                            _is_err2 = bool(_str(_t2.get("error"))) or _t2.get("outcome") == "error"
+                            _lat2    = int(_t2.get("latency_ms") or 0)
+                            _outcome = _str(_t2.get("outcome")) or ("error" if _is_err2 else "ok")
+                            _out_col = "#ef4444" if _is_err2 else "#10b981"
+                            st.markdown(
+                                f'<div class="trace-row {"trace-error" if _is_err2 else ""}">'
+                                f'<b>{_tn}</b> &nbsp; <code>{_lat2}ms</code> &nbsp;'
+                                f'<span style="color:{_out_col}">{_outcome}</span>'
+                                f'</div>',
+                                unsafe_allow_html=True,
+                            )
+                            if _is_err2 and _str(_t2.get("error")):
+                                with st.expander(f"Error — {_tn}", expanded=_is_root):
+                                    st.error(_str(_t2.get("error")))
                     _ti = _tj
 
             _other_steps = [t for t in _a_traces if t.get("step_type") not in ("llm_call", "tool_call")]
