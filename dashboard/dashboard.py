@@ -37,6 +37,21 @@ st.markdown("""
 /* Hide Streamlit header bar */
 [data-testid="stHeader"] { display: none; }
 
+/* Reduce top padding on main content (default is 5rem — way too much) */
+.block-container { padding-top: 1.2rem !important; padding-bottom: 1rem !important; }
+
+/* Prevent sidebar from being collapsed (hide the in-sidebar collapse button) */
+[data-testid="stSidebarCollapseButton"] { display: none !important; }
+
+/* If sidebar somehow ends up collapsed, keep the expand arrow visible */
+[data-testid="stSidebarCollapsedControl"] {
+    display: flex !important;
+    position: fixed !important;
+    top: 8px !important;
+    left: 8px !important;
+    z-index: 999999 !important;
+}
+
 /* KPI cards */
 .kpi-card {
     background: #f8fafc; border: 1px solid #e2e8f0;
