@@ -1,0 +1,19 @@
+# secrets
+dashboard/.streamlit/secrets.toml
+.streamlit/secrets.toml
+*.env
+.env
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# playwright artifacts
+.playwright-mcp/
+
+# mac
+.DS_Store

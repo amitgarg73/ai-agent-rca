@@ -1,0 +1,7 @@
+streamlit>=1.33
+supabase>=2.0
+pandas
+plotly
+scikit-learn
+anthropic>=0.25
+python-dotenv
