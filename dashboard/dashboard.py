@@ -473,7 +473,7 @@ def _build_call_chain_fig(
         marker=dict(size=60, color=node_colors, line=dict(width=3, color=border_colors)),
         text=[a.upper() for a in agents_present],
         textposition="top center",
-        textfont=dict(size=11, color="#f1f5f9", family="monospace"),
+        textfont=dict(size=11, color="#0f172a", family="monospace"),
         hovertext=hover_texts,
         hoverinfo="text",
         customdata=agents_present,
@@ -493,7 +493,7 @@ def _build_call_chain_fig(
         )
 
     fig.update_layout(
-        paper_bgcolor="#0f172a", plot_bgcolor="#0f172a", font_color="#e2e8f0",
+        paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff", font_color="#1e293b",
         height=165,
         margin=dict(t=30, b=50, l=20, r=20),
         xaxis=dict(showgrid=False, zeroline=False, showticklabels=False,
@@ -545,11 +545,11 @@ def _build_timeline_fig(traces: list):
             ))
 
     fig.update_layout(
-        paper_bgcolor="#0f172a", plot_bgcolor="#0f172a", font_color="#e2e8f0",
+        paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff", font_color="#1e293b",
         height=max(180, len(agents) * 72 + 40),
         margin=dict(t=10, b=30, l=10, r=10),
         barmode="overlay",
-        xaxis=dict(title="Seconds from session start", gridcolor="#1e293b", tickfont=dict(size=10)),
+        xaxis=dict(title="Seconds from session start", gridcolor="#e2e8f0", tickfont=dict(size=10)),
         yaxis=dict(
             categoryorder="array",
             categoryarray=[a.upper() for a in reversed(agents)],
@@ -597,11 +597,11 @@ def _build_cost_donut(sess_row: dict, sess_traces: list):
     ))
     fig.add_annotation(
         text=f"${total_val:.4f}", x=0.5, y=0.5,
-        font=dict(size=12, color="#f1f5f9"), showarrow=False,
+        font=dict(size=12, color="#0f172a"), showarrow=False,
     )
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-        font_color="#e2e8f0", height=200,
+        font_color="#1e293b", height=200,
         margin=dict(t=5, b=5, l=5, r=5), showlegend=False,
     )
     return fig
@@ -748,8 +748,8 @@ if page == "Ledger":
                 textposition="outside",
             ))
             fig.update_layout(
-                paper_bgcolor="#0f172a", plot_bgcolor="#0f172a",
-                font_color="#e2e8f0", margin=dict(t=20, b=20),
+                paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
+                font_color="#1e293b", margin=dict(t=20, b=20),
                 yaxis_title="Cost (USD)", height=280,
             )
             st.plotly_chart(fig, use_container_width=True)
@@ -891,8 +891,8 @@ elif page == "Session Deep Dive":
                 hover_data=["step_type","tool_name","latency_ms","outcome"],
             )
             fig.update_layout(
-                paper_bgcolor="#0f172a", plot_bgcolor="#0f172a",
-                font_color="#e2e8f0", margin=dict(t=10, b=10), height=280,
+                paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
+                font_color="#1e293b", margin=dict(t=10, b=10), height=280,
                 legend_title="Agent",
             )
             st.plotly_chart(fig, use_container_width=True)
@@ -951,8 +951,8 @@ elif page == "Quality Drift":
                 )
 
     fig.update_layout(
-        paper_bgcolor="#0f172a", plot_bgcolor="#0f172a",
-        font_color="#e2e8f0", height=380,
+        paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
+        font_color="#1e293b", height=380,
         yaxis_title="Cost (USD)", xaxis_tickangle=-30,
         legend=dict(orientation="h", y=1.05),
         margin=dict(t=40, b=60),
@@ -986,8 +986,8 @@ elif page == "Quality Drift":
         name="Tokens",
     ))
     fig2.update_layout(
-        paper_bgcolor="#0f172a", plot_bgcolor="#0f172a",
-        font_color="#e2e8f0", height=250,
+        paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
+        font_color="#1e293b", height=250,
         yaxis_title="Total tokens", margin=dict(t=10,b=60),
         xaxis_tickangle=-30,
     )
