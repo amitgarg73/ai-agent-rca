@@ -1547,12 +1547,18 @@ Read the fix, then scroll down to the Agent Breakdown to verify your understandi
             unsafe_allow_html=True,
         )
     with _s1r:
+        _fix_items = [s.strip() for s in fix_text.strip().split("\n") if s.strip()]
+        _fix_li = "".join(
+            f'<li style="margin-bottom:6px;color:#064e3b;font-size:0.85rem;line-height:1.5">'
+            f'{item.lstrip("0123456789. ")}'
+            f'</li>'
+            for item in _fix_items
+        )
         st.markdown(
             f'<div style="background:#f0fdf4;border:1px solid #6ee7b7;border-radius:8px;padding:14px 16px">'
             f'<div style="font-size:0.7rem;font-weight:700;color:#065f46;'
-            f'text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px">Fix Steps</div>'
-            f'<pre style="margin:0;font-size:0.78rem;color:#064e3b;'
-            f'white-space:pre-wrap;font-family:inherit">{fix_text}</pre>'
+            f'text-transform:uppercase;letter-spacing:0.08em;margin-bottom:10px">Fix Steps</div>'
+            f'<ol style="margin:0;padding-left:18px">{_fix_li}</ol>'
             f'</div>',
             unsafe_allow_html=True,
         )
