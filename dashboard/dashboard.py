@@ -41,24 +41,10 @@ st.markdown("""
 /* Reduce top padding on main content (default is 5rem — way too much) */
 .block-container { padding-top: 1.2rem !important; padding-bottom: 1rem !important; }
 
-/* Always keep sidebar visible — override any collapsed transform */
-[data-testid="stSidebar"] {
-    min-width: 244px !important;
-    width: 244px !important;
-    transform: none !important;
-    display: block !important;
-    left: 0 !important;
-}
-[data-testid="stSidebar"][aria-expanded="false"] {
-    margin-left: 0 !important;
-}
-
-/* Hide all sidebar toggle buttons so users can't collapse it */
-[data-testid="stSidebarCollapseButton"],
-[data-testid="stSidebarCollapsedControl"],
-button[aria-label="Close sidebar"],
-button[aria-label="Open sidebar"] {
-    display: none !important;
+/* Sidebar collapse button — make it always visible (not just on hover) */
+[data-testid="stSidebarCollapseButton"] {
+    opacity: 1 !important;
+    visibility: visible !important;
 }
 
 /* KPI cards */
@@ -109,19 +95,6 @@ button[aria-label="Open sidebar"] {
 .sim-live { background: #faf5ff; border: 1px solid #c4b5fd; border-radius: 6px;
             padding: 10px 16px; color: #5b21b6; font-size: 0.9rem; }
 </style>
-<script>
-// Force sidebar open if Streamlit's JS collapses it on load
-(function keepSidebarOpen() {
-    function expand() {
-        var doc = window.parent ? window.parent.document : document;
-        var btn = doc.querySelector('[data-testid="stSidebarCollapsedControl"] button');
-        if (btn) { btn.click(); }
-    }
-    // Try immediately and after a short delay for Streamlit hydration
-    setTimeout(expand, 300);
-    setTimeout(expand, 800);
-})();
-</script>
 """, unsafe_allow_html=True)
 
 
