@@ -494,11 +494,11 @@ def _build_call_chain_fig(
 
     fig.update_layout(
         paper_bgcolor="#0f172a", plot_bgcolor="#0f172a", font_color="#e2e8f0",
-        height=210,
-        margin=dict(t=20, b=45, l=30, r=30),
+        height=165,
+        margin=dict(t=30, b=50, l=20, r=20),
         xaxis=dict(showgrid=False, zeroline=False, showticklabels=False,
-                   range=[-0.6, max(len(agents_present) - 0.4, 0.5)]),
-        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[-0.6, 0.5]),
+                   range=[-0.7, max(len(agents_present) - 0.3, 0.5)]),
+        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[-0.35, 0.35]),
     )
     return fig
 
@@ -530,7 +530,7 @@ def _build_timeline_fig(traces: list):
         color = AGENT_COLORS.get(agent, "#94a3b8")
         for _, row in adf.iterrows():
             bar_color = "#ef4444" if row["is_err"] else color
-            dur = max(float(row["end_s"]) - float(row["start_s"]), 0.2)
+            dur = max(float(row["end_s"]) - float(row["start_s"]), 2.0)
             fig.add_trace(go.Bar(
                 x=[dur], y=[agent.upper()], base=[float(row["start_s"])],
                 orientation="h", marker_color=bar_color, marker_line_width=0,
@@ -546,7 +546,7 @@ def _build_timeline_fig(traces: list):
 
     fig.update_layout(
         paper_bgcolor="#0f172a", plot_bgcolor="#0f172a", font_color="#e2e8f0",
-        height=max(130, len(agents) * 48 + 30),
+        height=max(180, len(agents) * 72 + 40),
         margin=dict(t=10, b=30, l=10, r=10),
         barmode="overlay",
         xaxis=dict(title="Seconds from session start", gridcolor="#1e293b", tickfont=dict(size=10)),
