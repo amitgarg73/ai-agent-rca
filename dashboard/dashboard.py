@@ -37,6 +37,13 @@ st.markdown("""
 /* Base */
 [data-testid="stAppViewContainer"] { background: #0f172a; color: #e2e8f0; }
 [data-testid="stSidebar"] { background: #1e293b; }
+[data-testid="stSidebar"] * { color: #e2e8f0 !important; }
+[data-testid="stSidebar"] h1,
+[data-testid="stSidebar"] h2,
+[data-testid="stSidebar"] h3,
+[data-testid="stSidebar"] p,
+[data-testid="stSidebar"] label,
+[data-testid="stSidebar"] span { color: #e2e8f0 !important; }
 
 /* KPI cards */
 .kpi-card {
