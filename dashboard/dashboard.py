@@ -883,105 +883,162 @@ elif page == "RCA View":
         '<div style="background:#f0fdf4;border-left:4px solid #10b981;padding:12px 16px;'
         'border-radius:0 6px 6px 0;margin-bottom:16px;font-size:0.88rem;color:#064e3b">'
         '<b>How to read this:</b> &nbsp;'
-        'The <b>Call Stack</b> shows every step the agent took, in order — the ROOT CAUSE row is '
-        'where execution broke down. '
-        'The <b>Eval Scores</b> are automated quality checks run per agent: '
-        'a failing eval (✗) tells you <i>which agent stage was affected</i>, '
-        'while the ROOT CAUSE row tells you <i>which specific step caused it</i>. '
-        'Together they answer: what failed, where, and what downstream stages never got to run.'
+        'Each row is one agent step in execution order. The <b>ROOT CAUSE</b> row is where things broke. '
+        'After each agent\'s last step, its quality evals appear indented — '
+        '<span style="color:#10b981;font-weight:700">✓ green = passed</span>, '
+        '<span style="color:#ef4444;font-weight:700">✗ red = failed</span>. '
+        'A failing eval at an agent stage and a ROOT CAUSE step in that same agent tell the same story: '
+        'that\'s where the pipeline stopped working.'
         '</div>',
         unsafe_allow_html=True,
     )
 
-    # Two-column: call stack + evals
-    lcol, rcol = st.columns([3, 2])
+    # ── Integrated Call Stack with inline Eval Scores ─────────────────────────
+    st.markdown("#### Execution Trace")
+    st.caption(
+        "Chronological agent steps. After each agent's last step its quality checks appear "
+        "inline — green = passed, red = failed. Root cause step is highlighted."
+    )
 
-    with lcol:
-        st.markdown("#### Call Stack")
-        st.caption("Chronological execution trace. Highlighted step = where the failure originated.")
-        annotated = build_annotated_call_stack(sess_traces, inc_obj) if sess_traces else inc_obj.call_stack
+    annotated = build_annotated_call_stack(sess_traces, inc_obj) if sess_traces else inc_obj.call_stack
 
-        for frame in annotated:
-            is_root    = frame.get("is_root", False)
-            is_relevant= frame.get("is_relevant", False)
-            is_err     = frame.get("outcome") == "error" or bool(frame.get("error"))
+    import math as _math
 
-            if is_root:
-                css = "trace-root"
-            elif is_err:
-                css = "trace-error"
-            elif is_relevant:
-                css = "trace-success"
-            else:
-                css = "trace-row"
+    def _str(v):
+        return None if (v is None or (isinstance(v, float) and _math.isnan(v))) else str(v)
 
-            agent   = frame.get("agent","")
-            def _str(v):
-                import math
-                return None if (v is None or (isinstance(v, float) and math.isnan(v))) else str(v)
-            step    = _str(frame.get("tool_name")) or _str(frame.get("step_name")) or frame.get("step_type","")
-            lat     = int(frame.get("latency_ms") or frame.get("duration_ms") or 0)
-            tok     = int(frame.get("tokens") or 0)
-            outcome = frame.get("outcome","")
-            root_tag= " ← ROOT CAUSE" if is_root else ""
+    # Normalise evals into dicts grouped by agent
+    evals_by_agent: dict[str, list[dict]] = {}
+    if not evals_df.empty:
+        for _, ev in evals_df.iterrows():
+            a = str(ev.get("agent", "")).lower()
+            evals_by_agent.setdefault(a, []).append({
+                "agent":     ev.get("agent", ""),
+                "eval_name": ev.get("eval_name", ""),
+                "score":     float(ev.get("score") or 0),
+                "passed":    bool(ev.get("passed")),
+            })
+    elif inc_obj.failed_evals:
+        for fe in inc_obj.failed_evals:
+            a = str(fe.get("agent", "")).lower()
+            evals_by_agent.setdefault(a, []).append({
+                "agent":     fe.get("agent", ""),
+                "eval_name": fe.get("eval_name", ""),
+                "score":     float(fe.get("score") or 0),
+                "passed":    False,
+            })
 
+    def _render_agent_evals(agent_name: str) -> None:
+        key = agent_name.lower()
+        evs = evals_by_agent.get(key, [])
+        if not evs:
+            return
+        st.markdown(
+            f'<div style="margin:2px 0 2px 20px;font-size:0.76rem;color:#6b7280;'
+            f'font-style:italic">▸ {agent_name} evals</div>',
+            unsafe_allow_html=True,
+        )
+        for ev in evs:
+            passed = ev["passed"]
+            score  = ev["score"]
+            color  = "#10b981" if passed else "#ef4444"
+            bg     = "#f0fdf4" if passed else "#fff5f5"
+            border = "#bbf7d0" if passed else "#fecaca"
+            icon   = "✓" if passed else "✗"
             st.markdown(
-                f'<div class="trace-row {css}">'
-                f'<b style="color:{AGENT_COLORS.get(agent,"#94a3b8")}">{agent}</b> &nbsp;'
-                f'<b>{step}</b> &nbsp;'
-                f'<code>{lat}ms</code> &nbsp;'
-                f'{"<code>" + str(tok) + " tok</code>" if tok else ""} &nbsp;'
-                f'<span style="color:{"#ef4444" if is_err else "#10b981"}">{outcome}</span>'
-                f'<span style="color:#f59e0b;font-weight:700">{root_tag}</span>'
+                f'<div style="margin:2px 0 2px 28px;padding:4px 10px;background:{bg};'
+                f'border-radius:4px;border:1px solid {border};border-left:3px solid {color};'
+                f'font-size:0.82rem">'
+                f'<span style="color:{color};font-weight:700">{icon}</span> &nbsp;'
+                f'<b style="color:#374151">{ev["agent"]}</b>'
+                f'<span style="color:#64748b">.{ev["eval_name"]}</span>'
+                f'<span style="float:right;color:{color};font-weight:600">{score:.2f}</span>'
+                f'{score_bar(score, passed)}'
                 f'</div>',
                 unsafe_allow_html=True,
             )
 
-            if frame.get("error"):
-                with st.expander(f"Error: {step}", expanded=is_root):
-                    st.error(frame["error"])
+    rendered_agents: set[str] = set()
+    prev_agent: str | None = None
 
-    with rcol:
-        st.markdown("#### Eval Scores")
-        st.caption(
-            "One score per agent check. ✓ = passed threshold. ✗ = failed. "
-            "A failing eval names the affected agent — match it to the call stack to see the exact step."
+    for frame in annotated:
+        is_root     = frame.get("is_root", False)
+        is_relevant = frame.get("is_relevant", False)
+        is_err      = frame.get("outcome") == "error" or bool(frame.get("error"))
+
+        if is_root:
+            css = "trace-root"
+        elif is_err:
+            css = "trace-error"
+        elif is_relevant:
+            css = "trace-success"
+        else:
+            css = "trace-row"
+
+        agent   = frame.get("agent", "")
+        step    = _str(frame.get("tool_name")) or _str(frame.get("step_name")) or frame.get("step_type", "")
+        lat     = int(frame.get("latency_ms") or frame.get("duration_ms") or 0)
+        tok     = int(frame.get("tokens") or 0)
+        outcome = frame.get("outcome", "")
+        root_tag = " ← ROOT CAUSE" if is_root else ""
+
+        # When agent changes, flush the previous agent's evals inline
+        if prev_agent and agent != prev_agent and prev_agent not in rendered_agents:
+            _render_agent_evals(prev_agent)
+            rendered_agents.add(prev_agent)
+
+        st.markdown(
+            f'<div class="trace-row {css}">'
+            f'<b style="color:{AGENT_COLORS.get(agent,"#94a3b8")}">{agent}</b> &nbsp;'
+            f'<b>{step}</b> &nbsp;'
+            f'<code>{lat}ms</code> &nbsp;'
+            f'{"<code>" + str(tok) + " tok</code>" if tok else ""} &nbsp;'
+            f'<span style="color:{"#ef4444" if is_err else "#10b981"}">{outcome}</span>'
+            f'<span style="color:#f59e0b;font-weight:700">{root_tag}</span>'
+            f'</div>',
+            unsafe_allow_html=True,
         )
 
-        if not evals_df.empty:
-            for _, ev in evals_df.iterrows():
-                passed = bool(ev.get("passed"))
-                score  = float(ev.get("score") or 0)
-                color  = "#10b981" if passed else "#ef4444"
-                bg     = "#f0fdf4" if passed else "#fff5f5"
-                icon   = "✓" if passed else "✗"
-                st.markdown(
-                    f'<div style="margin:6px 0;padding:6px 10px;background:{bg};'
-                    f'border-radius:4px;border:1px solid {"#bbf7d0" if passed else "#fecaca"}">'
-                    f'<span style="color:{color};font-weight:700">{icon}</span> &nbsp;'
-                    f'<b style="color:#0f172a">{ev["agent"]}</b>'
-                    f'<span style="color:#64748b">.{ev["eval_name"]}</span>'
-                    f'<span style="float:right;color:{color};font-weight:600">{score:.2f}</span>'
-                    f'{score_bar(score, passed)}'
-                    f'</div>',
-                    unsafe_allow_html=True,
-                )
-        elif inc_obj.failed_evals:
-            for fe in inc_obj.failed_evals:
-                score = float(fe.get("score",0))
-                st.markdown(
-                    f'<div style="margin:6px 0;padding:6px 10px;background:#fff5f5;'
-                    f'border-radius:4px;border:1px solid #fecaca">'
-                    f'<span style="color:#ef4444;font-weight:700">✗</span> &nbsp;'
-                    f'<b style="color:#0f172a">{fe["agent"]}</b>'
-                    f'<span style="color:#64748b">.{fe["eval_name"]}</span>'
-                    f'<span style="float:right;color:#ef4444;font-weight:600">{score:.2f}</span>'
-                    f'{score_bar(score, False)}'
-                    f'</div>',
-                    unsafe_allow_html=True,
-                )
-        else:
-            st.info("Run Analysis from Incidents Feed to populate eval scores.")
+        if frame.get("error"):
+            with st.expander(f"Error: {step}", expanded=is_root):
+                st.error(frame["error"])
+
+        prev_agent = agent
+
+    # Flush evals for the final agent group
+    if prev_agent and prev_agent not in rendered_agents:
+        _render_agent_evals(prev_agent)
+        rendered_agents.add(prev_agent)
+
+    # Session-level holistic evals below the full stack
+    session_evs = evals_by_agent.get("session", [])
+    if session_evs:
+        st.markdown(
+            '<div style="margin:10px 0 2px 0;font-size:0.78rem;color:#6b7280;'
+            'font-style:italic">▸ session-level evals (holistic)</div>',
+            unsafe_allow_html=True,
+        )
+        for ev in session_evs:
+            passed = ev["passed"]
+            score  = ev["score"]
+            color  = "#10b981" if passed else "#ef4444"
+            bg     = "#f0fdf4" if passed else "#fff5f5"
+            border = "#bbf7d0" if passed else "#fecaca"
+            icon   = "✓" if passed else "✗"
+            st.markdown(
+                f'<div style="margin:2px 0;padding:4px 10px;background:{bg};'
+                f'border-radius:4px;border:1px solid {border};border-left:3px solid {color};'
+                f'font-size:0.82rem">'
+                f'<span style="color:{color};font-weight:700">{icon}</span> &nbsp;'
+                f'<b style="color:#374151">session</b>'
+                f'<span style="color:#64748b">.{ev["eval_name"]}</span>'
+                f'<span style="float:right;color:{color};font-weight:600">{score:.2f}</span>'
+                f'{score_bar(score, passed)}'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+    elif not evals_by_agent:
+        st.info("Run Analysis from the Incidents Feed to populate eval scores.")
 
     # Eval explainer
     if not evals_df.empty:
