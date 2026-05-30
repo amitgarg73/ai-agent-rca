@@ -61,17 +61,28 @@ st.markdown("""
     }
 }
 
-/* Mobile: let sidebar overlay and toggle freely */
+/* Mobile: show expand button as a fixed hamburger in top-left */
 @media (max-width: 767px) {
+    /* Button that reopens sidebar when it's collapsed */
+    [data-testid="stSidebarCollapsedControl"] {
+        display: flex !important;
+        visibility: visible !important;
+        opacity: 1 !important;
+        position: fixed !important;
+        top: 8px !important;
+        left: 8px !important;
+        z-index: 9999 !important;
+        background: #fff !important;
+        border-radius: 6px !important;
+        box-shadow: 0 1px 4px rgba(0,0,0,0.15) !important;
+        padding: 4px !important;
+    }
+    /* Close button inside the open sidebar */
     [data-testid="stSidebarCollapseButton"],
-    button[aria-label="Close sidebar"],
-    button[aria-label="Open sidebar"] {
+    button[aria-label="Close sidebar"] {
         display: flex !important;
         opacity: 1 !important;
         visibility: visible !important;
-    }
-    [data-testid="stSidebarCollapsedControl"] {
-        display: flex !important;
     }
 }
 
