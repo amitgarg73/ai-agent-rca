@@ -1523,26 +1523,29 @@ Read the fix, then scroll down to the Agent Breakdown to verify your understandi
 """,
     )
 
-    dur_str  = f"{summary['duration_s']}s" if summary.get("duration_s") else "unknown duration"
-    cost_str = f"${summary['cost_wasted']:.4f}" if summary["cost_wasted"] else "no cost recorded"
-    tok_str  = f"{summary['tokens_wasted']:,} tokens" if summary["tokens_wasted"] else ""
+    dur_str  = f"{summary['duration_s']}s" if summary.get("duration_s") else "unknown"
+    cost_str = f"${summary['cost_wasted']:.4f}" if summary["cost_wasted"] else "$0"
+    tok_str  = f"{summary['tokens_wasted']:,}" if summary["tokens_wasted"] else "0"
     trades   = int(sess_row.get("trades_executed", 0))
-    what_happened = (
-        f"<b>{inc_obj.pattern_name}:</b> {inc_obj.root_cause}. "
-        f"Session ran {dur_str}, spent {cost_str}"
-        f"{' (' + tok_str + ')' if tok_str else ''}, produced {trades} trade(s)."
-    )
 
     _s1l, _s1r = st.columns([3, 2])
     with _s1l:
+        _stat_style = "font-size:0.8rem;color:#6b7280;margin-top:3px"
+        _val_style  = "font-weight:600;color:#111827"
         st.markdown(
             f'<div style="border-left:4px solid {sev_color};padding:14px 18px;'
             f'background:{sev_bg};border-radius:0 8px 8px 0">'
             f'{badge(inc_obj.severity, inc_obj.is_simulated)} '
             f'<span style="font-size:1.05rem;font-weight:700;color:{sev_text};margin-left:8px">'
-            f'{inc_obj.pattern_name}</span><br>'
-            f'<span style="color:#374151;font-size:0.88rem;margin-top:8px;display:block">'
-            f'{what_happened}</span>'
+            f'{inc_obj.pattern_name}</span>'
+            f'<p style="color:#374151;font-size:0.88rem;margin:10px 0 10px 0;line-height:1.5">'
+            f'{inc_obj.root_cause}</p>'
+            f'<div style="display:flex;gap:20px;flex-wrap:wrap;margin-top:4px">'
+            f'<span style="{_stat_style}">Duration <span style="{_val_style}">{dur_str}</span></span>'
+            f'<span style="{_stat_style}">Cost <span style="{_val_style}">{cost_str}</span></span>'
+            f'<span style="{_stat_style}">Tokens <span style="{_val_style}">{tok_str}</span></span>'
+            f'<span style="{_stat_style}">Trades <span style="{_val_style}">{trades}</span></span>'
+            f'</div>'
             f'</div>',
             unsafe_allow_html=True,
         )
