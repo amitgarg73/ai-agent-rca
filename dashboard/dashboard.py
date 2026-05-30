@@ -167,7 +167,7 @@ def goto_rca(incident_dict: dict, session_id: str) -> None:
     """Navigate to RCA View with the given incident pre-selected."""
     st.session_state["rca_incident"] = incident_dict
     st.session_state["rca_sid"]      = session_id
-    st.session_state["nav"]          = "RCA View"
+    st.session_state["_page"]        = "RCA View"
     st.rerun()
 
 
@@ -224,21 +224,18 @@ with st.sidebar:
     st.markdown("<small style='color:#64748b'>Strategy C · Live</small>", unsafe_allow_html=True)
     st.divider()
 
+    _NAV_PAGES = [
+        "Ledger", "Session Deep Dive", "Quality Drift", "Before / After",
+        "──────────", "Incidents Feed", "RCA View", "Failure Simulator", "Trace Inspector",
+    ]
+    _default = st.session_state.pop("_page", None)
+    _idx = _NAV_PAGES.index(_default) if _default in _NAV_PAGES else 0
+
     page = st.radio(
         "Navigation",
-        [
-            "Ledger",
-            "Session Deep Dive",
-            "Quality Drift",
-            "Before / After",
-            "──────────",
-            "Incidents Feed",
-            "RCA View",
-            "Failure Simulator",
-            "Trace Inspector",
-        ],
+        _NAV_PAGES,
+        index=_idx,
         label_visibility="collapsed",
-        key="nav",
     )
 
     st.divider()
