@@ -16,11 +16,18 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 REQUIRED_AGENTS = ["market", "research", "risk", "orchestrator"]
-TOKEN_SPIRAL_THRESHOLD    = 40_000
+TOKEN_SPIRAL_THRESHOLD     = 40_000
 TOKEN_EFFICIENCY_THRESHOLD = 30_000
-TOOL_SUCCESS_MIN_RATE     = 0.80
-COST_ANOMALY_SIGMA        = 2.0
-DATA_FRESHNESS_MINUTES    = 30
+TOOL_SUCCESS_MIN_RATE      = 0.80
+COST_ANOMALY_SIGMA         = 2.0
+DATA_FRESHNESS_MINUTES     = 10   # intraday: data must be fresh within 10 min
+TOOL_DIVERSITY_MIN         = 2    # research must call at least 2 distinct tools
+
+# Terminal reason quality buckets
+_GOOD_EXITS    = {"eod_complete", "converged", "no_opportunity", "risk_rejected",
+                  "market_closed", "position_limit", "daily_limit"}
+_PARTIAL_EXITS = {"structural_block"}
+_BAD_EXITS     = {"in_progress", "error"}
 
 
 @dataclass
@@ -145,6 +152,35 @@ def eval_research_tool_success_rate(traces: list[dict], session: dict) -> EvalRe
                        "failed": len(tools) - success, "rate": round(rate, 2)})
 
 
+def eval_research_tool_diversity(traces: list[dict], session: dict) -> EvalResult:
+    """
+    Score based on distinct tool names the research agent called.
+    Looping on a single tool (e.g. get_stock_data x8) is a signal of stuck behaviour.
+    3+ distinct tools = 1.0, 2 = 0.7, 1 = 0.3, 0 = 0.0.
+    Threshold: 2 distinct tools required to pass.
+    """
+    tools = [
+        t for t in traces
+        if (t.get("agent") or "").lower() == "research"
+        and (t.get("step_type") or "") == "tool_call"
+    ]
+    distinct = len({(t.get("tool_name") or "").strip() for t in tools
+                    if (t.get("tool_name") or "").strip()})
+    if distinct >= 3:
+        score = 1.0
+    elif distinct == 2:
+        score = 0.7
+    elif distinct == 1:
+        score = 0.3
+    else:
+        score = 0.0
+    return EvalResult("tool_diversity", "research", score, distinct >= TOOL_DIVERSITY_MIN,
+                      TOOL_DIVERSITY_MIN,
+                      {"distinct_tools": distinct, "threshold": TOOL_DIVERSITY_MIN,
+                       "tool_names": list({(t.get("tool_name") or "").strip() for t in tools
+                                           if (t.get("tool_name") or "").strip()})})
+
+
 # ── Risk agent evals ──────────────────────────────────────────────────────────
 
 def eval_risk_assessment_complete(traces: list[dict], session: dict) -> EvalResult:
@@ -174,52 +210,63 @@ def eval_risk_within_parameters(traces: list[dict], session: dict) -> EvalResult
 
 def eval_orchestrator_decision_made(traces: list[dict], session: dict) -> EvalResult:
     """
-    Score 1.0 if session has trades_executed > 0 OR terminal_reason logged.
-    Either means the orchestrator made an explicit decision.
+    Score 1.0 if trades executed or named good exit.
+    Score 0.5 if structural_block (partial — pipeline was blocked, not a logic failure).
+    Score 0.2 if bad exit (in_progress / error).
+    Score 0.2 if orchestrator ran but no reason or trades recorded.
+    Score 0.0 if orchestrator never ran.
     """
     trades = int(session.get("trades_executed") or 0)
-    reason = session.get("terminal_reason") or ""
+    reason = (session.get("terminal_reason") or "").lower()
     orch   = [t for t in traces if (t.get("agent") or "").lower() == "orchestrator"]
 
     if trades > 0:
         return EvalResult("decision_made", "orchestrator", 1.0, True, 0.7,
                           {"trades_executed": trades})
-    if reason:
-        return EvalResult("decision_made", "orchestrator", 0.8, True, 0.7,
+    if reason in _GOOD_EXITS:
+        return EvalResult("decision_made", "orchestrator", 1.0, True, 0.7,
                           {"terminal_reason": reason})
+    if reason in _PARTIAL_EXITS:
+        return EvalResult("decision_made", "orchestrator", 0.5, False, 0.7,
+                          {"terminal_reason": reason, "reason": "pipeline structurally blocked"})
+    if reason in _BAD_EXITS:
+        return EvalResult("decision_made", "orchestrator", 0.2, False, 0.7,
+                          {"terminal_reason": reason, "reason": "bad exit — session did not complete cleanly"})
     if orch:
-        score = 0.4
-        return EvalResult("decision_made", "orchestrator", score, False, 0.7,
+        return EvalResult("decision_made", "orchestrator", 0.2, False, 0.7,
                           {"reason": "orchestrator ran but no decision or reason recorded",
                            "orch_traces": len(orch)})
     return EvalResult("decision_made", "orchestrator", 0.0, False, 0.7,
                       {"reason": "orchestrator never ran"})
 
 
-def eval_orchestrator_consistency(traces: list[dict], session: dict) -> EvalResult:
+def eval_orchestrator_exit_quality(traces: list[dict], session: dict) -> EvalResult:
     """
-    Score 1.0 if orchestrator ran after research — proxy for consistent pipeline.
-    If research succeeded but orchestrator has errors, flag inconsistency.
+    Score the quality of the session's terminal reason.
+    1.0 — good named exit (converged, eod_complete, no_opportunity, etc.)
+    0.5 — structural_block (partial: pipeline was blocked, not orchestrator fault)
+    0.2 — bad exit (in_progress, error — session did not complete cleanly)
+    0.0 — no terminal reason AND no trades (silent exit)
     """
-    research_ok = any(
-        (t.get("agent") or "").lower() == "research"
-        and (t.get("outcome") or "") == "success"
-        for t in traces
-    )
-    orch_errors = [
-        t for t in traces
-        if (t.get("agent") or "").lower() == "orchestrator"
-        and t.get("error")
-    ]
-    if not research_ok:
-        return EvalResult("consistency", "orchestrator", 1.0, True, 0.8,
-                          {"reason": "research did not succeed — orchestrator consistency N/A"})
-    if orch_errors:
-        return EvalResult("consistency", "orchestrator", 0.2, False, 0.8,
-                          {"reason": "orchestrator errors after research succeeded",
-                           "errors": [t.get("error") for t in orch_errors[:2]]})
-    return EvalResult("consistency", "orchestrator", 1.0, True, 0.8,
-                      {"reason": "orchestrator ran cleanly after research"})
+    reason = (session.get("terminal_reason") or "").lower()
+    trades = int(session.get("trades_executed") or 0)
+
+    if reason in _GOOD_EXITS:
+        return EvalResult("exit_quality", "orchestrator", 1.0, True, 0.7,
+                          {"terminal_reason": reason})
+    if reason in _PARTIAL_EXITS:
+        return EvalResult("exit_quality", "orchestrator", 0.5, False, 0.7,
+                          {"terminal_reason": reason, "reason": "structural block prevented clean exit"})
+    if reason in _BAD_EXITS:
+        return EvalResult("exit_quality", "orchestrator", 0.2, False, 0.7,
+                          {"terminal_reason": reason, "reason": "bad exit state"})
+    if trades > 0:
+        # trades produced but no terminal reason — acceptable
+        return EvalResult("exit_quality", "orchestrator", 0.8, True, 0.7,
+                          {"reason": "trades produced but no terminal_reason logged",
+                           "trades_executed": trades})
+    return EvalResult("exit_quality", "orchestrator", 0.0, False, 0.7,
+                      {"reason": "no terminal_reason and 0 trades — silent exit"})
 
 
 # ── Holistic session evals ────────────────────────────────────────────────────
@@ -257,26 +304,46 @@ def eval_session_cost_anomaly(traces: list[dict], session: dict,
 
 
 def eval_session_outcome_linkage(traces: list[dict], session: dict) -> EvalResult:
-    """Score 1.0 if session has trades OR an explicit terminal reason."""
+    """
+    Score whether the session produced a traceable outcome.
+    1.0 — trades executed or named good exit (converged, eod_complete, etc.)
+    0.5 — structural_block (pipeline halted, but reason is known)
+    0.2 — bad exit state (in_progress or error)
+    0.0 — no trades and no terminal reason (silent exit)
+    """
     trades = int(session.get("trades_executed") or 0)
-    reason = session.get("terminal_reason") or ""
+    reason = (session.get("terminal_reason") or "").lower()
+
     if trades > 0:
         return EvalResult("outcome_linkage", "session", 1.0, True, 0.7,
                           {"trades_executed": trades})
-    if reason:
-        return EvalResult("outcome_linkage", "session", 0.8, True, 0.7,
+    if reason in _GOOD_EXITS:
+        return EvalResult("outcome_linkage", "session", 1.0, True, 0.7,
                           {"terminal_reason": reason, "trades_executed": 0})
+    if reason in _PARTIAL_EXITS:
+        return EvalResult("outcome_linkage", "session", 0.5, False, 0.7,
+                          {"terminal_reason": reason, "reason": "pipeline structurally blocked"})
+    if reason in _BAD_EXITS:
+        return EvalResult("outcome_linkage", "session", 0.2, False, 0.7,
+                          {"terminal_reason": reason, "reason": "bad exit state"})
     return EvalResult("outcome_linkage", "session", 0.0, False, 0.7,
                       {"reason": "0 trades and no terminal_reason — silent exit"})
 
 
 def eval_session_tokens_per_decision(traces: list[dict], session: dict) -> EvalResult:
-    """Score 1.0 if total tokens < 50K. Penalizes context spirals."""
-    tokens  = int((session.get("total_tokens_input") or 0) +
-                  (session.get("total_tokens_output") or 0))
-    trades  = max(1, int(session.get("trades_executed") or 0))
-    tok_per = tokens / trades
-    score   = max(0.0, 1.0 - tok_per / (TOKEN_SPIRAL_THRESHOLD * 2))
+    """
+    Score 1.0 if total tokens < 40K threshold.
+    0-trade sessions are scored on raw token spend — no denominator masking.
+    Sessions with trades normalise by trade count.
+    """
+    tokens = int((session.get("total_tokens_input") or 0) +
+                 (session.get("total_tokens_output") or 0))
+    trades = int(session.get("trades_executed") or 0)
+    if trades == 0:
+        tok_per = tokens
+    else:
+        tok_per = tokens / trades
+    score = max(0.0, 1.0 - tok_per / (TOKEN_SPIRAL_THRESHOLD * 2))
     return EvalResult("tokens_per_decision", "session", round(score, 2),
                       tok_per < TOKEN_SPIRAL_THRESHOLD, 0.5,
                       {"total_tokens": tokens, "trades": trades,
@@ -292,10 +359,11 @@ PER_AGENT_EVALS = [
     eval_research_completion,
     eval_research_token_efficiency,
     eval_research_tool_success_rate,
+    eval_research_tool_diversity,
     eval_risk_assessment_complete,
     eval_risk_within_parameters,
     eval_orchestrator_decision_made,
-    eval_orchestrator_consistency,
+    eval_orchestrator_exit_quality,
 ]
 
 SESSION_EVALS = [

@@ -1,5 +1,5 @@
 """
-Comprehensive tests for all 13 evals in eval_engine.py.
+Comprehensive tests for all 14 evals in eval_engine.py.
 Each eval has: pass case, fail case, edge case (empty/missing data).
 Run: python3 -m pytest tests/test_evals.py -v
 """
@@ -13,10 +13,11 @@ from engine.eval_engine import (
     eval_research_completion,
     eval_research_token_efficiency,
     eval_research_tool_success_rate,
+    eval_research_tool_diversity,
     eval_risk_assessment_complete,
     eval_risk_within_parameters,
     eval_orchestrator_decision_made,
-    eval_orchestrator_consistency,
+    eval_orchestrator_exit_quality,
     eval_session_pipeline_completion,
     eval_session_cost_anomaly,
     eval_session_outcome_linkage,
@@ -100,14 +101,14 @@ class TestMarketDataFreshness:
         sess   = make_session(started_at="2026-05-28T06:00:00Z")
         r = eval_market_data_freshness(traces, sess)
         assert r.passed
-        assert r.detail["lag_minutes"] < 30
+        assert r.detail["lag_minutes"] < 10
 
     def test_fail_stale_data(self):
         traces = [make_trace(agent="market", created_at="2026-05-28T08:00:00Z")]
         sess   = make_session(started_at="2026-05-28T06:00:00Z")
         r = eval_market_data_freshness(traces, sess)
         assert not r.passed
-        assert r.detail["lag_minutes"] > 30
+        assert r.detail["lag_minutes"] > 10
 
     def test_edge_no_traces(self):
         r = eval_market_data_freshness([], make_session())
@@ -205,14 +206,7 @@ class TestResearchToolSuccessRate:
         assert r.score == 1.0
 
     def test_fail_all_errors(self):
-        traces = [make_trace(agent="research", step_type="tool_call", outcome="error"),
-                  make_trace(agent="research", step_type="tool_call", outcome="error"),
-                  make_trace(agent="research", step_type="tool_call", outcome="error"),
-                  make_trace(agent="research", step_type="tool_call", outcome="error"),
-                  make_trace(agent="research", step_type="tool_call", outcome="error"),
-                  make_trace(agent="research", step_type="tool_call", outcome="error"),
-                  make_trace(agent="research", step_type="tool_call", outcome="error"),
-                  make_trace(agent="research", step_type="tool_call", outcome="error")]
+        traces = [make_trace(agent="research", step_type="tool_call", outcome="error")] * 8
         r = eval_research_tool_success_rate(traces, make_session())
         assert not r.passed
         assert r.score == 0.0
@@ -234,6 +228,59 @@ class TestResearchToolSuccessRate:
         r = eval_research_tool_success_rate(traces, make_session())
         assert not r.passed
         assert r.score == pytest.approx(0.25)
+
+
+# ── Research: tool_diversity ──────────────────────────────────────────────────
+
+class TestResearchToolDiversity:
+    def test_pass_three_distinct_tools(self):
+        traces = [
+            make_trace(agent="research", step_type="tool_call", tool_name="get_stock_data"),
+            make_trace(agent="research", step_type="tool_call", tool_name="get_news"),
+            make_trace(agent="research", step_type="tool_call", tool_name="get_financials"),
+        ]
+        r = eval_research_tool_diversity(traces, make_session())
+        assert r.passed
+        assert r.score == 1.0
+
+    def test_pass_two_distinct_tools(self):
+        traces = [
+            make_trace(agent="research", step_type="tool_call", tool_name="get_stock_data"),
+            make_trace(agent="research", step_type="tool_call", tool_name="get_news"),
+            make_trace(agent="research", step_type="tool_call", tool_name="get_stock_data"),
+        ]
+        r = eval_research_tool_diversity(traces, make_session())
+        assert r.passed
+        assert r.score == 0.7
+
+    def test_fail_single_tool_loop(self):
+        traces = [
+            make_trace(agent="research", step_type="tool_call", tool_name="get_stock_data")
+        ] * 8
+        r = eval_research_tool_diversity(traces, make_session())
+        assert not r.passed
+        assert r.score == 0.3
+        assert r.detail["distinct_tools"] == 1
+
+    def test_fail_no_tool_calls(self):
+        traces = [make_trace(agent="research", step_type="llm_call", outcome="success")]
+        r = eval_research_tool_diversity(traces, make_session())
+        assert not r.passed
+        assert r.score == 0.0
+
+    def test_edge_empty_traces(self):
+        r = eval_research_tool_diversity([], make_session())
+        assert not r.passed
+        assert r.score == 0.0
+
+    def test_detail_lists_tool_names(self):
+        traces = [
+            make_trace(agent="research", step_type="tool_call", tool_name="get_stock_data"),
+            make_trace(agent="research", step_type="tool_call", tool_name="get_news"),
+        ]
+        r = eval_research_tool_diversity(traces, make_session())
+        assert "tool_names" in r.detail
+        assert set(r.detail["tool_names"]) == {"get_stock_data", "get_news"}
 
 
 # ── Risk agent evals ──────────────────────────────────────────────────────────
@@ -268,48 +315,77 @@ class TestRiskEvals:
 
 # ── Orchestrator evals ────────────────────────────────────────────────────────
 
-class TestOrchestratorEvals:
-    def test_decision_made_with_trades(self):
+class TestOrchestratorDecisionMade:
+    def test_pass_trades(self):
         r = eval_orchestrator_decision_made([], make_session(trades=2))
         assert r.passed
         assert r.score == 1.0
 
-    def test_decision_made_with_reason(self):
+    def test_pass_good_named_exit(self):
         r = eval_orchestrator_decision_made([], make_session(trades=0, reason="no_opportunity"))
         assert r.passed
-        assert r.score == 0.8
+        assert r.score == 1.0
 
-    def test_decision_made_fail_silent(self):
-        r = eval_orchestrator_decision_made([], make_session(trades=0, reason=None))
+    def test_fail_structural_block(self):
+        r = eval_orchestrator_decision_made([], make_session(trades=0, reason="structural_block"))
         assert not r.passed
+        assert r.score == 0.5
 
-    def test_decision_made_orch_ran_no_output(self):
+    def test_fail_bad_exit(self):
+        r = eval_orchestrator_decision_made([], make_session(trades=0, reason="in_progress"))
+        assert not r.passed
+        assert r.score == 0.2
+
+    def test_fail_orch_ran_no_output(self):
         traces = [make_trace(agent="orchestrator", step_type="llm_call", outcome="success")]
         r = eval_orchestrator_decision_made(traces, make_session(trades=0, reason=None))
         assert not r.passed
-        assert r.score == 0.4
+        assert r.score == 0.2
 
-    def test_consistency_pass(self):
-        traces = [
-            make_trace(agent="research",     step_type="llm_call", outcome="success"),
-            make_trace(agent="orchestrator", step_type="llm_call", outcome="success"),
-        ]
-        r = eval_orchestrator_consistency(traces, make_session())
-        assert r.passed
-
-    def test_consistency_fail_orch_errors_after_research(self):
-        traces = [
-            make_trace(agent="research",     step_type="llm_call", outcome="success"),
-            make_trace(agent="orchestrator", step_type="llm_call", outcome="error",
-                       error="UnexpectedError: null recommendation"),
-        ]
-        r = eval_orchestrator_consistency(traces, make_session())
+    def test_fail_silent(self):
+        r = eval_orchestrator_decision_made([], make_session(trades=0, reason=None))
         assert not r.passed
+        assert r.score == 0.0
 
-    def test_consistency_na_when_research_fails(self):
-        traces = [make_trace(agent="research", outcome="error")]
-        r = eval_orchestrator_consistency(traces, make_session())
-        assert r.passed  # n/a — consistency doesn't apply
+
+class TestOrchestratorExitQuality:
+    def test_pass_good_named_exit(self):
+        r = eval_orchestrator_exit_quality([], make_session(trades=0, reason="converged"))
+        assert r.passed
+        assert r.score == 1.0
+
+    def test_pass_all_good_exit_reasons(self):
+        good = ["eod_complete", "converged", "no_opportunity", "risk_rejected",
+                "market_closed", "position_limit", "daily_limit"]
+        for reason in good:
+            r = eval_orchestrator_exit_quality([], make_session(trades=0, reason=reason))
+            assert r.passed, f"Expected pass for reason={reason}"
+
+    def test_partial_structural_block(self):
+        r = eval_orchestrator_exit_quality([], make_session(trades=0, reason="structural_block"))
+        assert not r.passed
+        assert r.score == 0.5
+
+    def test_fail_bad_exit_in_progress(self):
+        r = eval_orchestrator_exit_quality([], make_session(trades=0, reason="in_progress"))
+        assert not r.passed
+        assert r.score == 0.2
+
+    def test_fail_bad_exit_error(self):
+        r = eval_orchestrator_exit_quality([], make_session(trades=0, reason="error"))
+        assert not r.passed
+        assert r.score == 0.2
+
+    def test_pass_trades_no_reason(self):
+        # Trades produced but no terminal_reason — partial pass (0.8)
+        r = eval_orchestrator_exit_quality([], make_session(trades=3, reason=None))
+        assert r.passed
+        assert r.score == 0.8
+
+    def test_fail_silent_exit(self):
+        r = eval_orchestrator_exit_quality([], make_session(trades=0, reason=None))
+        assert not r.passed
+        assert r.score == 0.0
 
 
 # ── Holistic session evals ────────────────────────────────────────────────────
@@ -357,10 +433,20 @@ class TestSessionEvals:
         assert r.passed
         assert r.score == 1.0
 
-    def test_outcome_linkage_with_reason(self):
+    def test_outcome_linkage_good_named_exit(self):
         r = eval_session_outcome_linkage([], make_session(trades=0, reason="market_closed"))
         assert r.passed
-        assert r.score == 0.8
+        assert r.score == 1.0
+
+    def test_outcome_linkage_structural_block(self):
+        r = eval_session_outcome_linkage([], make_session(trades=0, reason="structural_block"))
+        assert not r.passed
+        assert r.score == 0.5
+
+    def test_outcome_linkage_bad_exit(self):
+        r = eval_session_outcome_linkage([], make_session(trades=0, reason="in_progress"))
+        assert not r.passed
+        assert r.score == 0.2
 
     def test_outcome_linkage_fail_silent(self):
         r = eval_session_outcome_linkage([], make_session(trades=0, reason=None))
@@ -375,19 +461,22 @@ class TestSessionEvals:
         r = eval_session_tokens_per_decision([], make_session(trades=0, tokens_in=40000, tokens_out=5000))
         assert not r.passed
 
-    def test_tokens_per_decision_zero_trades_uses_1(self):
-        # Should not divide by zero
-        r = eval_session_tokens_per_decision([], make_session(trades=0, tokens_in=1000, tokens_out=500))
-        assert r.score is not None
+    def test_tokens_per_decision_zero_trades_uses_raw_tokens(self):
+        # 0 trades: raw token spend used, not divided by 1
+        r_zero  = eval_session_tokens_per_decision([], make_session(trades=0, tokens_in=1000, tokens_out=500))
+        r_one   = eval_session_tokens_per_decision([], make_session(trades=1, tokens_in=1000, tokens_out=500))
+        # Both should score the same (1500 tokens / 1 trade = 1500 tokens raw)
+        assert r_zero.score == r_one.score
+        assert r_zero.detail["tokens_per_decision"] == r_one.detail["tokens_per_decision"]
 
 
 # ── run_all_evals ─────────────────────────────────────────────────────────────
 
 class TestRunAllEvals:
-    def test_returns_13_results(self):
+    def test_returns_14_results(self):
         traces = [make_trace(agent=a) for a in REQUIRED_AGENTS]
         results = run_all_evals(make_session(), traces, [0.10]*10)
-        assert len(results) == 13
+        assert len(results) == 14
 
     def test_all_results_have_required_fields(self):
         results = run_all_evals(make_session(), [], [0.10]*10)
@@ -422,5 +511,6 @@ class TestRunAllEvals:
 
         assert not by_name["tool_success_rate"].passed
         assert by_name["tool_success_rate"].score == 0.0
+        assert not by_name["tool_diversity"].passed   # single tool looped
         assert not by_name["outcome_linkage"].passed
         assert not by_name["pipeline_completion"].passed
