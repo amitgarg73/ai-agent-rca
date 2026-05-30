@@ -253,6 +253,361 @@ def run_analysis_for_session(session_row: dict, traces: list[dict],
     return evals, incidents
 
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# HELPERS: RCA View utilities (injected before Sidebar block)
+# ─────────────────────────────────────────────────────────────────────────────
+
+import math as _math
+import json as _json
+
+
+def _str(v):
+    """Return None for null/NaN, string otherwise."""
+    return None if (v is None or (isinstance(v, float) and _math.isnan(v))) else str(v)
+
+
+def _section_header(title: str, help_md: str) -> None:
+    """Section title with inline ? help popover."""
+    c_t, c_h = st.columns([28, 1])
+    with c_t:
+        st.markdown(f"#### {title}")
+    with c_h:
+        with st.popover("?"):
+            st.markdown(help_md)
+
+
+def _eval_reason(eval_name: str, detail: dict, score: float, passed: bool) -> str:
+    """One-line explanation of how the eval score was calculated."""
+    d = detail if isinstance(detail, dict) else {}
+
+    if eval_name == "completion":
+        if d.get("llm_ok") and d.get("tool_calls_ok"):
+            return "Scored 1.0 — LLM ran and at least one tool call succeeded"
+        if d.get("llm_ok") is not None:
+            n = d.get("tool_calls", "")
+            suffix = f" ({n} tool calls all failed)" if n else " (all tool calls failed)"
+            return f"Scored 0.3 — LLM ran but data-fetch failed{suffix}. Threshold >= 0.7"
+        if d.get("decision_traces") is not None:
+            return f"Scored 1.0 — {d['decision_traces']} successful LLM/decision trace(s) found"
+        reason = d.get("reason", "")
+        if reason:
+            n = d.get("tool_calls", "")
+            return reason + (f" ({n} calls)" if n else "")
+        return "Scored 1.0 — research agent completed" if passed else "Scored 0.0 — research did not run"
+
+    if eval_name == "tool_success_rate":
+        total = d.get("total", 0)
+        if not total:
+            return "No tool calls made — scored 1.0 by default"
+        s = d.get("success", 0)
+        pct = int(round(score * 100))
+        return f"{s}/{total} tool calls succeeded ({pct}%) — threshold >= 80%"
+
+    if eval_name == "token_efficiency":
+        used = d.get("tokens_used")
+        thr  = d.get("threshold")
+        if used is not None and thr:
+            return f"{used:,} tokens used vs {thr:,} limit"
+        if used is not None:
+            return f"{used:,} tokens used"
+
+    if eval_name == "data_completeness":
+        reason = d.get("reason", "")
+        if reason:
+            return reason
+        t, s = d.get("total", 0), d.get("success", 0)
+        if t:
+            return f"{s}/{t} market traces succeeded — score = success/total, threshold >= 0.7"
+
+    if eval_name == "data_freshness":
+        reason = d.get("reason", "")
+        if reason:
+            return reason
+        lag = d.get("lag_minutes")
+        thr = d.get("threshold_minutes")
+        if lag is not None and thr is not None:
+            rel = "within" if passed else "exceeds"
+            return f"First market trace {lag} min after session start — {rel} {thr}-min limit"
+
+    if eval_name == "assessment_complete":
+        reason = d.get("reason", "")
+        if reason:
+            return reason
+        total   = d.get("total", 0)
+        success = d.get("success", 0)
+        if total:
+            return f"Risk agent: {success}/{total} traces succeeded — threshold = 1.0"
+        return f"Risk assessment {'present' if passed else 'absent'} — threshold 1.0"
+
+    if eval_name == "within_parameters":
+        reason = d.get("reason", "")
+        if reason:
+            return reason
+        rt = d.get("risk_traces", 0)
+        et = d.get("error_traces", 0)
+        if rt:
+            return f"{rt} risk trace(s), {et} with errors — score = 1 - errors/traces, threshold >= 0.9"
+        return f"No risk traces found — scored {score:.2f}"
+
+    if eval_name == "decision_made":
+        reason = d.get("reason", "")
+        if reason:
+            return reason
+        trades = d.get("trades_executed")
+        term   = d.get("terminal_reason")
+        if trades is not None and trades > 0:
+            return f"{trades} trade(s) executed — orchestrator decided, scored 1.0"
+        if term:
+            return f"Terminal reason logged: '{term}' — scored 0.8, threshold >= 0.7"
+        return "Orchestrator ran but no decision or reason recorded — scored 0.4"
+
+    if eval_name == "consistency":
+        reason = d.get("reason", "")
+        if reason:
+            return reason
+        return f"Orchestrator pipeline consistency — scored {score:.2f}, threshold >= 0.8"
+
+    if eval_name == "pipeline_completion":
+        missing = d.get("missing", [])
+        present = d.get("present", [])
+        n_req   = len(present) + len(missing)
+        if missing:
+            return f"{len(present)}/{n_req} required agents ran — missing: {', '.join(missing)}"
+        return f"All {n_req} agents ran (market, research, risk, orchestrator) — scored 1.0"
+
+    if eval_name == "cost_anomaly":
+        reason = d.get("reason", "")
+        if reason:
+            cost = d.get("cost_usd")
+            return reason + (f" — USD{cost:.4f}" if cost else "")
+        z    = d.get("z_score")
+        mean = d.get("mean")
+        cost = d.get("cost_usd")
+        sig  = d.get("threshold_sigma", 2)
+        if z is not None and mean is not None:
+            rel  = f"{z:.1f}s above" if z > 0 else "within"
+            flag = "flagged" if not passed else "normal"
+            return f"USD{cost:.4f} spent — {rel} mean USD{mean:.4f} ({flag}, threshold {sig}s)"
+
+    if eval_name == "outcome_linkage":
+        reason = d.get("reason", "")
+        if reason:
+            return reason
+        trades = d.get("trades_executed")
+        term   = d.get("terminal_reason")
+        if trades is not None and trades > 0:
+            return f"{trades} trade(s) executed — session has measurable outcome, scored 1.0"
+        if term:
+            return f"No trades but terminal reason logged: '{term}' — scored 0.8"
+        return "0 trades and no terminal reason — silent exit, scored 0.0"
+
+    if eval_name == "tokens_per_decision":
+        tpd   = d.get("tokens_per_decision")
+        thr   = d.get("threshold")
+        total = d.get("total_tokens")
+        dec   = d.get("trades")
+        if tpd is not None and thr:
+            return f"{total:,} tokens / {dec} decision(s) = {tpd:,} per decision (limit {thr:,})"
+
+    return ""
+
+
+def _build_call_chain_fig(
+    agents_present: list,
+    evals_by_agent: dict,
+    root_agent,
+    agent_stats: dict,
+):
+    """Plotly network graph: agent pipeline with pass/fail coloring."""
+    if not agents_present:
+        return None
+
+    xs = list(range(len(agents_present)))
+
+    def _node_color(a):
+        if a == root_agent:
+            return "#f59e0b"
+        evs = evals_by_agent.get(a.lower(), [])
+        if not evs:
+            return "#475569"
+        return "#ef4444" if any(not e["passed"] for e in evs) else "#10b981"
+
+    node_colors   = [_node_color(a) for a in agents_present]
+    border_colors = ["#fbbf24" if a == root_agent else "#0f172a" for a in agents_present]
+
+    hover_texts = []
+    for a in agents_present:
+        evs   = evals_by_agent.get(a.lower(), [])
+        stats = agent_stats.get(a.lower(), {})
+        n_p   = sum(1 for e in evs if e["passed"])
+        n_f   = sum(1 for e in evs if not e["passed"])
+        tok   = stats.get("tokens", 0)
+        lat   = stats.get("latency_ms", 0)
+        errs  = stats.get("n_errors", 0)
+        lines = [f"<b>{a.upper()}</b>"]
+        if a == root_agent:
+            lines.append("<b>ROOT CAUSE</b>")
+        lines += [
+            f"Tokens: {tok:,}",
+            f"Latency: {lat // 1000}s",
+            f"Evals: {n_p} pass  {n_f} fail",
+        ]
+        if errs:
+            lines.append(f"Errors: {errs}")
+        hover_texts.append("<br>".join(lines))
+
+    fig = go.Figure()
+
+    for i in range(len(agents_present) - 1):
+        fig.add_annotation(
+            x=xs[i + 1] - 0.22, y=0, ax=xs[i] + 0.22, ay=0,
+            xref="x", yref="y", axref="x", ayref="y",
+            showarrow=True, arrowhead=3, arrowsize=1.2,
+            arrowwidth=2, arrowcolor="#475569",
+        )
+
+    fig.add_trace(go.Scatter(
+        x=xs, y=[0] * len(xs),
+        mode="markers+text",
+        marker=dict(size=60, color=node_colors, line=dict(width=3, color=border_colors)),
+        text=[a.upper() for a in agents_present],
+        textposition="top center",
+        textfont=dict(size=11, color="#f1f5f9", family="monospace"),
+        hovertext=hover_texts,
+        hoverinfo="text",
+        customdata=agents_present,
+        showlegend=False,
+    ))
+
+    for i, (color, label) in enumerate([
+        ("#10b981", "All evals passed"),
+        ("#ef4444", "Evals failed"),
+        ("#f59e0b", "Root cause"),
+        ("#475569", "No evals / skipped"),
+    ]):
+        fig.add_annotation(
+            x=i * 0.26, y=-0.48, xref="paper", yref="paper",
+            text=f'<span style="color:{color}">&#9679;</span> {label}',
+            showarrow=False, font=dict(size=10, color="#94a3b8"), xanchor="left",
+        )
+
+    fig.update_layout(
+        paper_bgcolor="#0f172a", plot_bgcolor="#0f172a", font_color="#e2e8f0",
+        height=210,
+        margin=dict(t=20, b=45, l=30, r=30),
+        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False,
+                   range=[-0.6, max(len(agents_present) - 0.4, 0.5)]),
+        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[-0.6, 0.5]),
+    )
+    return fig
+
+
+def _build_timeline_fig(traces: list):
+    """Plotly Gantt-style horizontal timeline of agent execution steps."""
+    if not traces:
+        return None
+    df = pd.DataFrame(traces)
+    df["created_at"] = pd.to_datetime(df["created_at"], errors="coerce")
+    df = df.dropna(subset=["created_at"])
+    if df.empty:
+        return None
+    df["latency_ms"] = pd.to_numeric(df.get("latency_ms", 0), errors="coerce").fillna(500)
+    t0 = df["created_at"].min()
+    df["end_s"]   = (df["created_at"] - t0).dt.total_seconds()
+    df["start_s"] = (df["end_s"] - df["latency_ms"] / 1000).clip(lower=0)
+    df["step"]    = df.apply(lambda r: r.get("tool_name") or r.get("step_type") or "step", axis=1)
+    df["is_err"]  = (df["outcome"] == "error") | df["error"].notna()
+
+    order  = ["market", "research", "risk", "orchestrator"]
+    agents = [a for a in order if a in df["agent"].values]
+    if not agents:
+        agents = df["agent"].dropna().unique().tolist()
+
+    fig = go.Figure()
+    for agent in agents:
+        adf   = df[df["agent"] == agent]
+        color = AGENT_COLORS.get(agent, "#94a3b8")
+        for _, row in adf.iterrows():
+            bar_color = "#ef4444" if row["is_err"] else color
+            dur = max(float(row["end_s"]) - float(row["start_s"]), 0.2)
+            fig.add_trace(go.Bar(
+                x=[dur], y=[agent.upper()], base=[float(row["start_s"])],
+                orientation="h", marker_color=bar_color, marker_line_width=0,
+                hovertemplate=(
+                    f"<b>{agent}</b> · {row['step']}<br>"
+                    f"Start: {row['start_s']:.1f}s<br>"
+                    f"Duration: {int(row['latency_ms'])}ms<br>"
+                    f"Outcome: {row.get('outcome') or 'unknown'}<br>"
+                    "<extra></extra>"
+                ),
+                showlegend=False,
+            ))
+
+    fig.update_layout(
+        paper_bgcolor="#0f172a", plot_bgcolor="#0f172a", font_color="#e2e8f0",
+        height=max(130, len(agents) * 48 + 30),
+        margin=dict(t=10, b=30, l=10, r=10),
+        barmode="overlay",
+        xaxis=dict(title="Seconds from session start", gridcolor="#1e293b", tickfont=dict(size=10)),
+        yaxis=dict(
+            categoryorder="array",
+            categoryarray=[a.upper() for a in reversed(agents)],
+        ),
+    )
+    return fig
+
+
+def _build_cost_donut(sess_row: dict, sess_traces: list):
+    """Plotly donut of cost split by agent for a single session."""
+    bd = sess_row.get("cost_breakdown")
+    if isinstance(bd, dict) and bd:
+        labels = [k for k in bd if isinstance(bd[k], dict)]
+        values = [float(bd[k].get("cost_usd", 0)) for k in labels]
+    else:
+        if not sess_traces:
+            return None
+        tdf = pd.DataFrame(sess_traces)
+        if tdf.empty:
+            return None
+        tdf["tok"] = (
+            pd.to_numeric(tdf.get("tokens_input", 0), errors="coerce").fillna(0) +
+            pd.to_numeric(tdf.get("tokens_output", 0), errors="coerce").fillna(0)
+        )
+        agg   = tdf.groupby("agent")["tok"].sum()
+        total = agg.sum()
+        if total == 0:
+            return None
+        tc     = float(sess_row.get("total_cost_usd") or 0)
+        labels = list(agg.index)
+        values = [(v / total) * tc for v in agg.values]
+
+    if not any(v > 0 for v in values):
+        return None
+
+    total_val = sum(values)
+    fig = go.Figure(go.Pie(
+        labels=[l.upper() for l in labels],
+        values=values,
+        hole=0.55,
+        marker_colors=[AGENT_COLORS.get(l, "#94a3b8") for l in labels],
+        textinfo="label+percent",
+        textfont_size=10,
+        hovertemplate="<b>%{label}</b><br>$%{value:.5f}<extra></extra>",
+    ))
+    fig.add_annotation(
+        text=f"${total_val:.4f}", x=0.5, y=0.5,
+        font=dict(size=12, color="#f1f5f9"), showarrow=False,
+    )
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font_color="#e2e8f0", height=200,
+        margin=dict(t=5, b=5, l=5, r=5), showlegend=False,
+    )
+    return fig
+
+
+
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 
 with st.sidebar:
@@ -840,17 +1195,24 @@ elif page == "Incidents Feed":
         st.divider()
 
 
+
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE: RCA View
 # ══════════════════════════════════════════════════════════════════════════════
 elif page == "RCA View":
+
     st.markdown("## RCA View")
 
+    # ── Read share-link param ─────────────────────────────────────────────────
+    _params = st.query_params
+    if "sid" in _params and not st.session_state.get("rca_sid"):
+        st.session_state["rca_sid"] = _params.get("sid", "")
+
+    # ── Incident selector ─────────────────────────────────────────────────────
     inc_dict = st.session_state.get("rca_incident")
     rca_sid  = st.session_state.get("rca_sid")
 
     if not inc_dict and not incidents.empty:
-        # Default: most expensive incident
         inc_dict = incidents.sort_values("cost_wasted", ascending=False).iloc[0].to_dict()
         rca_sid  = inc_dict.get("session_id")
 
@@ -858,32 +1220,61 @@ elif page == "RCA View":
         st.info("Select an incident from the Incidents Feed to view its RCA.")
         st.stop()
 
-    # Pick different incident
     if not incidents.empty:
-        opts = {
-            f"{row['pattern_name']} — "
-            f"{row['created_at'].strftime('%m-%d %H:%M') if pd.notna(row['created_at']) else ''} "
-            f"(${row['cost_wasted']:.4f})": row.to_dict()
+        _opts = {
+            f"{row['pattern_name']}  ·  "
+            f"{row['created_at'].strftime('%m-%d %H:%M') if pd.notna(row['created_at']) else ''}  ·  "
+            f"${row['cost_wasted']:.4f}": row.to_dict()
             for _, row in incidents.sort_values("created_at", ascending=False).iterrows()
         }
-        chosen_key = st.selectbox("Select incident", list(opts.keys()))
-        inc_dict   = opts[chosen_key]
-        rca_sid    = inc_dict.get("session_id")
+        _chosen_key = st.selectbox("Select incident", list(_opts.keys()))
+        inc_dict    = _opts[_chosen_key]
+        rca_sid     = inc_dict.get("session_id")
 
+    # ── Controls: share link + re-run ─────────────────────────────────────────
+    _ctrl1, _ctrl2, _ctrl3 = st.columns([4, 2, 2])
+    with _ctrl1:
+        if rca_sid:
+            st.query_params["sid"] = rca_sid
+            st.markdown(
+                f'<div style="font-size:0.78rem;color:#64748b;padding:6px 0">'
+                f'Share: <code>?sid={rca_sid[:8]}...</code></div>',
+                unsafe_allow_html=True,
+            )
+    with _ctrl2:
+        if st.button("Re-run Analysis", use_container_width=True):
+            if rca_sid:
+                with st.spinner("Re-running..."):
+                    _sr = sessions[sessions["id"] == rca_sid]
+                    if not _sr.empty:
+                        _s   = _sr.iloc[0].to_dict()
+                        _tr  = traces_all[traces_all["session_id"] == rca_sid].to_dict("records")
+                        _rc  = sessions["total_cost_usd"].tolist()
+                        _evs, _incs = run_analysis_for_session(_s, _tr, _rc)
+                        _db().table("c_evals").delete().eq("session_id", rca_sid).execute()
+                        _db().table("c_incidents").delete().eq("session_id", rca_sid).execute()
+                        if _evs:
+                            _db().table("c_evals").insert([e.to_db_row(rca_sid) for e in _evs]).execute()
+                        if _incs:
+                            _db().table("c_incidents").insert([i.to_db_row() for i in _incs]).execute()
+                        st.cache_data.clear()
+                        st.success("Analysis refreshed.")
+                        st.rerun()
+
+    # ── Model objects ─────────────────────────────────────────────────────────
     from engine.pattern_detector import Incident as IncidentModel
 
-    # Reconstruct Incident object
     inc_obj = IncidentModel(
-        session_id   = rca_sid or "",
-        pattern_name = inc_dict.get("pattern_name",""),
-        severity     = inc_dict.get("severity","info"),
-        root_cause   = inc_dict.get("root_cause",""),
-        call_stack   = inc_dict.get("call_stack") or [],
-        failed_evals = inc_dict.get("failed_evals") or [],
-        cost_wasted  = float(inc_dict.get("cost_wasted") or 0),
-        tokens_wasted= int(inc_dict.get("tokens_wasted") or 0),
-        fix_suggestion=inc_dict.get("fix_suggestion",""),
-        is_simulated = bool(inc_dict.get("is_simulated", False)),
+        session_id    = rca_sid or "",
+        pattern_name  = inc_dict.get("pattern_name", ""),
+        severity      = inc_dict.get("severity", "info"),
+        root_cause    = inc_dict.get("root_cause", ""),
+        call_stack    = inc_dict.get("call_stack") or [],
+        failed_evals  = inc_dict.get("failed_evals") or [],
+        cost_wasted   = float(inc_dict.get("cost_wasted") or 0),
+        tokens_wasted = int(inc_dict.get("tokens_wasted") or 0),
+        fix_suggestion= inc_dict.get("fix_suggestion", ""),
+        is_simulated  = bool(inc_dict.get("is_simulated", False)),
     )
 
     sess_traces = traces_all[traces_all["session_id"] == rca_sid].to_dict("records") if rca_sid else []
@@ -892,511 +1283,548 @@ elif page == "RCA View":
     ) else {}
     evals_df    = load_evals_for_session(rca_sid) if rca_sid else pd.DataFrame()
 
-    # Header summary card
-    sev_color  = {"critical":"#ef4444","warning":"#f59e0b","info":"#3b82f6"}.get(inc_obj.severity,"#64748b")
-    sev_bg     = {"critical":"#fff5f5","warning":"#fffbeb","info":"#eff6ff"}.get(inc_obj.severity,"#f8fafc")
-    sev_text   = {"critical":"#7f1d1d","warning":"#78350f","info":"#1e3a8a"}.get(inc_obj.severity,"#0f172a")
-    st.markdown(
-        f'<div style="border-left:4px solid {sev_color};border-radius:0 8px 8px 0;padding:16px 20px;'
-        f'background:{sev_bg};margin-bottom:16px">'
-        f'{badge(inc_obj.severity, inc_obj.is_simulated)}'
-        f'<span style="font-size:1.3rem;font-weight:700;margin-left:12px;color:{sev_text}">'
-        f'{inc_obj.pattern_name}</span><br>'
-        f'<span style="color:#64748b;font-size:0.85rem;margin-top:4px;display:block">{inc_obj.root_cause}</span>'
-        f'</div>',
-        unsafe_allow_html=True,
-    )
-
-    mc1, mc2, mc3, mc4 = st.columns(4)
-    mc1.metric("Cost wasted",    f"${inc_obj.cost_wasted:.4f}")
-    mc2.metric("Tokens wasted",  f"{inc_obj.tokens_wasted:,}")
-    mc3.metric("Trades",         str(int(sess_row.get("trades_executed", 0))))
-    mc4.metric("Failed evals",   str(len(inc_obj.failed_evals)))
-
-    st.divider()
-
-    st.markdown(
-        '<div style="background:#f0fdf4;border-left:4px solid #10b981;padding:12px 16px;'
-        'border-radius:0 6px 6px 0;margin-bottom:16px;font-size:0.88rem;color:#064e3b">'
-        '<b>How to read this:</b> &nbsp;'
-        'Each row is one agent step in execution order — the <b>ROOT CAUSE</b> row is where things broke. '
-        'Individual steps show <i>feeds →</i> on the right to indicate which quality eval they contribute to. '
-        'After each agent\'s last step, <b>aggregate quality checks</b> appear — these score the agent\'s '
-        'entire run, not individual steps. For example, <code>tool_success_rate</code> counts '
-        '<i>all</i> tool calls for that agent; <code>token_efficiency</code> counts <i>total</i> tokens. '
-        '<span style="color:#10b981;font-weight:700">✓ green = passed threshold</span>, '
-        '<span style="color:#ef4444;font-weight:700">✗ red = failed</span>.'
-        '</div>',
-        unsafe_allow_html=True,
-    )
-
-    # ── Integrated Call Stack with inline Eval Scores ─────────────────────────
-    st.markdown("#### Execution Trace")
-    st.caption(
-        "Chronological agent steps. After each agent's last step its quality checks appear "
-        "inline — green = passed, red = failed. Root cause step is highlighted."
-    )
-
-    annotated = build_annotated_call_stack(sess_traces, inc_obj) if sess_traces else inc_obj.call_stack
-
-    import math as _math
-
-    def _str(v):
-        return None if (v is None or (isinstance(v, float) and _math.isnan(v))) else str(v)
-
-    def _eval_reason(eval_name: str, detail: dict, score: float, passed: bool) -> str:
-        """
-        One-line explanation of how the score was calculated.
-        Covers new detail format AND old format (pre-refactor detail keys).
-        Never returns a misleading label (e.g. 'incomplete' for a passing eval).
-        """
-        d = detail if isinstance(detail, dict) else {}
-
-        if eval_name == "completion":
-            # New format: explicit flags
-            if d.get("llm_ok") and d.get("tool_calls_ok"):
-                return "Scored 1.0 — LLM ran ✓ and at least one tool call succeeded ✓"
-            if d.get("llm_ok") is not None:
-                n = d.get("tool_calls", "")
-                suffix = f" ({n} tool calls all failed)" if n else " (all tool calls failed)"
-                return f"Scored 0.3 — LLM ran ✓ but data-fetch failed{suffix}. Threshold ≥ 0.7"
-            # Old format: decision_traces key
-            if d.get("decision_traces") is not None:
-                n = d["decision_traces"]
-                return (f"Scored 1.0 — {n} successful LLM/decision trace(s) found. "
-                        f"Note: re-run analysis to apply updated scoring")
-            reason = d.get("reason", "")
-            if reason:
-                n = d.get("tool_calls", "")
-                return reason + (f" ({n} calls)" if n else "")
-            return "Scored 1.0 — research agent completed" if passed else "Scored 0.0 — research did not run"
-
-        if eval_name == "tool_success_rate":
-            total = d.get("total", 0)
-            if not total:
-                return "No tool calls made — scored 1.0 by default"
-            s, f = d.get("success", 0), d.get("failed", 0)
-            pct = int(round(score * 100))
-            return f"{s}/{total} tool calls succeeded ({pct}%) — threshold ≥ 80%"
-
-        if eval_name == "token_efficiency":
-            used = d.get("tokens_used")
-            thr  = d.get("threshold")
-            if used is not None and thr:
-                return f"{used:,} tokens used vs {thr:,} limit — score = 1 − used/(2×limit)"
-            if used is not None:
-                return f"{used:,} tokens used"
-
-        if eval_name == "data_completeness":
-            reason = d.get("reason", "")
-            if reason:
-                return reason
-            t, s = d.get("total", 0), d.get("success", 0)
-            if t:
-                return f"{s}/{t} market traces succeeded — score = success/total, threshold ≥ 0.7"
-
-        # detail keys: lag_minutes, threshold_minutes  (or reason for edge cases)
-        if eval_name == "data_freshness":
-            reason = d.get("reason", "")
-            if reason:
-                return reason
-            lag = d.get("lag_minutes")
-            thr = d.get("threshold_minutes")
-            if lag is not None and thr is not None:
-                rel = "within" if passed else "exceeds"
-                return (f"First market trace {lag} min after session start — "
-                        f"{rel} {thr}-min limit, scored {score:.2f}")
-
-        # detail keys: total + success  (or reason if risk never ran)
-        if eval_name == "assessment_complete":
-            reason = d.get("reason", "")
-            if reason:
-                return reason
-            total   = d.get("total", 0)
-            success = d.get("success", 0)
-            if total:
-                return (f"Risk agent: {success}/{total} traces succeeded — "
-                        f"scored {'1.0' if passed else '0.0'}, threshold = 1.0")
-            return f"Risk assessment {'present' if passed else 'absent'} — threshold 1.0"
-
-        # detail keys: risk_traces, error_traces, errors
-        if eval_name == "within_parameters":
-            reason = d.get("reason", "")
-            if reason:
-                return reason
-            rt = d.get("risk_traces", 0)
-            et = d.get("error_traces", 0)
-            if rt:
-                return (f"{rt} risk trace(s), {et} with errors — "
-                        f"score = 1 − errors/traces, threshold ≥ 0.9")
-            return f"No risk traces found — scored {score:.2f}"
-
-        # decision_made detail: trades_executed OR terminal_reason OR reason+orch_traces
-        if eval_name == "decision_made":
-            reason = d.get("reason", "")
-            if reason:
-                return reason
-            trades = d.get("trades_executed")
-            term   = d.get("terminal_reason")
-            if trades is not None and trades > 0:
-                return f"{trades} trade(s) executed — orchestrator decided, scored 1.0"
-            if term:
-                return f"Terminal reason logged: '{term}' — scored 0.8, threshold ≥ 0.7"
-            return "Orchestrator ran but no decision or reason recorded — scored 0.4"
-
-        # consistency detail: always has reason string
-        if eval_name == "consistency":
-            reason = d.get("reason", "")
-            if reason:
-                return reason
-            return f"Orchestrator pipeline consistency — scored {score:.2f}, threshold ≥ 0.8"
-
-        # detail keys: present (list), missing (list)
-        if eval_name == "pipeline_completion":
-            missing = d.get("missing", [])
-            present = d.get("present", [])
-            n_req   = len(present) + len(missing)
-            if missing:
-                return (f"{len(present)}/{n_req} required agents ran — "
-                        f"missing: {', '.join(missing)}, threshold = 1.0")
-            return f"All {n_req} agents ran (market, research, risk, orchestrator) — scored 1.0"
-
-        # detail keys: cost_usd, mean, stdev, z_score, threshold_sigma  (or reason)
-        if eval_name == "cost_anomaly":
-            reason = d.get("reason", "")
-            if reason:
-                cost = d.get("cost_usd")
-                return reason + (f" — USD{cost:.4f}" if cost else "")
-            z    = d.get("z_score")
-            mean = d.get("mean")
-            cost = d.get("cost_usd")
-            sig  = d.get("threshold_sigma", 2)
-            if z is not None and mean is not None:
-                rel = f"{z:.1f}σ above" if z > 0 else "within"
-                flag = "flagged" if not passed else "normal"
-                return (f"USD{cost:.4f} spent — {rel} mean USD{mean:.4f} "
-                        f"({flag}, threshold {sig}σ)")
-
-        # detail keys: trades_executed  OR  terminal_reason+trades_executed  OR  reason
-        if eval_name == "outcome_linkage":
-            reason = d.get("reason", "")
-            if reason:
-                return reason
-            trades = d.get("trades_executed")
-            term   = d.get("terminal_reason")
-            if trades is not None and trades > 0:
-                return f"{trades} trade(s) executed — session has measurable outcome, scored 1.0"
-            if term:
-                return f"No trades but terminal reason logged: '{term}' — scored 0.8"
-            return "0 trades and no terminal reason — silent exit, scored 0.0"
-
-        # detail keys: total_tokens, trades, tokens_per_decision, threshold
-        if eval_name == "tokens_per_decision":
-            tpd   = d.get("tokens_per_decision")
-            thr   = d.get("threshold")
-            total = d.get("total_tokens")
-            dec   = d.get("trades")
-            if tpd is not None and thr:
-                return (f"{total:,} tokens / {dec} decision(s) = {tpd:,} per decision "
-                        f"(limit {thr:,}) — score = 1 − tpd/(2×limit)")
-
-        return ""
-
-    # Normalise evals into dicts grouped by agent
+    # evals_by_agent
     evals_by_agent: dict[str, list[dict]] = {}
     if not evals_df.empty:
         for _, ev in evals_df.iterrows():
-            a = str(ev.get("agent", "")).lower()
-            raw_detail = ev.get("detail") or {}
-            if isinstance(raw_detail, str):
-                import json
+            _a = str(ev.get("agent", "")).lower()
+            _raw = ev.get("detail") or {}
+            if isinstance(_raw, str):
                 try:
-                    raw_detail = json.loads(raw_detail)
+                    _raw = _json.loads(_raw)
                 except Exception:
-                    raw_detail = {}
-            evals_by_agent.setdefault(a, []).append({
+                    _raw = {}
+            evals_by_agent.setdefault(_a, []).append({
                 "agent":     ev.get("agent", ""),
                 "eval_name": ev.get("eval_name", ""),
                 "score":     float(ev.get("score") or 0),
                 "passed":    bool(ev.get("passed")),
-                "detail":    raw_detail,
+                "detail":    _raw,
             })
     elif inc_obj.failed_evals:
-        for fe in inc_obj.failed_evals:
-            a = str(fe.get("agent", "")).lower()
-            evals_by_agent.setdefault(a, []).append({
-                "agent":     fe.get("agent", ""),
-                "eval_name": fe.get("eval_name", ""),
-                "score":     float(fe.get("score") or 0),
+        for _fe in inc_obj.failed_evals:
+            _a = str(_fe.get("agent", "")).lower()
+            evals_by_agent.setdefault(_a, []).append({
+                "agent":     _fe.get("agent", ""),
+                "eval_name": _fe.get("eval_name", ""),
+                "score":     float(_fe.get("score") or 0),
                 "passed":    False,
                 "detail":    {},
             })
 
-    # Maps (agent, step_type, is_err) → which evals this step feeds and how
-    _STEP_FEEDS: dict[tuple, list[str]] = {
-        ("market",       "llm_call",  False): ["data_completeness", "data_freshness"],
-        ("market",       "tool_call", False): ["data_completeness"],
-        ("research",     "llm_call",  False): ["completion (LLM ✓)", "token_efficiency"],
-        ("research",     "llm_call",  True ): ["completion (LLM ✗)"],
-        ("research",     "tool_call", False): ["completion (tool ✓)", "tool_success_rate ✓"],
-        ("research",     "tool_call", True ): ["completion (tool ✗)", "tool_success_rate ✗"],
-        ("risk",         "llm_call",  False): ["assessment_complete", "within_parameters"],
-        ("risk",         "llm_call",  True ): ["assessment_complete ✗", "within_parameters ✗"],
-        ("risk",         "tool_call", False): ["within_parameters"],
-        ("orchestrator", "llm_call",  False): ["decision_made", "consistency"],
-        ("orchestrator", "llm_call",  True ): ["consistency ✗"],
-        ("orchestrator", "decision",  False): ["decision_made ✓"],
-    }
+    annotated = build_annotated_call_stack(sess_traces, inc_obj) if sess_traces else list(inc_obj.call_stack)
 
-    def _step_feeds_html(agent: str, step_type: str, is_err: bool) -> str:
-        feeds = _STEP_FEEDS.get((agent.lower(), step_type, is_err), [])
-        if not feeds:
-            return ""
-        tags = "  ·  ".join(feeds)
-        return (
-            f'<span style="float:right;font-size:0.7rem;color:#94a3b8;'
-            f'font-style:italic;font-family:sans-serif">feeds → {tags}</span>'
-        )
+    # Per-agent stats from traces
+    agent_stats: dict[str, dict] = {}
+    for _t in sess_traces:
+        _a = (_t.get("agent") or "").lower()
+        if _a not in agent_stats:
+            agent_stats[_a] = {"tokens": 0, "latency_ms": 0, "n_errors": 0, "n_llm": 0, "n_tool": 0}
+        agent_stats[_a]["tokens"]     += int((_t.get("tokens_input") or 0) + (_t.get("tokens_output") or 0))
+        agent_stats[_a]["latency_ms"] += int(_t.get("latency_ms") or 0)
+        if _str(_t.get("error")) or _t.get("outcome") == "error":
+            agent_stats[_a]["n_errors"] += 1
+        if _t.get("step_type") == "llm_call":
+            agent_stats[_a]["n_llm"] += 1
+        if _t.get("step_type") == "tool_call":
+            agent_stats[_a]["n_tool"] += 1
 
-    def _render_agent_evals(agent_name: str) -> None:
-        key = agent_name.lower()
-        evs = evals_by_agent.get(key, [])
-        if not evs:
-            return
-        a_color  = AGENT_COLORS.get(agent_name, "#94a3b8")
-        n_evals  = len(evs)
+    # Root cause agent
+    root_agent = None
+    for _t in annotated:
+        if _t.get("is_root"):
+            root_agent = (_t.get("agent") or "").lower()
+            break
+
+    _agent_order   = ["market", "research", "risk", "orchestrator"]
+    agents_present = [a for a in _agent_order if a in agent_stats]
+    session_evs    = evals_by_agent.get("session", [])
+    fix_text       = generate_fix_suggestion(inc_obj, sess_traces)
+    summary        = summarize_incident(inc_obj, sess_row)
+
+    sev_color = {"critical": "#ef4444", "warning": "#f59e0b", "info": "#3b82f6"}.get(inc_obj.severity, "#64748b")
+    sev_bg    = {"critical": "#fff5f5", "warning": "#fffbeb", "info": "#eff6ff"}.get(inc_obj.severity, "#f8fafc")
+    sev_text  = {"critical": "#7f1d1d", "warning": "#78350f", "info": "#1e3a8a"}.get(inc_obj.severity, "#0f172a")
+
+    # ════════════════════════════════════════════════════════════════════════════
+    # SECTION 1 — WHAT HAPPENED & WHAT TO FIX
+    # ════════════════════════════════════════════════════════════════════════════
+    _section_header(
+        "What Happened & What to Fix",
+        """**Start here.**
+
+This section gives you the plain-English answer before you look at any trace evidence.
+
+- **Left** — what broke, which agent caused it, what it cost
+- **Right** — numbered fix steps tailored to this failure pattern
+
+Read the fix, then scroll down to the Agent Breakdown to verify your understanding against the raw evidence.
+""",
+    )
+
+    dur_str  = f"{summary['duration_s']}s" if summary.get("duration_s") else "unknown duration"
+    cost_str = f"${summary['cost_wasted']:.4f}" if summary["cost_wasted"] else "no cost recorded"
+    tok_str  = f"{summary['tokens_wasted']:,} tokens" if summary["tokens_wasted"] else ""
+    trades   = int(sess_row.get("trades_executed", 0))
+    what_happened = (
+        f"**{inc_obj.pattern_name}** — {inc_obj.root_cause}. "
+        f"Session ran {dur_str}, spent {cost_str}"
+        f"{' (' + tok_str + ')' if tok_str else ''}, produced {trades} trade(s)."
+    )
+
+    _s1l, _s1r = st.columns([3, 2])
+    with _s1l:
         st.markdown(
-            f'<div style="margin:6px 0 3px 8px;font-size:0.75rem;color:#64748b;">'
-            f'<b style="color:{a_color}">{agent_name}</b> quality checks '
-            f'<span style="font-weight:400">— {n_evals} aggregate score{"s" if n_evals != 1 else ""} '
-            f'computed across ALL {agent_name} steps above, not per-step</span>'
+            f'<div style="border-left:4px solid {sev_color};padding:14px 18px;'
+            f'background:{sev_bg};border-radius:0 8px 8px 0">'
+            f'{badge(inc_obj.severity, inc_obj.is_simulated)} '
+            f'<span style="font-size:1.05rem;font-weight:700;color:{sev_text};margin-left:8px">'
+            f'{inc_obj.pattern_name}</span><br>'
+            f'<span style="color:#374151;font-size:0.88rem;margin-top:8px;display:block">'
+            f'{what_happened}</span>'
             f'</div>',
             unsafe_allow_html=True,
         )
-        for ev in evs:
-            passed  = ev["passed"]
-            score   = ev["score"]
-            detail  = ev.get("detail") or {}
-            reason  = _eval_reason(ev["eval_name"], detail, score, passed)
-            color   = "#10b981" if passed else "#ef4444"
-            bg      = "#f0fdf4" if passed else "#fff5f5"
-            border  = "#bbf7d0" if passed else "#fecaca"
-            icon    = "✓" if passed else "✗"
-            reason_html = (
-                f'<div style="font-size:0.74rem;color:#6b7280;margin-top:1px;'
-                f'padding-left:18px;font-style:italic">{reason}</div>'
-                if reason else ""
-            )
-            st.markdown(
-                f'<div style="margin:2px 0 2px 24px;padding:4px 10px;background:{bg};'
-                f'border-radius:4px;border:1px solid {border};border-left:3px solid {color};'
-                f'font-size:0.82rem">'
-                f'<span style="color:{color};font-weight:700">{icon}</span> &nbsp;'
-                f'<b style="color:#374151">{ev["agent"]}</b>'
-                f'<span style="color:#64748b">.{ev["eval_name"]}</span>'
-                f'<span style="float:right;color:{color};font-weight:600">{score:.2f}</span>'
-                f'{score_bar(score, passed)}'
-                f'{reason_html}'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
-
-    # Pre-process: collapse runs of repeated non-root errors into a summary row
-    processed: list[dict] = []
-    i = 0
-    while i < len(annotated):
-        frame = annotated[i]
-        ev_i  = _str(frame.get("error"))
-        is_err_i  = frame.get("outcome") == "error" or bool(ev_i)
-        is_root_i = frame.get("is_root", False)
-        tool_i    = frame.get("tool_name", "")
-        agent_i   = frame.get("agent", "")
-
-        if is_err_i and not is_root_i and tool_i:
-            # Collapse ALL consecutive identical non-root errors into one summary row
-            j = i + 1
-            while j < len(annotated):
-                f2  = annotated[j]
-                e2  = _str(f2.get("error"))
-                if (
-                    (f2.get("outcome") == "error" or bool(e2))
-                    and not f2.get("is_root")
-                    and f2.get("tool_name") == tool_i
-                    and f2.get("agent") == agent_i
-                ):
-                    j += 1
-                else:
-                    break
-            count = j - i   # total non-root errors in this run (includes frame i)
-            processed.append({
-                "_collapse": True,
-                "count": count,
-                "tool":  tool_i or "tool",
-                "agent": agent_i,
-            })
-            i = j
-        else:
-            processed.append(frame)
-            i += 1
-
-    rendered_agents: set[str] = set()
-    prev_agent: str | None = None
-
-    for frame in processed:
-        # Collapsed duplicate-error summary row
-        if frame.get("_collapse"):
-            n    = frame["count"]
-            tool = frame["tool"]
-            st.markdown(
-                f'<div style="margin:2px 0 2px 12px;padding:4px 10px;'
-                f'background:#fef9c3;border-radius:4px;border:1px dashed #fde68a;'
-                f'font-size:0.81rem;color:#78350f">'
-                f'⟳ &nbsp;{n} more identical <b>{tool}</b> timeout'
-                f'{"s" if n > 1 else ""} — same error, collapsed'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
-            continue
-
-        error_val   = _str(frame.get("error"))
-        is_root     = frame.get("is_root", False)
-        is_relevant = frame.get("is_relevant", False)
-        is_err      = frame.get("outcome") == "error" or bool(error_val)
-
-        if is_root:
-            css = "trace-root"
-        elif is_err:
-            css = "trace-error"
-        elif is_relevant:
-            css = "trace-success"
-        else:
-            css = "trace-row"
-
-        agent     = frame.get("agent", "")
-        step_type = frame.get("step_type", "")
-        step      = _str(frame.get("tool_name")) or _str(frame.get("step_name")) or step_type
-        lat       = int(frame.get("latency_ms") or frame.get("duration_ms") or 0)
-        tok       = int(frame.get("tokens") or 0)
-        outcome   = frame.get("outcome", "")
-        root_tag  = " ← ROOT CAUSE" if is_root else ""
-        feeds_tag = _step_feeds_html(agent, step_type, is_err)
-
-        # New agent: flush previous agent's evals, then render section header
-        if agent != prev_agent:
-            if prev_agent and prev_agent not in rendered_agents:
-                _render_agent_evals(prev_agent)
-                rendered_agents.add(prev_agent)
-            a_color   = AGENT_COLORS.get(agent, "#94a3b8")
-            # Eval summary badge for this agent (shown in header so visible without scrolling)
-            agent_evs = evals_by_agent.get(agent.lower(), [])
-            n_pass    = sum(1 for e in agent_evs if e["passed"])
-            n_fail    = sum(1 for e in agent_evs if not e["passed"])
-            eval_pill = ""
-            if agent_evs:
-                eval_pill = (
-                    f'<span style="margin-left:10px;font-size:0.72rem;font-weight:600">'
-                    f'<span style="color:#10b981">✓{n_pass}</span>'
-                    f'<span style="color:#94a3b8"> / </span>'
-                    f'<span style="color:#ef4444">✗{n_fail}</span>'
-                    f'<span style="color:#94a3b8;font-weight:400"> evals below</span>'
-                    f'</span>'
-                )
-            st.markdown(
-                f'<div style="margin:14px 0 4px 0;padding:3px 0 3px 8px;'
-                f'border-left:3px solid {a_color};background:#f8fafc;">'
-                f'<span style="color:{a_color};font-weight:700;font-size:0.78rem;'
-                f'text-transform:uppercase;letter-spacing:0.08em">{agent} agent</span>'
-                f'{eval_pill}'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
-
+    with _s1r:
         st.markdown(
-            f'<div class="trace-row {css}">'
-            f'<b style="color:{AGENT_COLORS.get(agent,"#94a3b8")}">{agent}</b> &nbsp;'
-            f'<b>{step}</b> &nbsp;'
-            f'<code>{lat}ms</code> &nbsp;'
-            f'{"<code>" + str(tok) + " tok</code>" if tok else ""} &nbsp;'
-            f'<span style="color:{"#ef4444" if is_err else "#10b981"}">{outcome}</span>'
-            f'<span style="color:#f59e0b;font-weight:700">{root_tag}</span>'
-            f'{feeds_tag}'
+            f'<div style="background:#f0fdf4;border:1px solid #6ee7b7;border-radius:8px;padding:14px 16px">'
+            f'<div style="font-size:0.7rem;font-weight:700;color:#065f46;'
+            f'text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px">Fix Steps</div>'
+            f'<pre style="margin:0;font-size:0.78rem;color:#064e3b;'
+            f'white-space:pre-wrap;font-family:inherit">{fix_text}</pre>'
             f'</div>',
             unsafe_allow_html=True,
         )
 
-        if error_val:
-            with st.expander(f"Error: {step}", expanded=is_root):
-                st.error(error_val)
-
-        prev_agent = agent
-
-    # Flush evals for the final agent group
-    if prev_agent and prev_agent not in rendered_agents:
-        _render_agent_evals(prev_agent)
-        rendered_agents.add(prev_agent)
-
-    # Session-level holistic evals below the full stack
-    session_evs = evals_by_agent.get("session", [])
-    if session_evs:
-        st.markdown(
-            '<div style="margin:10px 0 2px 0;font-size:0.78rem;color:#6b7280;'
-            'font-style:italic">▸ session-level evals (holistic)</div>',
-            unsafe_allow_html=True,
-        )
-        for ev in session_evs:
-            passed  = ev["passed"]
-            score   = ev["score"]
-            detail  = ev.get("detail") or {}
-            reason  = _eval_reason(ev["eval_name"], detail, score, passed)
-            color   = "#10b981" if passed else "#ef4444"
-            bg      = "#f0fdf4" if passed else "#fff5f5"
-            border  = "#bbf7d0" if passed else "#fecaca"
-            icon    = "✓" if passed else "✗"
-            reason_html = (
-                f'<div style="font-size:0.74rem;color:#6b7280;margin-top:1px;'
-                f'padding-left:18px;font-style:italic">{reason}</div>'
-                if reason else ""
-            )
-            st.markdown(
-                f'<div style="margin:2px 0;padding:4px 10px;background:{bg};'
-                f'border-radius:4px;border:1px solid {border};border-left:3px solid {color};'
-                f'font-size:0.82rem">'
-                f'<span style="color:{color};font-weight:700">{icon}</span> &nbsp;'
-                f'<b style="color:#374151">session</b>'
-                f'<span style="color:#64748b">.{ev["eval_name"]}</span>'
-                f'<span style="float:right;color:{color};font-weight:600">{score:.2f}</span>'
-                f'{score_bar(score, passed)}'
-                f'{reason_html}'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
-    elif not evals_by_agent:
-        st.info("Run Analysis from the Incidents Feed to populate eval scores.")
-
-    # Eval explainer
-    if not evals_df.empty:
-        st.divider()
-        st.markdown("#### Eval Explainer — Show Your Work")
-        failed_evals_df = evals_df[~evals_df["passed"]] if "passed" in evals_df.columns else evals_df
-        for _, ev in failed_evals_df.iterrows():
-            with st.expander(f"{ev['agent']}.{ev['eval_name']} — score {ev['score']:.2f}", expanded=False):
-                detail = ev.get("detail") or {}
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    st.markdown("**What the eval checked:**")
-                    st.json(detail)
-                with col_b:
-                    st.markdown("**Computation:**")
-                    st.markdown(f"- Score: `{ev['score']:.3f}`")
-                    st.markdown(f"- Threshold: `{ev['threshold']}`")
-                    st.markdown(f"- Passed: `{ev['passed']}`")
-                    st.markdown(score_bar(float(ev["score"]), bool(ev["passed"])), unsafe_allow_html=True)
-
-    # Fix suggestion
     st.divider()
-    fix = generate_fix_suggestion(inc_obj, sess_traces)
-    st.markdown("#### Fix Suggestion")
-    st.markdown(f'<div class="fix-box">{fix}</div>', unsafe_allow_html=True)
+
+    # ════════════════════════════════════════════════════════════════════════════
+    # SECTION 2 — INCIDENT DETAILS
+    # ════════════════════════════════════════════════════════════════════════════
+    _section_header(
+        "Incident Details",
+        """**Key metrics and session-level health checks.**
+
+- **Cost wasted** — money spent in this session that produced no output
+- **Tokens wasted** — total LLM tokens consumed across all agents
+- **Trades** — what the orchestrator ultimately produced; 0 = complete waste
+- **Failed evals** — quality checks that did not meet their threshold
+- **Cost by agent (donut)** — which agent consumed the most budget
+- **Session evals** — holistic checks for the full pipeline: did all agents run, was cost normal, was there a measurable outcome?
+""",
+    )
+
+    _kp1, _kp2, _kp3, _kp4 = st.columns(4)
+    _kp1.metric("Cost wasted",   f"${inc_obj.cost_wasted:.4f}")
+    _kp2.metric("Tokens wasted", f"{inc_obj.tokens_wasted:,}")
+    _kp3.metric("Trades",        str(int(sess_row.get("trades_executed", 0))))
+    _kp4.metric("Failed evals",  str(len(inc_obj.failed_evals)))
+
+    _s2l, _s2r = st.columns([3, 2])
+    with _s2l:
+        if session_evs:
+            st.markdown(
+                '<div style="font-size:0.72rem;font-weight:700;color:#64748b;'
+                'text-transform:uppercase;letter-spacing:0.06em;margin:10px 0 4px 0">'
+                'Session-level evals</div>',
+                unsafe_allow_html=True,
+            )
+            for _ev in session_evs:
+                _passed = _ev["passed"]
+                _score  = _ev["score"]
+                _detail = _ev.get("detail") or {}
+                _reason = _eval_reason(_ev["eval_name"], _detail, _score, _passed)
+                _color  = "#10b981" if _passed else "#ef4444"
+                _bg     = "#f0fdf4" if _passed else "#fff5f5"
+                _border = "#bbf7d0" if _passed else "#fecaca"
+                _icon   = "+" if _passed else "x"
+                _rhtml  = (
+                    f'<div style="font-size:0.71rem;color:#6b7280;padding-left:18px;font-style:italic">'
+                    f'{_reason}</div>'
+                    if _reason else ""
+                )
+                st.markdown(
+                    f'<div style="margin:2px 0;padding:4px 10px;background:{_bg};'
+                    f'border-radius:4px;border:1px solid {_border};border-left:3px solid {_color};'
+                    f'font-size:0.82rem">'
+                    f'<span style="color:{_color};font-weight:700">{_icon}</span> &nbsp;'
+                    f'<b style="color:#374151">session</b>'
+                    f'<span style="color:#64748b">.{_ev["eval_name"]}</span>'
+                    f'<span style="float:right;color:{_color};font-weight:600">{_score:.2f}</span>'
+                    f'{score_bar(_score, _passed)}{_rhtml}'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+        else:
+            st.info("Run Analysis from the Incidents Feed to populate eval scores.")
+    with _s2r:
+        _donut = _build_cost_donut(sess_row, sess_traces)
+        if _donut:
+            st.caption("Cost by agent")
+            st.plotly_chart(_donut, use_container_width=True)
+
+    st.divider()
+
+    # ════════════════════════════════════════════════════════════════════════════
+    # SECTION 3 — CALL CHAIN
+    # ════════════════════════════════════════════════════════════════════════════
+    _section_header(
+        "Call Chain",
+        """**Where in the pipeline did it break?**
+
+Each circle is one agent. Arrows show data flow (left to right).
+
+- **Green** — all quality evals passed for this agent
+- **Red** — one or more evals failed; this agent has quality issues
+- **Amber** — root cause: this is where the failure originated
+- **Gray** — agent ran but has no eval data, or was skipped entirely
+
+Hover over any node to see token count, latency, and eval summary.
+""",
+    )
+
+    _chain_fig = _build_call_chain_fig(agents_present, evals_by_agent, root_agent, agent_stats)
+    if _chain_fig:
+        st.plotly_chart(_chain_fig, use_container_width=True)
+    else:
+        st.info("No trace data available to build call chain.")
+
+    st.divider()
+
+    # ════════════════════════════════════════════════════════════════════════════
+    # SECTION 4 — EXECUTION TIMELINE
+    # ════════════════════════════════════════════════════════════════════════════
+    _section_header(
+        "Execution Timeline",
+        """**When did each step run, and how long did it take?**
+
+Each bar = one step (LLM call or tool call) positioned at its actual time within the session.
+
+- **X-axis** — seconds from session start
+- **Bar length** — how long that step took (latency)
+- **Red bars** — steps that errored
+- **Gaps between agents** — handoff time or pipeline stall
+- **Colored bars** — successful steps, color-coded by agent (same as call chain)
+
+Hover over any bar for step name, exact timing, and outcome.
+""",
+    )
+
+    _tl_fig = _build_timeline_fig(sess_traces)
+    if _tl_fig:
+        st.plotly_chart(_tl_fig, use_container_width=True)
+    else:
+        st.info("No trace timestamps available for timeline.")
+
+    st.divider()
+
+    # ════════════════════════════════════════════════════════════════════════════
+    # SECTION 5 — AGENT BREAKDOWN
+    # ════════════════════════════════════════════════════════════════════════════
+    _section_header(
+        "Agent Breakdown",
+        """**What did each agent actually do?**
+
+One card per agent. Cards with failures are expanded by default; healthy agents are collapsed.
+
+Inside each card:
+- **LLM calls** — model, tokens in/out, latency, outcome
+- **Tool calls** — tool name, latency, success or error (repeated identical errors are collapsed)
+- **Quality evals** — automated scores 0.0 to 1.0; green = passed threshold, red = failed
+- **Root cause callout** — amber banner on the agent where the failure originated
+- **Recommended fix** — shown on the root cause agent only
+""",
+    )
+
+    _traces_by_agent: dict[str, list[dict]] = {}
+    for _t in sess_traces:
+        _a = (_t.get("agent") or "unknown").lower()
+        _traces_by_agent.setdefault(_a, []).append(_t)
+
+    _all_agents = list(dict.fromkeys(
+        agents_present + [a for a in _traces_by_agent if a not in agents_present]
+    ))
+
+    for _agent in _all_agents:
+        _a_traces = sorted(_traces_by_agent.get(_agent, []), key=lambda x: x.get("created_at", ""))
+        _a_evals  = evals_by_agent.get(_agent, [])
+        _a_stats  = agent_stats.get(_agent, {})
+        _is_root  = _agent == root_agent
+        _has_fail = any(not e["passed"] for e in _a_evals) or _is_root
+
+        _n_p    = sum(1 for e in _a_evals if e["passed"])
+        _n_f    = sum(1 for e in _a_evals if not e["passed"])
+        _n_llm  = _a_stats.get("n_llm", 0)
+        _n_tool = _a_stats.get("n_tool", 0)
+        _tok    = _a_stats.get("tokens", 0)
+        _lat_s  = _a_stats.get("latency_ms", 0) // 1000
+        _n_err  = _a_stats.get("n_errors", 0)
+
+        _root_tag  = " <- ROOT CAUSE" if _is_root else ""
+        _eval_tag  = f"  |  {_n_p}pass {_n_f}fail evals" if _a_evals else ""
+        _stats_tag = f"  |  {_n_llm} LLM  {_n_tool} tools  {_tok:,} tok  {_lat_s}s"
+        _err_tag   = f"  |  {_n_err} error(s)" if _n_err else ""
+        _label     = f"{_agent.upper()}{_root_tag}{_eval_tag}{_stats_tag}{_err_tag}"
+
+        with st.expander(_label, expanded=_has_fail):
+
+            if _is_root:
+                st.markdown(
+                    f'<div style="background:#fffbeb;border-left:4px solid #f59e0b;'
+                    f'padding:8px 14px;border-radius:0 6px 6px 0;margin-bottom:10px;'
+                    f'font-size:0.85rem;color:#78350f">'
+                    f'<b>ROOT CAUSE</b> — {inc_obj.root_cause}</div>',
+                    unsafe_allow_html=True,
+                )
+
+            _llm_calls = [t for t in _a_traces if t.get("step_type") == "llm_call"]
+            if _llm_calls:
+                st.markdown(
+                    '<div style="font-size:0.72rem;font-weight:700;color:#64748b;'
+                    'text-transform:uppercase;letter-spacing:0.06em;margin:6px 0 3px 0">'
+                    'LLM Calls</div>',
+                    unsafe_allow_html=True,
+                )
+                for _t in _llm_calls:
+                    _is_err  = bool(_str(_t.get("error"))) or _t.get("outcome") == "error"
+                    _tok_in  = int(_t.get("tokens_input") or 0)
+                    _tok_out = int(_t.get("tokens_output") or 0)
+                    _lat     = int(_t.get("latency_ms") or 0)
+                    _model   = _t.get("model") or "—"
+                    _out_col = "#ef4444" if _is_err else "#10b981"
+                    st.markdown(
+                        f'<div class="trace-row {"trace-error" if _is_err else "trace-success"}">'
+                        f'<b>llm_call</b> &nbsp;'
+                        f'<code style="color:#94a3b8">{_model}</code> &nbsp;'
+                        f'<code>{_tok_in}in {_tok_out}out</code> &nbsp;'
+                        f'<code>{_lat}ms</code> &nbsp;'
+                        f'<span style="color:{_out_col}">{_t.get("outcome", "")}</span>'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
+                    if _is_err and _str(_t.get("error")):
+                        with st.expander("Error detail", expanded=True):
+                            st.error(_str(_t.get("error")))
+
+            _tool_calls = [t for t in _a_traces if t.get("step_type") == "tool_call"]
+            if _tool_calls:
+                st.markdown(
+                    '<div style="font-size:0.72rem;font-weight:700;color:#64748b;'
+                    'text-transform:uppercase;letter-spacing:0.06em;margin:10px 0 3px 0">'
+                    'Tool Calls</div>',
+                    unsafe_allow_html=True,
+                )
+                _ti = 0
+                while _ti < len(_tool_calls):
+                    _t        = _tool_calls[_ti]
+                    _is_err   = bool(_str(_t.get("error"))) or _t.get("outcome") == "error"
+                    _tn       = _t.get("tool_name") or "tool"
+                    _lat      = int(_t.get("latency_ms") or 0)
+                    _tj = _ti + 1
+                    while _tj < len(_tool_calls) and _is_err:
+                        _t2 = _tool_calls[_tj]
+                        _t2_err = bool(_str(_t2.get("error"))) or _t2.get("outcome") == "error"
+                        if _t2_err and _t2.get("tool_name") == _tn:
+                            _tj += 1
+                        else:
+                            break
+                    _count = _tj - _ti
+                    if _count > 1 and _is_err:
+                        st.markdown(
+                            f'<div class="trace-row trace-error">'
+                            f'<b>{_tn}</b> &nbsp; <code>{_lat}ms</code> &nbsp;'
+                            f'<span style="color:#ef4444">error x{_count}</span> '
+                            f'<span style="color:#94a3b8;font-size:0.73rem">(repeated, collapsed)</span>'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
+                        with st.expander(f"Error — {_tn} x{_count}", expanded=_is_root):
+                            st.error(_str(_t.get("error")))
+                    else:
+                        _out_col = "#ef4444" if _is_err else "#10b981"
+                        st.markdown(
+                            f'<div class="trace-row {"trace-error" if _is_err else ""}">'
+                            f'<b>{_tn}</b> &nbsp; <code>{_lat}ms</code> &nbsp;'
+                            f'<span style="color:{_out_col}">{_t.get("outcome", "")}</span>'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
+                        if _is_err and _str(_t.get("error")):
+                            with st.expander(f"Error — {_tn}", expanded=_is_root):
+                                st.error(_str(_t.get("error")))
+                    _ti = _tj
+
+            _other_steps = [t for t in _a_traces if t.get("step_type") not in ("llm_call", "tool_call")]
+            if _other_steps:
+                st.markdown(
+                    '<div style="font-size:0.72rem;font-weight:700;color:#64748b;'
+                    'text-transform:uppercase;letter-spacing:0.06em;margin:10px 0 3px 0">'
+                    'Other Steps</div>',
+                    unsafe_allow_html=True,
+                )
+                for _t in _other_steps:
+                    _is_err  = bool(_str(_t.get("error"))) or _t.get("outcome") == "error"
+                    _step    = _t.get("tool_name") or _t.get("step_type") or "step"
+                    _lat     = int(_t.get("latency_ms") or 0)
+                    _out_col = "#ef4444" if _is_err else "#10b981"
+                    st.markdown(
+                        f'<div class="trace-row">'
+                        f'<b>{_step}</b> &nbsp; <code>{_lat}ms</code> &nbsp;'
+                        f'<span style="color:{_out_col}">{_t.get("outcome", "")}</span>'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
+
+            if _a_evals:
+                st.markdown(
+                    '<div style="font-size:0.72rem;font-weight:700;color:#64748b;'
+                    'text-transform:uppercase;letter-spacing:0.06em;margin:12px 0 3px 0">'
+                    'Quality Evals</div>',
+                    unsafe_allow_html=True,
+                )
+                for _ev in _a_evals:
+                    _passed = _ev["passed"]
+                    _score  = _ev["score"]
+                    _detail = _ev.get("detail") or {}
+                    _reason = _eval_reason(_ev["eval_name"], _detail, _score, _passed)
+                    _color  = "#10b981" if _passed else "#ef4444"
+                    _bg     = "#f0fdf4" if _passed else "#fff5f5"
+                    _border = "#bbf7d0" if _passed else "#fecaca"
+                    _icon   = "+" if _passed else "x"
+                    _rhtml  = (
+                        f'<div style="font-size:0.71rem;color:#6b7280;padding-left:18px;font-style:italic">'
+                        f'{_reason}</div>'
+                        if _reason else ""
+                    )
+                    st.markdown(
+                        f'<div style="margin:2px 0;padding:4px 10px;background:{_bg};'
+                        f'border-radius:4px;border:1px solid {_border};border-left:3px solid {_color};'
+                        f'font-size:0.82rem">'
+                        f'<span style="color:{_color};font-weight:700">{_icon}</span> &nbsp;'
+                        f'<b style="color:#374151">{_ev["agent"]}</b>'
+                        f'<span style="color:#64748b">.{_ev["eval_name"]}</span>'
+                        f'<span style="float:right;color:{_color};font-weight:600">{_score:.2f}</span>'
+                        f'{score_bar(_score, _passed)}{_rhtml}'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
+
+            if _is_root:
+                st.markdown(
+                    f'<div style="margin-top:12px;background:#f0fdf4;border:1px solid #6ee7b7;'
+                    f'border-radius:6px;padding:10px 14px">'
+                    f'<div style="font-size:0.7rem;font-weight:700;color:#065f46;'
+                    f'text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px">'
+                    f'Recommended Fix</div>'
+                    f'<pre style="margin:0;font-size:0.77rem;color:#064e3b;'
+                    f'white-space:pre-wrap;font-family:inherit">{fix_text}</pre>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+
+    st.divider()
+
+    # ════════════════════════════════════════════════════════════════════════════
+    # SECTION 6 — COMPARE TO HEALTHY SESSION
+    # ════════════════════════════════════════════════════════════════════════════
+    _section_header(
+        "Compare to Healthy Session",
+        """**How different was this from a normal run?**
+
+Side-by-side comparison: this incident session vs. the most recent session with no incidents.
+
+- **Percentages** show the delta relative to the healthy baseline
+- **Red** = this session performed worse on that metric
+- **Green** = this session performed better
+""",
+    )
+
+    _incident_sids    = set(incidents["session_id"].tolist()) if not incidents.empty else set()
+    _healthy_sessions = sessions[~sessions["id"].isin(_incident_sids)]
+
+    if not _healthy_sessions.empty and rca_sid:
+        _ref = _healthy_sessions.sort_values("started_at", ascending=False).iloc[0].to_dict()
+
+        def _row_html(label, this_v, ref_v, lower_better=True, fmt="f"):
+            delta  = this_v - ref_v
+            pct    = (delta / ref_v * 100) if ref_v else 0
+            better = (delta < 0) if lower_better else (delta > 0)
+            color  = "#10b981" if better else "#ef4444"
+            sign   = "+" if delta > 0 else ""
+            if fmt == "$":
+                val_s = f"${this_v:.4f}"
+            elif fmt == "i":
+                val_s = f"{int(this_v):,}"
+            else:
+                val_s = f"{this_v:.1f}s"
+            return (
+                f'<div style="display:flex;justify-content:space-between;align-items:center;'
+                f'padding:5px 0;border-bottom:1px solid #f1f5f9;font-size:0.84rem">'
+                f'<span style="color:#64748b">{label}</span>'
+                f'<span><b>{val_s}</b> '
+                f'<span style="color:{color};font-size:0.73rem">({sign}{pct:.0f}%)</span>'
+                f'</span></div>'
+            )
+
+        _ref_ts  = _ref.get("started_at")
+        _ref_str = _ref_ts.strftime("%m-%d %H:%M") if pd.notna(_ref_ts) else _ref["id"][:8]
+        _ref_tok = int((_ref.get("total_tokens_input") or 0) + (_ref.get("total_tokens_output") or 0))
+        _this_tok = int((sess_row.get("total_tokens_input") or 0) + (sess_row.get("total_tokens_output") or 0))
+
+        _cc1, _cc2 = st.columns(2)
+        with _cc1:
+            st.markdown(f"**This session** `{(rca_sid or '')[:8]}...`")
+            st.markdown(
+                f'<div style="background:#fff5f5;border:1px solid #fecaca;border-radius:6px;padding:12px 14px">'
+                + _row_html("Cost ($)", float(sess_row.get("total_cost_usd", 0)), float(_ref.get("total_cost_usd", 1)), fmt="$")
+                + _row_html("Latency (s)", float(sess_row.get("total_latency_ms", 0)) / 1000, float(_ref.get("total_latency_ms", 1)) / 1000, fmt="s")
+                + _row_html("Tokens", float(_this_tok), float(_ref_tok or 1), fmt="i")
+                + _row_html("Trades", float(sess_row.get("trades_executed", 0)), float(_ref.get("trades_executed", 0)), lower_better=False, fmt="i")
+                + f'</div>',
+                unsafe_allow_html=True,
+            )
+        with _cc2:
+            st.markdown(f"**Healthy baseline** `{_ref_str}`")
+            st.markdown(
+                f'<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;padding:12px 14px">'
+                f'<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #f1f5f9;font-size:0.84rem"><span style="color:#64748b">Cost ($)</span><b>${float(_ref.get("total_cost_usd", 0)):.4f}</b></div>'
+                f'<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #f1f5f9;font-size:0.84rem"><span style="color:#64748b">Latency (s)</span><b>{int((_ref.get("total_latency_ms", 0) or 0) // 1000)}s</b></div>'
+                f'<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #f1f5f9;font-size:0.84rem"><span style="color:#64748b">Tokens</span><b>{_ref_tok:,}</b></div>'
+                f'<div style="display:flex;justify-content:space-between;padding:5px 0;font-size:0.84rem"><span style="color:#64748b">Trades</span><b>{int(_ref.get("trades_executed", 0))}</b></div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+    else:
+        st.info("No clean baseline available yet — all sessions have incidents, or no session data found.")
+
+    st.divider()
+
+    # ════════════════════════════════════════════════════════════════════════════
+    # NOTES
+    # ════════════════════════════════════════════════════════════════════════════
+    _section_header(
+        "Notes",
+        """**Add your own observations.**
+
+Document what you found during investigation, whether the fix was applied, or any context for teammates.
+
+Notes are stored in session state and cleared on page refresh.
+""",
+    )
+
+    _note_key = f"note_{rca_sid}"
+    _existing = st.session_state.get(_note_key, "")
+    _new_note = st.text_area(
+        "note",
+        value=_existing,
+        placeholder="e.g. Confirmed — yfinance rate limit at 06:34 UTC. Applied timeout fix. Watching next 3 sessions.",
+        label_visibility="collapsed",
+        height=80,
+    )
+    if st.button("Save Note", key=f"save_{rca_sid}"):
+        st.session_state[_note_key] = _new_note
+        st.success("Note saved.")
+
 
 
 # ══════════════════════════════════════════════════════════════════════════════
