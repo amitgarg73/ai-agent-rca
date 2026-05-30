@@ -145,8 +145,20 @@ class TestResearchCompletion:
         r = eval_research_completion(traces, make_session())
         assert not r.passed
 
-    def test_partial_credit_ran_no_decision(self):
+    def test_no_llm_call_scores_zero(self):
+        # Only tool calls, no LLM ran — score 0.0 (agent never started reasoning)
         traces = [make_trace(agent="research", step_type="tool_call", outcome="success")]
+        r = eval_research_completion(traces, make_session())
+        assert not r.passed
+        assert r.score == 0.0
+
+    def test_partial_credit_llm_ran_all_tools_failed(self):
+        # LLM ran but every tool call failed — score 0.3 (started but couldn't fetch data)
+        traces = [
+            make_trace(agent="research", step_type="llm_call", outcome="success"),
+            make_trace(agent="research", step_type="tool_call", outcome="error"),
+            make_trace(agent="research", step_type="tool_call", outcome="error"),
+        ]
         r = eval_research_completion(traces, make_session())
         assert not r.passed
         assert r.score == 0.3

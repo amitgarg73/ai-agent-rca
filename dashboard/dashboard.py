@@ -972,6 +972,7 @@ elif page == "RCA View":
         agent_i   = frame.get("agent", "")
 
         if is_err_i and not is_root_i and tool_i:
+            # Collapse ALL consecutive identical non-root errors into one summary row
             j = i + 1
             while j < len(annotated):
                 f2  = annotated[j]
@@ -985,15 +986,13 @@ elif page == "RCA View":
                     j += 1
                 else:
                     break
-            extras = j - i - 1
-            processed.append(frame)
-            if extras > 0:
-                processed.append({
-                    "_collapse": True,
-                    "count": extras,
-                    "tool":  tool_i or "tool",
-                    "agent": agent_i,
-                })
+            count = j - i   # total non-root errors in this run (includes frame i)
+            processed.append({
+                "_collapse": True,
+                "count": count,
+                "tool":  tool_i or "tool",
+                "agent": agent_i,
+            })
             i = j
         else:
             processed.append(frame)

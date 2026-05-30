@@ -90,26 +90,31 @@ def eval_market_data_freshness(traces: list[dict], session: dict) -> EvalResult:
 
 def eval_research_completion(traces: list[dict], session: dict) -> EvalResult:
     """
-    Score 1.0 if research agent has at least one successful non-tool trace
-    (decision or llm_call outcome=success) — proxy for a recommendation produced.
+    Score 1.0 if research agent ran its LLM AND at least one tool call succeeded.
+    Score 0.3 if LLM ran but all tool calls failed (agent started but couldn't fetch data).
+    Score 0.0 if no research traces or no successful LLM call at all.
     """
     research = [t for t in traces if (t.get("agent") or "").lower() == "research"]
     if not research:
         return EvalResult("completion", "research", 0.0, False, 0.7,
                           {"reason": "no research agent traces"})
-    decisions = [
-        t for t in research
-        if (t.get("step_type") or "") in ("decision", "llm_call")
+    llm_ok = any(
+        (t.get("step_type") or "") in ("decision", "llm_call")
         and (t.get("outcome") or "") == "success"
-    ]
-    if decisions:
-        return EvalResult("completion", "research", 1.0, True, 0.7,
-                          {"decision_traces": len(decisions)})
-    # Partial credit: research ran but no clean decision
-    score = 0.3 if research else 0.0
-    return EvalResult("completion", "research", score, False, 0.7,
-                      {"reason": "research ran but no successful decision/llm_call trace",
-                       "trace_count": len(research)})
+        for t in research
+    )
+    if not llm_ok:
+        return EvalResult("completion", "research", 0.0, False, 0.7,
+                          {"reason": "no successful llm_call or decision trace"})
+    tool_calls = [t for t in research if (t.get("step_type") or "") == "tool_call"]
+    tool_ok    = any((t.get("outcome") or "") == "success" for t in tool_calls)
+    if tool_calls and not tool_ok:
+        # LLM ran but every tool call failed — agent couldn't fetch data
+        return EvalResult("completion", "research", 0.3, False, 0.7,
+                          {"reason": "llm ran but all tool calls failed",
+                           "tool_calls": len(tool_calls)})
+    return EvalResult("completion", "research", 1.0, True, 0.7,
+                      {"llm_ok": True, "tool_calls_ok": True})
 
 
 def eval_research_token_efficiency(traces: list[dict], session: dict) -> EvalResult:
