@@ -313,9 +313,9 @@ if page == "Ledger":
 
     def row_style(row):
         if row["Incidents"] > 0:
-            return ["background-color: #1a0505"] * len(row)
+            return ["background-color: #fee2e2; color: #7f1d1d"] * len(row)
         if row["Trades"] == 0:
-            return ["background-color: #1a1205"] * len(row)
+            return ["background-color: #fef9c3; color: #713f12"] * len(row)
         return [""] * len(row)
 
     st.dataframe(
