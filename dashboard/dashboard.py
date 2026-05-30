@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import time
 from collections import defaultdict
 import streamlit as st
+import streamlit.components.v1 as st_components
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
@@ -530,12 +531,16 @@ def _render_call_chain_html(
     </div>"""
 
     return (
-        f'<div style="background:#f8fafc;border-radius:12px;padding:16px 20px;">'
-        f'<div style="display:flex;align-items:stretch;flex-wrap:nowrap;gap:0;overflow-x:auto;">'
+        '<html><head><style>'
+        'body{margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f8fafc;}'
+        '</style></head><body>'
+        '<div style="background:#f8fafc;border-radius:12px;padding:16px 20px;">'
+        '<div style="display:flex;align-items:stretch;flex-wrap:nowrap;gap:0;overflow-x:auto;">'
         f"{cards_html}"
-        f"</div>"
+        '</div>'
         f"{legend}"
-        f"</div>"
+        '</div>'
+        '</body></html>'
     )
 
 
@@ -1544,7 +1549,8 @@ Each card shows cost, token count, latency, and eval pass/fail counts inline.
 
     _chain_html = _render_call_chain_html(agents_present, evals_by_agent, root_agent, agent_stats, sess_row)
     if _chain_html:
-        st.markdown(_chain_html.strip(), unsafe_allow_html=True)
+        _chain_height = 60 + len(agents_present) * 5 + 170  # scales with agent count
+        st_components.html(_chain_html, height=_chain_height, scrolling=False)
     else:
         st.info("No trace data available to build call chain.")
 
