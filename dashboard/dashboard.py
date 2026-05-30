@@ -41,24 +41,38 @@ st.markdown("""
 /* Reduce top padding on main content (default is 5rem — way too much) */
 .block-container { padding-top: 1.2rem !important; padding-bottom: 1rem !important; }
 
-/* Always keep sidebar visible — override any collapsed transform */
-[data-testid="stSidebar"] {
-    min-width: 244px !important;
-    width: 244px !important;
-    transform: none !important;
-    display: block !important;
-    left: 0 !important;
-}
-[data-testid="stSidebar"][aria-expanded="false"] {
-    margin-left: 0 !important;
+/* Desktop: lock sidebar open, hide toggle */
+@media (min-width: 768px) {
+    [data-testid="stSidebar"] {
+        min-width: 244px !important;
+        width: 244px !important;
+        transform: none !important;
+        display: block !important;
+        left: 0 !important;
+    }
+    [data-testid="stSidebar"][aria-expanded="false"] {
+        margin-left: 0 !important;
+    }
+    [data-testid="stSidebarCollapseButton"],
+    [data-testid="stSidebarCollapsedControl"],
+    button[aria-label="Close sidebar"],
+    button[aria-label="Open sidebar"] {
+        display: none !important;
+    }
 }
 
-/* Hide all sidebar toggle buttons so users can't collapse it */
-[data-testid="stSidebarCollapseButton"],
-[data-testid="stSidebarCollapsedControl"],
-button[aria-label="Close sidebar"],
-button[aria-label="Open sidebar"] {
-    display: none !important;
+/* Mobile: let sidebar overlay and toggle freely */
+@media (max-width: 767px) {
+    [data-testid="stSidebarCollapseButton"],
+    button[aria-label="Close sidebar"],
+    button[aria-label="Open sidebar"] {
+        display: flex !important;
+        opacity: 1 !important;
+        visibility: visible !important;
+    }
+    [data-testid="stSidebarCollapsedControl"] {
+        display: flex !important;
+    }
 }
 
 /* KPI cards */
@@ -110,14 +124,14 @@ button[aria-label="Open sidebar"] {
             padding: 10px 16px; color: #5b21b6; font-size: 0.9rem; }
 </style>
 <script>
-// Force sidebar open if Streamlit's JS collapses it on load
+// On desktop only: force sidebar open after Streamlit hydration
 (function keepSidebarOpen() {
+    if (window.innerWidth < 768) return;
     function expand() {
         var doc = window.parent ? window.parent.document : document;
         var btn = doc.querySelector('[data-testid="stSidebarCollapsedControl"] button');
         if (btn) { btn.click(); }
     }
-    // Try immediately and after a short delay for Streamlit hydration
     setTimeout(expand, 300);
     setTimeout(expand, 800);
 })();
