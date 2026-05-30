@@ -958,76 +958,110 @@ elif page == "RCA View":
             if t:
                 return f"{s}/{t} market traces succeeded — score = success/total, threshold ≥ 0.7"
 
+        # detail keys: lag_minutes, threshold_minutes  (or reason for edge cases)
         if eval_name == "data_freshness":
             reason = d.get("reason", "")
             if reason:
                 return reason
-            if d.get("all_fresh"):
-                return f"{d.get('count', '')} traces all within freshness window — scored 1.0"
-            age = d.get("max_age_ms")
-            thr = d.get("threshold_ms")
-            if age and thr:
-                return f"oldest data {age//1000}s ago — limit {thr//1000}s, scored by recency"
+            lag = d.get("lag_minutes")
+            thr = d.get("threshold_minutes")
+            if lag is not None and thr is not None:
+                rel = "within" if passed else "exceeds"
+                return (f"First market trace {lag} min after session start — "
+                        f"{rel} {thr}-min limit, scored {score:.2f}")
 
+        # detail keys: total + success  (or reason if risk never ran)
         if eval_name == "assessment_complete":
             reason = d.get("reason", "")
             if reason:
                 return reason
-            n = d.get("risk_traces", "")
-            return (f"Risk agent ran {n} traces — scored {score:.2f}" if n
-                    else f"Risk assessment {'present' if passed else 'absent'} — threshold 1.0")
+            total   = d.get("total", 0)
+            success = d.get("success", 0)
+            if total:
+                return (f"Risk agent: {success}/{total} traces succeeded — "
+                        f"scored {'1.0' if passed else '0.0'}, threshold = 1.0")
+            return f"Risk assessment {'present' if passed else 'absent'} — threshold 1.0"
 
+        # detail keys: risk_traces, error_traces, errors
         if eval_name == "within_parameters":
             reason = d.get("reason", "")
             if reason:
                 return reason
-            return f"Score {score:.2f} — checks if risk parameters are within policy bounds"
+            rt = d.get("risk_traces", 0)
+            et = d.get("error_traces", 0)
+            if rt:
+                return (f"{rt} risk trace(s), {et} with errors — "
+                        f"score = 1 − errors/traces, threshold ≥ 0.9")
+            return f"No risk traces found — scored {score:.2f}"
 
-        if eval_name in ("decision_made", "consistency"):
+        # decision_made detail: trades_executed OR terminal_reason OR reason+orch_traces
+        if eval_name == "decision_made":
             reason = d.get("reason", "")
             if reason:
                 return reason
-            decisions = d.get("decisions")
-            if decisions is not None:
-                return f"{decisions} orchestrator decision trace(s) — scored {score:.2f}, threshold ≥ 0.7"
-            return f"Orchestrator {'produced a decision' if passed else 'did not reach a decision'}"
+            trades = d.get("trades_executed")
+            term   = d.get("terminal_reason")
+            if trades is not None and trades > 0:
+                return f"{trades} trade(s) executed — orchestrator decided, scored 1.0"
+            if term:
+                return f"Terminal reason logged: '{term}' — scored 0.8, threshold ≥ 0.7"
+            return "Orchestrator ran but no decision or reason recorded — scored 0.4"
 
+        # consistency detail: always has reason string
+        if eval_name == "consistency":
+            reason = d.get("reason", "")
+            if reason:
+                return reason
+            return f"Orchestrator pipeline consistency — scored {score:.2f}, threshold ≥ 0.8"
+
+        # detail keys: present (list), missing (list)
         if eval_name == "pipeline_completion":
             missing = d.get("missing", [])
             present = d.get("present", [])
-            n_req = len(present) + len(missing)
+            n_req   = len(present) + len(missing)
             if missing:
                 return (f"{len(present)}/{n_req} required agents ran — "
-                        f"missing: {', '.join(missing)}")
-            return f"All {len(present)} required agents ran — scored 1.0"
+                        f"missing: {', '.join(missing)}, threshold = 1.0")
+            return f"All {n_req} agents ran (market, research, risk, orchestrator) — scored 1.0"
 
+        # detail keys: cost_usd, mean, stdev, z_score, threshold_sigma  (or reason)
         if eval_name == "cost_anomaly":
             reason = d.get("reason", "")
             if reason:
-                return reason
-            z = d.get("z_score")
-            if z:
-                return f"{z:.1f}σ above mean session cost — flagged above 2σ"
-            return "Within normal cost range — scored 1.0"
+                cost = d.get("cost_usd")
+                return reason + (f" — USD{cost:.4f}" if cost else "")
+            z    = d.get("z_score")
+            mean = d.get("mean")
+            cost = d.get("cost_usd")
+            sig  = d.get("threshold_sigma", 2)
+            if z is not None and mean is not None:
+                rel = f"{z:.1f}σ above" if z > 0 else "within"
+                flag = "flagged" if not passed else "normal"
+                return (f"USD{cost:.4f} spent — {rel} mean USD{mean:.4f} "
+                        f"({flag}, threshold {sig}σ)")
 
+        # detail keys: trades_executed  OR  terminal_reason+trades_executed  OR  reason
         if eval_name == "outcome_linkage":
             reason = d.get("reason", "")
             if reason:
                 return reason
-            trades = d.get("trades")
-            cost   = d.get("cost")
-            if trades is not None:
-                return (f"{trades} trade(s) executed for USD{cost:.4f} spent — "
-                        f"score = trades > 0 → 1.0, else 0.0") if cost else f"{trades} trade(s) executed"
+            trades = d.get("trades_executed")
+            term   = d.get("terminal_reason")
+            if trades is not None and trades > 0:
+                return f"{trades} trade(s) executed — session has measurable outcome, scored 1.0"
+            if term:
+                return f"No trades but terminal reason logged: '{term}' — scored 0.8"
+            return "0 trades and no terminal reason — silent exit, scored 0.0"
 
+        # detail keys: total_tokens, trades, tokens_per_decision, threshold
         if eval_name == "tokens_per_decision":
-            tpd = d.get("tokens_per_decision")
-            thr = d.get("threshold")
+            tpd   = d.get("tokens_per_decision")
+            thr   = d.get("threshold")
             total = d.get("total_tokens")
-            dec   = d.get("decisions")
-            if tpd and thr:
-                return (f"{tpd:,} tokens ÷ {dec} decision(s) = {tpd:,}/decision "
-                        f"(limit {thr:,}) — score = limit/actual, capped at 1.0")
+            dec   = d.get("trades")
+            if tpd is not None and thr:
+                return (f"{total:,} tokens / {dec} decision(s) = {tpd:,} per decision "
+                        f"(limit {thr:,}) — score = 1 − tpd/(2×limit)")
 
         return ""
 
