@@ -418,25 +418,45 @@ def _build_call_chain_fig(
     evals_by_agent: dict,
     root_agent,
     agent_stats: dict,
+    sess_row: dict = None,
+    sess_traces: list = None,
 ):
-    """Plotly network graph: agent pipeline with pass/fail coloring."""
-    if not agents_present:
+    """Plotly Sankey: budget flow through the agent pipeline. Ribbon width = cost consumed."""
+    if not agents_present or len(agents_present) < 1:
         return None
 
-    xs = list(range(len(agents_present)))
+    # Per-agent cost from cost_breakdown, falling back to token proportion
+    bd = (sess_row or {}).get("cost_breakdown")
+    agent_cost: dict[str, float] = {}
+    if isinstance(bd, dict) and bd:
+        for k, v in bd.items():
+            if isinstance(v, dict):
+                agent_cost[k.lower()] = float(v.get("cost_usd", 0))
+    if not agent_cost:
+        total_cost = float((sess_row or {}).get("total_cost_usd") or 0)
+        total_tok  = sum(s.get("tokens", 1) for s in agent_stats.values()) or 1
+        for a, s in agent_stats.items():
+            agent_cost[a] = (s.get("tokens", 0) / total_tok) * total_cost
 
     def _node_color(a):
         if a == root_agent:
             return "#f59e0b"
         evs = evals_by_agent.get(a.lower(), [])
         if not evs:
-            return "#475569"
+            return "#94a3b8"
         return "#ef4444" if any(not e["passed"] for e in evs) else "#10b981"
 
-    node_colors   = [_node_color(a) for a in agents_present]
-    border_colors = ["#fbbf24" if a == root_agent else "#0f172a" for a in agents_present]
+    # Decide terminal label — waste if 0 trades, output otherwise
+    trades = int((sess_row or {}).get("trades_executed", 0))
+    terminal_label = "OUTPUT" if trades > 0 else "WASTE"
+    terminal_color = "#10b981" if trades > 0 else "#ef4444"
 
-    hover_texts = []
+    node_labels = [a.upper() for a in agents_present] + [terminal_label]
+    node_colors = [_node_color(a) for a in agents_present] + [terminal_color]
+    n = len(agents_present)
+
+    # Build hover text per node
+    customdata = []
     for a in agents_present:
         evs   = evals_by_agent.get(a.lower(), [])
         stats = agent_stats.get(a.lower(), {})
@@ -444,61 +464,70 @@ def _build_call_chain_fig(
         n_f   = sum(1 for e in evs if not e["passed"])
         tok   = stats.get("tokens", 0)
         lat   = stats.get("latency_ms", 0)
-        errs  = stats.get("n_errors", 0)
-        lines = [f"<b>{a.upper()}</b>"]
+        cost  = agent_cost.get(a, 0)
+        parts = [f"<b>{a.upper()}</b>"]
         if a == root_agent:
-            lines.append("<b>ROOT CAUSE</b>")
-        lines += [
+            parts.append("<b>ROOT CAUSE</b>")
+        parts += [
+            f"Cost: ${cost:.4f}",
             f"Tokens: {tok:,}",
             f"Latency: {lat // 1000}s",
             f"Evals: {n_p} pass  {n_f} fail",
         ]
-        if errs:
-            lines.append(f"Errors: {errs}")
-        hover_texts.append("<br>".join(lines))
+        customdata.append("<br>".join(parts))
+    customdata.append(terminal_label)
 
-    fig = go.Figure()
+    # Links: agent[i] → agent[i+1], last agent → terminal
+    src, tgt, vals, colors, labels = [], [], [], [], []
+    for i, a in enumerate(agents_present):
+        cost = max(agent_cost.get(a, 0.0001), 0.0001)
+        tgt_idx = i + 1  # next agent, or terminal (index n)
+        src.append(i)
+        tgt.append(tgt_idx)
+        vals.append(cost)
+        colors.append(AGENT_COLORS.get(a, "#94a3b8") + "99")
+        labels.append(f"${cost:.4f}")
 
-    for i in range(len(agents_present) - 1):
-        fig.add_annotation(
-            x=xs[i + 1] - 0.22, y=0, ax=xs[i] + 0.22, ay=0,
-            xref="x", yref="y", axref="x", ayref="y",
-            showarrow=True, arrowhead=3, arrowsize=1.2,
-            arrowwidth=2, arrowcolor="#475569",
-        )
-
-    fig.add_trace(go.Scatter(
-        x=xs, y=[0] * len(xs),
-        mode="markers+text",
-        marker=dict(size=60, color=node_colors, line=dict(width=3, color=border_colors)),
-        text=[a.upper() for a in agents_present],
-        textposition="top center",
-        textfont=dict(size=11, color="#0f172a", family="monospace"),
-        hovertext=hover_texts,
-        hoverinfo="text",
-        customdata=agents_present,
-        showlegend=False,
+    fig = go.Figure(go.Sankey(
+        arrangement="snap",
+        node=dict(
+            pad=25,
+            thickness=28,
+            label=node_labels,
+            color=node_colors,
+            line=dict(color="#cbd5e1", width=1),
+            customdata=customdata,
+            hovertemplate="%{customdata}<extra></extra>",
+        ),
+        link=dict(
+            source=src,
+            target=tgt,
+            value=vals,
+            color=colors,
+            label=labels,
+            hovertemplate="<b>%{source.label}</b> → <b>%{target.label}</b><br>Cost: %{label}<extra></extra>",
+        ),
     ))
 
-    for i, (color, label) in enumerate([
+    # Legend row below chart
+    legend_items = [
         ("#10b981", "All evals passed"),
-        ("#ef4444", "Evals failed"),
+        ("#ef4444", "Evals failed / WASTE"),
         ("#f59e0b", "Root cause"),
-        ("#475569", "No evals / skipped"),
-    ]):
+        ("#94a3b8", "No eval data"),
+    ]
+    for i, (color, label) in enumerate(legend_items):
         fig.add_annotation(
-            x=i * 0.26, y=-0.48, xref="paper", yref="paper",
+            x=i * 0.26, y=-0.12, xref="paper", yref="paper",
             text=f'<span style="color:{color}">&#9679;</span> {label}',
-            showarrow=False, font=dict(size=10, color="#94a3b8"), xanchor="left",
+            showarrow=False, font=dict(size=10, color="#64748b"), xanchor="left",
         )
 
     fig.update_layout(
-        paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff", font_color="#1e293b",
-        height=165,
-        margin=dict(t=30, b=50, l=20, r=20),
-        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False,
-                   range=[-0.7, max(len(agents_present) - 0.3, 0.5)]),
-        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[-0.35, 0.35]),
+        paper_bgcolor="#f8fafc",
+        font=dict(color="#1e293b", size=11),
+        height=200,
+        margin=dict(t=15, b=45, l=15, r=15),
     )
     return fig
 
@@ -524,18 +553,29 @@ def _build_timeline_fig(traces: list):
     if not agents:
         agents = df["agent"].dropna().unique().tolist()
 
+    total_dur = df["end_s"].max() or 1.0
+    label_threshold = total_dur * 0.06  # only label bars wider than 6% of total
+
     fig = go.Figure()
     for agent in agents:
         adf   = df[df["agent"] == agent]
         color = AGENT_COLORS.get(agent, "#94a3b8")
         for _, row in adf.iterrows():
             bar_color = "#ef4444" if row["is_err"] else color
-            dur = max(float(row["end_s"]) - float(row["start_s"]), 2.0)
+            dur       = max(float(row["end_s"]) - float(row["start_s"]), 2.0)
+            step_name = str(row["step"])
+            bar_text  = step_name if dur >= label_threshold else ""
             fig.add_trace(go.Bar(
                 x=[dur], y=[agent.upper()], base=[float(row["start_s"])],
-                orientation="h", marker_color=bar_color, marker_line_width=0,
+                orientation="h",
+                marker_color=bar_color,
+                marker_line_width=0,
+                text=bar_text,
+                textposition="inside",
+                insidetextanchor="start",
+                textfont=dict(size=9, color="#ffffff"),
                 hovertemplate=(
-                    f"<b>{agent}</b> · {row['step']}<br>"
+                    f"<b>{agent}</b> · {step_name}<br>"
                     f"Start: {row['start_s']:.1f}s<br>"
                     f"Duration: {int(row['latency_ms'])}ms<br>"
                     f"Outcome: {row.get('outcome') or 'unknown'}<br>"
@@ -544,10 +584,22 @@ def _build_timeline_fig(traces: list):
                 showlegend=False,
             ))
 
+        # Error count annotation at right edge of agent row
+        n_err = int(adf["is_err"].sum())
+        if n_err:
+            fig.add_annotation(
+                x=1.01, y=agent.upper(),
+                xref="paper", yref="y",
+                text=f"⚠ {n_err} error{'s' if n_err > 1 else ''}",
+                showarrow=False,
+                font=dict(size=10, color="#ef4444"),
+                xanchor="left",
+            )
+
     fig.update_layout(
         paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff", font_color="#1e293b",
-        height=max(180, len(agents) * 72 + 40),
-        margin=dict(t=10, b=30, l=10, r=10),
+        height=max(200, len(agents) * 80 + 50),
+        margin=dict(t=10, b=35, l=10, r=90),
         barmode="overlay",
         xaxis=dict(title="Seconds from session start", gridcolor="#e2e8f0", tickfont=dict(size=10)),
         yaxis=dict(
@@ -1483,7 +1535,7 @@ Hover over any node to see token count, latency, and eval summary.
 """,
     )
 
-    _chain_fig = _build_call_chain_fig(agents_present, evals_by_agent, root_agent, agent_stats)
+    _chain_fig = _build_call_chain_fig(agents_present, evals_by_agent, root_agent, agent_stats, sess_row, sess_traces)
     if _chain_fig:
         st.plotly_chart(_chain_fig, use_container_width=True)
     else:
