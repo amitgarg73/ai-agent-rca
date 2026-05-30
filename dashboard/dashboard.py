@@ -1592,34 +1592,59 @@ Read the fix, then scroll down to the Agent Breakdown to verify your understandi
 
     _s2l, _s2r = st.columns([3, 2])
     with _s2l:
+        _SESSION_EVAL_TIPS = {
+            "pipeline_completion": (
+                "Were all 4 agents present?\n"
+                "Score = agents that ran / 4. Threshold = 1.0 (all must run).\n"
+                "Failing here means the pipeline stopped early — research never handed off to risk or orchestrator."
+            ),
+            "cost_anomaly": (
+                "Was this session unusually expensive?\n"
+                "Score drops toward 0 the further cost is above the rolling mean.\n"
+                "Flagged when cost > mean + 2 standard deviations. Catches runaway token loops."
+            ),
+            "outcome_linkage": (
+                "Did the session produce a measurable result?\n"
+                "Pass = trades executed OR a terminal_reason logged (e.g. no_opportunity, risk_rejected).\n"
+                "Score 0.0 = 0 trades and no exit reason — the agent quit silently."
+            ),
+            "tokens_per_decision": (
+                "How token-efficient was the session?\n"
+                "Score = 1 - (tokens_per_decision / limit). Limit = 40,000 tokens per decision.\n"
+                "High token use with few decisions signals context spiral or redundant tool calls."
+            ),
+        }
         if session_evs:
             st.markdown(
                 '<div style="font-size:0.72rem;font-weight:700;color:#64748b;'
-                'text-transform:uppercase;letter-spacing:0.06em;margin:10px 0 4px 0">'
-                'Session-level evals</div>',
+                'text-transform:uppercase;letter-spacing:0.06em;margin:10px 0 2px 0">'
+                'Session</div>'
+                '<div style="font-size:0.7rem;color:#94a3b8;margin-bottom:8px">'
+                'Holistic checks across the full pipeline run — hover each row for details</div>',
                 unsafe_allow_html=True,
             )
             for _ev in session_evs:
-                _passed = _ev["passed"]
-                _score  = _ev["score"]
-                _detail = _ev.get("detail") or {}
-                _reason = _eval_reason(_ev["eval_name"], _detail, _score, _passed)
-                _color  = "#10b981" if _passed else "#ef4444"
-                _bg     = "#f0fdf4" if _passed else "#fff5f5"
-                _border = "#bbf7d0" if _passed else "#fecaca"
-                _icon   = "+" if _passed else "x"
-                _rhtml  = (
-                    f'<div style="font-size:0.71rem;color:#6b7280;padding-left:18px;font-style:italic">'
-                    f'{_reason}</div>'
+                _passed  = _ev["passed"]
+                _score   = _ev["score"]
+                _detail  = _ev.get("detail") or {}
+                _ename   = _ev["eval_name"].replace("session.", "")
+                _reason  = _eval_reason(_ev["eval_name"], _detail, _score, _passed)
+                _tip     = _SESSION_EVAL_TIPS.get(_ename, "")
+                _color   = "#10b981" if _passed else "#ef4444"
+                _bg      = "#f0fdf4" if _passed else "#fff5f5"
+                _border  = "#bbf7d0" if _passed else "#fecaca"
+                _icon    = "+" if _passed else "x"
+                _rhtml   = (
+                    f'<div style="font-size:0.71rem;color:#6b7280;padding-left:18px;'
+                    f'font-style:italic;margin-top:2px">{_reason}</div>'
                     if _reason else ""
                 )
                 st.markdown(
-                    f'<div style="margin:2px 0;padding:4px 10px;background:{_bg};'
+                    f'<div title="{_tip}" style="margin:3px 0;padding:6px 10px;background:{_bg};'
                     f'border-radius:4px;border:1px solid {_border};border-left:3px solid {_color};'
-                    f'font-size:0.82rem">'
+                    f'font-size:0.82rem;cursor:help">'
                     f'<span style="color:{_color};font-weight:700">{_icon}</span> &nbsp;'
-                    f'<b style="color:#374151">session</b>'
-                    f'<span style="color:#64748b">.{_ev["eval_name"]}</span>'
+                    f'<span style="color:#374151;font-weight:600">{_ename}</span>'
                     f'<span style="float:right;color:{_color};font-weight:600">{_score:.2f}</span>'
                     f'{score_bar(_score, _passed)}{_rhtml}'
                     f'</div>',
