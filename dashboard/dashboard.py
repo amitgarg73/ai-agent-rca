@@ -413,19 +413,17 @@ def _eval_reason(eval_name: str, detail: dict, score: float, passed: bool) -> st
     return ""
 
 
-def _build_call_chain_fig(
+def _render_call_chain_html(
     agents_present: list,
     evals_by_agent: dict,
     root_agent,
     agent_stats: dict,
     sess_row: dict = None,
-    sess_traces: list = None,
-):
-    """Plotly Sankey: budget flow through the agent pipeline. Ribbon width = cost consumed."""
-    if not agents_present or len(agents_present) < 1:
-        return None
+) -> str:
+    """Pure HTML/CSS pipeline cards — no Plotly dependency."""
+    if not agents_present:
+        return ""
 
-    # Per-agent cost from cost_breakdown, falling back to token proportion
     bd = (sess_row or {}).get("cost_breakdown")
     agent_cost: dict[str, float] = {}
     if isinstance(bd, dict) and bd:
@@ -438,7 +436,19 @@ def _build_call_chain_fig(
         for a, s in agent_stats.items():
             agent_cost[a] = (s.get("tokens", 0) / total_tok) * total_cost
 
-    def _node_color(a):
+    trades = int((sess_row or {}).get("trades_executed", 0))
+
+    def _card_style(a):
+        if a == root_agent:
+            return "background:#fff7ed;border:2px solid #f59e0b;"
+        evs = evals_by_agent.get(a.lower(), [])
+        if not evs:
+            return "background:#f8fafc;border:2px solid #cbd5e1;"
+        if any(not e["passed"] for e in evs):
+            return "background:#fef2f2;border:2px solid #ef4444;"
+        return "background:#f0fdf4;border:2px solid #10b981;"
+
+    def _badge_color(a):
         if a == root_agent:
             return "#f59e0b"
         evs = evals_by_agent.get(a.lower(), [])
@@ -446,95 +456,86 @@ def _build_call_chain_fig(
             return "#94a3b8"
         return "#ef4444" if any(not e["passed"] for e in evs) else "#10b981"
 
-    # Decide terminal label — waste if 0 trades, output otherwise
-    trades = int((sess_row or {}).get("trades_executed", 0))
-    terminal_label = "OUTPUT" if trades > 0 else "WASTE"
-    terminal_color = "#10b981" if trades > 0 else "#ef4444"
-
-    node_labels = [a.upper() for a in agents_present] + [terminal_label]
-    node_colors = [_node_color(a) for a in agents_present] + [terminal_color]
-    n = len(agents_present)
-
-    # Build hover text per node
-    customdata = []
-    for a in agents_present:
+    cards_html = ""
+    for i, a in enumerate(agents_present):
         evs   = evals_by_agent.get(a.lower(), [])
         stats = agent_stats.get(a.lower(), {})
         n_p   = sum(1 for e in evs if e["passed"])
         n_f   = sum(1 for e in evs if not e["passed"])
         tok   = stats.get("tokens", 0)
-        lat   = stats.get("latency_ms", 0)
-        cost  = agent_cost.get(a, 0)
-        parts = [f"<b>{a.upper()}</b>"]
-        if a == root_agent:
-            parts.append("<b>ROOT CAUSE</b>")
-        parts += [
-            f"Cost: ${cost:.4f}",
-            f"Tokens: {tok:,}",
-            f"Latency: {lat // 1000}s",
-            f"Evals: {n_p} pass  {n_f} fail",
-        ]
-        customdata.append("<br>".join(parts))
-    customdata.append(terminal_label)
+        lat_s = (stats.get("latency_ms", 0) or 0) // 1000
+        cost  = agent_cost.get(a.lower(), agent_cost.get(a, 0))
+        badge = _badge_color(a)
+        style = _card_style(a)
 
-    def _hex_to_rgba(hex_color: str, alpha: float = 0.5) -> str:
-        h = hex_color.lstrip("#")
-        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
-        return f"rgba({r},{g},{b},{alpha})"
-
-    # Links: agent[i] → agent[i+1], last agent → terminal
-    src, tgt, vals, colors, labels = [], [], [], [], []
-    for i, a in enumerate(agents_present):
-        cost = max(agent_cost.get(a, 0.0001), 0.0001)
-        tgt_idx = i + 1  # next agent, or terminal (index n)
-        src.append(i)
-        tgt.append(tgt_idx)
-        vals.append(cost)
-        colors.append(_hex_to_rgba(AGENT_COLORS.get(a, "#94a3b8")))
-        labels.append(f"${cost:.4f}")
-
-    fig = go.Figure(go.Sankey(
-        arrangement="snap",
-        node=dict(
-            pad=25,
-            thickness=28,
-            label=node_labels,
-            color=node_colors,
-            line=dict(color="#cbd5e1", width=1),
-            customdata=customdata,
-            hovertemplate="%{customdata}<extra></extra>",
-        ),
-        link=dict(
-            source=src,
-            target=tgt,
-            value=vals,
-            color=colors,
-            label=labels,
-            hovertemplate="<b>%{source.label}</b> → <b>%{target.label}</b><br>Cost: %{label}<extra></extra>",
-        ),
-    ))
-
-    # Legend row below chart
-    legend_items = [
-        ("#10b981", "All evals passed"),
-        ("#ef4444", "Evals failed / WASTE"),
-        ("#f59e0b", "Root cause"),
-        ("#94a3b8", "No eval data"),
-    ]
-    for i, (color, label) in enumerate(legend_items):
-        fig.add_annotation(
-            x=i * 0.26, y=-0.12, xref="paper", yref="paper",
-            text=f'<span style="color:{color}">&#9679;</span> {label}',
-            showarrow=False, font=dict(size=10, color="#64748b"), xanchor="left",
+        root_badge = (
+            '<div style="font-size:10px;font-weight:700;color:#b45309;'
+            'background:#fef3c7;border-radius:4px;padding:1px 6px;margin-bottom:4px;'
+            'display:inline-block;">ROOT CAUSE</div><br>'
+            if a == root_agent else ""
         )
+        eval_line = f'<span style="color:#10b981">&#10003; {n_p}</span>&nbsp;&nbsp;<span style="color:#ef4444">&#10007; {n_f}</span>' if evs else '<span style="color:#94a3b8">no evals</span>'
 
-    fig.update_layout(
-        paper_bgcolor="#f8fafc",
-        font=dict(color="#1e293b", size=11),
-        height=200,
-        margin=dict(t=15, b=45, l=15, r=15),
-    )
-    return fig
+        card = f"""
+        <div style="{style}border-radius:10px;padding:12px 14px;min-width:130px;
+                     text-align:center;position:relative;">
+          {root_badge}
+          <div style="width:14px;height:14px;border-radius:50%;background:{badge};
+                      margin:0 auto 6px;"></div>
+          <div style="font-size:13px;font-weight:700;color:#1e293b;letter-spacing:.5px;">
+            {a.upper()}
+          </div>
+          <div style="font-size:11px;color:#64748b;margin-top:4px;">${cost:.4f}</div>
+          <div style="font-size:11px;color:#64748b;">{tok:,} tok &nbsp;·&nbsp; {lat_s}s</div>
+          <div style="font-size:11px;margin-top:4px;">{eval_line}</div>
+        </div>"""
+        cards_html += card
+
+        if i < len(agents_present) - 1:
+            cards_html += """
+            <div style="display:flex;align-items:center;padding:0 6px;color:#94a3b8;
+                        font-size:20px;align-self:center;">&#8594;</div>"""
+
+    terminal_label = "OUTPUT" if trades > 0 else "WASTE"
+    terminal_bg    = "#f0fdf4" if trades > 0 else "#fef2f2"
+    terminal_border= "#10b981" if trades > 0 else "#ef4444"
+    terminal_color = "#16a34a" if trades > 0 else "#dc2626"
+    terminal_icon  = "&#10003;" if trades > 0 else "&#10007;"
+    terminal_sub   = f"{trades} trade{'s' if trades != 1 else ''}" if trades > 0 else "0 trades"
+
+    cards_html += f"""
+        <div style="display:flex;align-items:center;padding:0 6px;color:#94a3b8;
+                    font-size:20px;align-self:center;">&#8594;</div>
+        <div style="background:{terminal_bg};border:2px solid {terminal_border};
+                    border-radius:10px;padding:12px 14px;min-width:100px;text-align:center;">
+          <div style="font-size:18px;color:{terminal_color};">{terminal_icon}</div>
+          <div style="font-size:13px;font-weight:700;color:{terminal_color};">{terminal_label}</div>
+          <div style="font-size:11px;color:#64748b;margin-top:4px;">{terminal_sub}</div>
+        </div>"""
+
+    legend = """
+    <div style="display:flex;gap:18px;margin-top:10px;flex-wrap:wrap;">
+      <span style="font-size:11px;color:#64748b;">
+        <span style="color:#10b981;">&#9679;</span> All evals passed
+      </span>
+      <span style="font-size:11px;color:#64748b;">
+        <span style="color:#ef4444;">&#9679;</span> Evals failed
+      </span>
+      <span style="font-size:11px;color:#64748b;">
+        <span style="color:#f59e0b;">&#9679;</span> Root cause
+      </span>
+      <span style="font-size:11px;color:#64748b;">
+        <span style="color:#94a3b8;">&#9679;</span> No eval data
+      </span>
+    </div>"""
+
+    return f"""
+    <div style="background:#f8fafc;border-radius:12px;padding:16px 20px;">
+      <div style="display:flex;align-items:stretch;flex-wrap:nowrap;gap:0;overflow-x:auto;">
+        {cards_html}
+      </div>
+      {legend}
+    </div>"""
 
 
 def _build_timeline_fig(traces: list):
@@ -1529,20 +1530,20 @@ Read the fix, then scroll down to the Agent Breakdown to verify your understandi
         "Call Chain",
         """**Where in the pipeline did it break?**
 
-Each circle is one agent. Arrows show data flow (left to right).
+Each card is one agent. Arrows show data flow left to right.
 
-- **Green** — all quality evals passed for this agent
-- **Red** — one or more evals failed; this agent has quality issues
-- **Amber** — root cause: this is where the failure originated
-- **Gray** — agent ran but has no eval data, or was skipped entirely
+- **Green border** — all quality evals passed for this agent
+- **Red border** — one or more evals failed; this agent has quality issues
+- **Amber border** — root cause: this is where the failure originated
+- **Gray border** — agent ran but has no eval data, or was skipped
 
-Hover over any node to see token count, latency, and eval summary.
+Each card shows cost, token count, latency, and eval pass/fail counts inline.
 """,
     )
 
-    _chain_fig = _build_call_chain_fig(agents_present, evals_by_agent, root_agent, agent_stats, sess_row, sess_traces)
-    if _chain_fig:
-        st.plotly_chart(_chain_fig, use_container_width=True)
+    _chain_html = _render_call_chain_html(agents_present, evals_by_agent, root_agent, agent_stats, sess_row)
+    if _chain_html:
+        st.markdown(_chain_html, unsafe_allow_html=True)
     else:
         st.info("No trace data available to build call chain.")
 
