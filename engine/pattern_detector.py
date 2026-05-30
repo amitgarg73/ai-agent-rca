@@ -224,8 +224,8 @@ def detect_cost_anomaly(
             pattern_name = "Cost Anomaly",
             severity     = "warning",
             root_cause   = (
-                f"Session cost ${cost:.4f} is {z:.1f} standard deviations above "
-                f"the mean (${mean:.4f}). Significantly higher than typical sessions."
+                f"Session cost USD{cost:.4f} is {z:.1f} standard deviations above "
+                f"the mean (USD{mean:.4f}). Significantly higher than typical sessions."
             ),
             call_stack   = [_trace_to_stack_frame(t) for t in sorted_traces[-15:]],
             failed_evals = _failed_eval_rows(evals),
@@ -233,7 +233,7 @@ def detect_cost_anomaly(
             tokens_wasted= 0,
             fix_suggestion = (
                 f"Investigate which agent consumed the excess cost. "
-                f"Mean session cost is ${mean:.4f}. "
+                f"Mean session cost is USD{mean:.4f}. "
                 f"Check token usage by agent in Session Deep Dive."
             ),
         )
