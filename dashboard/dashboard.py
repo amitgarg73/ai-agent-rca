@@ -919,12 +919,13 @@ elif page == "RCA View":
         '<div style="background:#f0fdf4;border-left:4px solid #10b981;padding:12px 16px;'
         'border-radius:0 6px 6px 0;margin-bottom:16px;font-size:0.88rem;color:#064e3b">'
         '<b>How to read this:</b> &nbsp;'
-        'Each row is one agent step in execution order. The <b>ROOT CAUSE</b> row is where things broke. '
-        'After each agent\'s last step, its quality evals appear indented — '
-        '<span style="color:#10b981;font-weight:700">✓ green = passed</span>, '
-        '<span style="color:#ef4444;font-weight:700">✗ red = failed</span>. '
-        'A failing eval at an agent stage and a ROOT CAUSE step in that same agent tell the same story: '
-        'that\'s where the pipeline stopped working.'
+        'Each row is one agent step in execution order — the <b>ROOT CAUSE</b> row is where things broke. '
+        'Individual steps show <i>feeds →</i> on the right to indicate which quality eval they contribute to. '
+        'After each agent\'s last step, <b>aggregate quality checks</b> appear — these score the agent\'s '
+        'entire run, not individual steps. For example, <code>tool_success_rate</code> counts '
+        '<i>all</i> tool calls for that agent; <code>token_efficiency</code> counts <i>total</i> tokens. '
+        '<span style="color:#10b981;font-weight:700">✓ green = passed threshold</span>, '
+        '<span style="color:#ef4444;font-weight:700">✗ red = failed</span>.'
         '</div>',
         unsafe_allow_html=True,
     )
@@ -1131,16 +1132,45 @@ elif page == "RCA View":
                 "detail":    {},
             })
 
+    # Maps (agent, step_type, is_err) → which evals this step feeds and how
+    _STEP_FEEDS: dict[tuple, list[str]] = {
+        ("market",       "llm_call",  False): ["data_completeness", "data_freshness"],
+        ("market",       "tool_call", False): ["data_completeness"],
+        ("research",     "llm_call",  False): ["completion (LLM ✓)", "token_efficiency"],
+        ("research",     "llm_call",  True ): ["completion (LLM ✗)"],
+        ("research",     "tool_call", False): ["completion (tool ✓)", "tool_success_rate ✓"],
+        ("research",     "tool_call", True ): ["completion (tool ✗)", "tool_success_rate ✗"],
+        ("risk",         "llm_call",  False): ["assessment_complete", "within_parameters"],
+        ("risk",         "llm_call",  True ): ["assessment_complete ✗", "within_parameters ✗"],
+        ("risk",         "tool_call", False): ["within_parameters"],
+        ("orchestrator", "llm_call",  False): ["decision_made", "consistency"],
+        ("orchestrator", "llm_call",  True ): ["consistency ✗"],
+        ("orchestrator", "decision",  False): ["decision_made ✓"],
+    }
+
+    def _step_feeds_html(agent: str, step_type: str, is_err: bool) -> str:
+        feeds = _STEP_FEEDS.get((agent.lower(), step_type, is_err), [])
+        if not feeds:
+            return ""
+        tags = "  ·  ".join(feeds)
+        return (
+            f'<span style="float:right;font-size:0.7rem;color:#94a3b8;'
+            f'font-style:italic;font-family:sans-serif">feeds → {tags}</span>'
+        )
+
     def _render_agent_evals(agent_name: str) -> None:
         key = agent_name.lower()
         evs = evals_by_agent.get(key, [])
         if not evs:
             return
-        a_color = AGENT_COLORS.get(agent_name, "#94a3b8")
+        a_color  = AGENT_COLORS.get(agent_name, "#94a3b8")
+        n_evals  = len(evs)
         st.markdown(
             f'<div style="margin:6px 0 3px 8px;font-size:0.75rem;color:#64748b;">'
-            f'Quality checks — <b style="color:{a_color}">{agent_name} agent</b>'
-            f' (scores reflect all steps above)</div>',
+            f'<b style="color:{a_color}">{agent_name}</b> quality checks '
+            f'<span style="font-weight:400">— {n_evals} aggregate score{"s" if n_evals != 1 else ""} '
+            f'computed across ALL {agent_name} steps above, not per-step</span>'
+            f'</div>',
             unsafe_allow_html=True,
         )
         for ev in evs:
@@ -1242,12 +1272,14 @@ elif page == "RCA View":
         else:
             css = "trace-row"
 
-        agent    = frame.get("agent", "")
-        step     = _str(frame.get("tool_name")) or _str(frame.get("step_name")) or frame.get("step_type", "")
-        lat      = int(frame.get("latency_ms") or frame.get("duration_ms") or 0)
-        tok      = int(frame.get("tokens") or 0)
-        outcome  = frame.get("outcome", "")
-        root_tag = " ← ROOT CAUSE" if is_root else ""
+        agent     = frame.get("agent", "")
+        step_type = frame.get("step_type", "")
+        step      = _str(frame.get("tool_name")) or _str(frame.get("step_name")) or step_type
+        lat       = int(frame.get("latency_ms") or frame.get("duration_ms") or 0)
+        tok       = int(frame.get("tokens") or 0)
+        outcome   = frame.get("outcome", "")
+        root_tag  = " ← ROOT CAUSE" if is_root else ""
+        feeds_tag = _step_feeds_html(agent, step_type, is_err)
 
         # New agent: flush previous agent's evals, then render section header
         if agent != prev_agent:
@@ -1287,6 +1319,7 @@ elif page == "RCA View":
             f'{"<code>" + str(tok) + " tok</code>" if tok else ""} &nbsp;'
             f'<span style="color:{"#ef4444" if is_err else "#10b981"}">{outcome}</span>'
             f'<span style="color:#f59e0b;font-weight:700">{root_tag}</span>'
+            f'{feeds_tag}'
             f'</div>',
             unsafe_allow_html=True,
         )
