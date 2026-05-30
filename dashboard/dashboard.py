@@ -163,6 +163,14 @@ def load_evals_for_session(session_id: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def goto_rca(incident_dict: dict, session_id: str) -> None:
+    """Navigate to RCA View with the given incident pre-selected."""
+    st.session_state["rca_incident"] = incident_dict
+    st.session_state["rca_sid"]      = session_id
+    st.session_state["nav"]          = "RCA View"
+    st.rerun()
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 AGENT_COLORS = {
@@ -230,6 +238,7 @@ with st.sidebar:
             "Trace Inspector",
         ],
         label_visibility="collapsed",
+        key="nav",
     )
 
     st.divider()
@@ -263,6 +272,11 @@ if page == "Ledger":
     if sessions.empty:
         st.info("No sessions found.")
         st.stop()
+
+    st.caption(
+        "Start here. Red rows = incidents detected. Amber rows = cost spent with 0 trades. "
+        "Go to Incidents Feed to run analysis and drill into root causes."
+    )
 
     # KPI row
     total_cost  = sessions["total_cost_usd"].sum()
@@ -398,8 +412,7 @@ elif page == "Session Deep Dive":
                     unsafe_allow_html=True,
                 )
                 if st.button(f"View RCA →", key=f"rca_{inc['id']}"):
-                    st.session_state["rca_incident_id"] = inc["id"]
-                    st.session_state["rca_session_id"]  = session_id
+                    goto_rca(inc.to_dict() if hasattr(inc, "to_dict") else inc, session_id)
 
     # Evals for this session
     evals_df = load_evals_for_session(session_id)
@@ -704,6 +717,18 @@ elif page == "Before / After":
 elif page == "Incidents Feed":
     st.markdown("## Incidents Feed")
 
+    st.markdown(
+        '<div style="background:#eff6ff;border-left:4px solid #3b82f6;padding:12px 16px;'
+        'border-radius:0 6px 6px 0;margin-bottom:16px;font-size:0.9rem;color:#1e3a8a">'
+        '<b>How this works:</b> &nbsp; '
+        'Click <b>Run Analysis</b> to scan all sessions for failure patterns. '
+        'Each detected incident shows its severity, pattern name, and cost wasted. '
+        'Click <b>RCA →</b> on any row to open the full root cause breakdown — '
+        'the call stack that failed, the evals that caught it, and the fix.'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
     col_run, col_info = st.columns([2, 5])
     with col_run:
         if st.button("Run Analysis on All Sessions", type="primary", use_container_width=True):
@@ -778,8 +803,7 @@ elif page == "Incidents Feed":
                          unsafe_allow_html=True)
             hc4.markdown(f"<small>{cost}</small>", unsafe_allow_html=True)
             if hc5.button("RCA →", key=f"go_{inc['id']}"):
-                st.session_state["rca_incident"] = inc.to_dict()
-                st.session_state["rca_sid"]      = inc.get("session_id")
+                goto_rca(inc.to_dict(), inc.get("session_id"))
         st.divider()
 
 
@@ -1093,8 +1117,7 @@ elif page == "Failure Simulator":
                 unsafe_allow_html=True,
             )
             if st.button("View full RCA →"):
-                st.session_state["rca_incident"] = incs[0].to_db_row()
-                st.session_state["rca_sid"]      = sid
+                goto_rca(incs[0].to_db_row(), sid)
         else:
             st.warning("No incident detected for this simulation. Check pattern detector thresholds.")
 
