@@ -446,7 +446,12 @@ def _render_call_chain_html(
         tools, seen = [], set()
         for t in sess_traces:
             if (t.get("agent") or "").lower() == a.lower():
-                tn = t.get("tool_name")
+                raw = t.get("tool_name")
+                if raw is None:
+                    continue
+                if isinstance(raw, float):
+                    continue  # NaN from pandas
+                tn = str(raw).strip()
                 if tn and tn not in seen:
                     tools.append(tn)
                     seen.add(tn)
