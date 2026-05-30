@@ -907,16 +907,102 @@ elif page == "RCA View":
     def _str(v):
         return None if (v is None or (isinstance(v, float) and _math.isnan(v))) else str(v)
 
+    def _eval_reason(eval_name: str, detail: dict, score: float, passed: bool) -> str:
+        """One-line human explanation of why an eval scored as it did."""
+        d = detail if isinstance(detail, dict) else {}
+        if eval_name == "completion":
+            if d.get("llm_ok") and d.get("tool_calls_ok"):
+                return "LLM ran and at least one tool call succeeded"
+            reason = d.get("reason", "")
+            n = d.get("tool_calls", "")
+            if reason:
+                suffix = f" ({n} calls)" if n else ""
+                return reason + suffix
+            return "incomplete"
+        if eval_name == "tool_success_rate":
+            total = d.get("total", 0)
+            if not total:
+                return "no tool calls made"
+            s, f = d.get("success", 0), d.get("failed", 0)
+            return f"{s}/{total} tool calls succeeded, {f} failed"
+        if eval_name == "token_efficiency":
+            used = d.get("tokens_used")
+            thr  = d.get("threshold")
+            if used is not None:
+                return f"{used:,} tokens used (limit {thr:,})" if thr else f"{used:,} tokens used"
+        if eval_name == "data_completeness":
+            reason = d.get("reason", "")
+            if reason:
+                return reason
+            t, s = d.get("total", 0), d.get("success", 0)
+            return f"{s}/{t} market traces succeeded" if t else ""
+        if eval_name == "data_freshness":
+            reason = d.get("reason", "")
+            if reason:
+                return reason
+            if d.get("all_fresh"):
+                return f"{d.get('count', '')} traces within freshness window"
+            age = d.get("max_age_ms")
+            thr = d.get("threshold_ms")
+            if age and thr:
+                return f"oldest data {age//1000}s ago (limit {thr//1000}s)"
+        if eval_name == "assessment_complete":
+            reason = d.get("reason", "")
+            return reason if reason else f"risk assessment {'complete' if passed else 'incomplete'}"
+        if eval_name == "within_parameters":
+            reason = d.get("reason", "")
+            return reason if reason else f"score {score:.2f}"
+        if eval_name in ("decision_made", "consistency"):
+            reason = d.get("reason", "")
+            if reason:
+                return reason
+            decisions = d.get("decisions")
+            if decisions is not None:
+                return f"{decisions} decision trace{'s' if decisions != 1 else ''} found"
+        if eval_name == "pipeline_completion":
+            missing = d.get("missing", [])
+            present = d.get("present", [])
+            if missing:
+                return f"missing agents: {', '.join(missing)}"
+            return f"all required agents ran: {', '.join(present)}"
+        if eval_name == "cost_anomaly":
+            reason = d.get("reason", "")
+            if reason:
+                return reason
+            z = d.get("z_score")
+            return f"{z:.1f}σ above mean" if z else ("within normal range" if passed else "")
+        if eval_name == "outcome_linkage":
+            reason = d.get("reason", "")
+            if reason:
+                return reason
+            trades = d.get("trades")
+            if trades is not None:
+                return f"{trades} trade{'s' if trades != 1 else ''} executed"
+        if eval_name == "tokens_per_decision":
+            tpd = d.get("tokens_per_decision")
+            thr = d.get("threshold")
+            if tpd:
+                return f"{tpd:,} tokens/decision (limit {thr:,})" if thr else f"{tpd:,} tokens/decision"
+        return ""
+
     # Normalise evals into dicts grouped by agent
     evals_by_agent: dict[str, list[dict]] = {}
     if not evals_df.empty:
         for _, ev in evals_df.iterrows():
             a = str(ev.get("agent", "")).lower()
+            raw_detail = ev.get("detail") or {}
+            if isinstance(raw_detail, str):
+                import json
+                try:
+                    raw_detail = json.loads(raw_detail)
+                except Exception:
+                    raw_detail = {}
             evals_by_agent.setdefault(a, []).append({
                 "agent":     ev.get("agent", ""),
                 "eval_name": ev.get("eval_name", ""),
                 "score":     float(ev.get("score") or 0),
                 "passed":    bool(ev.get("passed")),
+                "detail":    raw_detail,
             })
     elif inc_obj.failed_evals:
         for fe in inc_obj.failed_evals:
@@ -926,6 +1012,7 @@ elif page == "RCA View":
                 "eval_name": fe.get("eval_name", ""),
                 "score":     float(fe.get("score") or 0),
                 "passed":    False,
+                "detail":    {},
             })
 
     def _render_agent_evals(agent_name: str) -> None:
@@ -941,12 +1028,19 @@ elif page == "RCA View":
             unsafe_allow_html=True,
         )
         for ev in evs:
-            passed = ev["passed"]
-            score  = ev["score"]
-            color  = "#10b981" if passed else "#ef4444"
-            bg     = "#f0fdf4" if passed else "#fff5f5"
-            border = "#bbf7d0" if passed else "#fecaca"
-            icon   = "✓" if passed else "✗"
+            passed  = ev["passed"]
+            score   = ev["score"]
+            detail  = ev.get("detail") or {}
+            reason  = _eval_reason(ev["eval_name"], detail, score, passed)
+            color   = "#10b981" if passed else "#ef4444"
+            bg      = "#f0fdf4" if passed else "#fff5f5"
+            border  = "#bbf7d0" if passed else "#fecaca"
+            icon    = "✓" if passed else "✗"
+            reason_html = (
+                f'<div style="font-size:0.74rem;color:#6b7280;margin-top:1px;'
+                f'padding-left:18px;font-style:italic">{reason}</div>'
+                if reason else ""
+            )
             st.markdown(
                 f'<div style="margin:2px 0 2px 24px;padding:4px 10px;background:{bg};'
                 f'border-radius:4px;border:1px solid {border};border-left:3px solid {color};'
@@ -956,6 +1050,7 @@ elif page == "RCA View":
                 f'<span style="color:#64748b">.{ev["eval_name"]}</span>'
                 f'<span style="float:right;color:{color};font-weight:600">{score:.2f}</span>'
                 f'{score_bar(score, passed)}'
+                f'{reason_html}'
                 f'</div>',
                 unsafe_allow_html=True,
             )
@@ -1085,12 +1180,19 @@ elif page == "RCA View":
             unsafe_allow_html=True,
         )
         for ev in session_evs:
-            passed = ev["passed"]
-            score  = ev["score"]
-            color  = "#10b981" if passed else "#ef4444"
-            bg     = "#f0fdf4" if passed else "#fff5f5"
-            border = "#bbf7d0" if passed else "#fecaca"
-            icon   = "✓" if passed else "✗"
+            passed  = ev["passed"]
+            score   = ev["score"]
+            detail  = ev.get("detail") or {}
+            reason  = _eval_reason(ev["eval_name"], detail, score, passed)
+            color   = "#10b981" if passed else "#ef4444"
+            bg      = "#f0fdf4" if passed else "#fff5f5"
+            border  = "#bbf7d0" if passed else "#fecaca"
+            icon    = "✓" if passed else "✗"
+            reason_html = (
+                f'<div style="font-size:0.74rem;color:#6b7280;margin-top:1px;'
+                f'padding-left:18px;font-style:italic">{reason}</div>'
+                if reason else ""
+            )
             st.markdown(
                 f'<div style="margin:2px 0;padding:4px 10px;background:{bg};'
                 f'border-radius:4px;border:1px solid {border};border-left:3px solid {color};'
@@ -1100,6 +1202,7 @@ elif page == "RCA View":
                 f'<span style="color:#64748b">.{ev["eval_name"]}</span>'
                 f'<span style="float:right;color:{color};font-weight:600">{score:.2f}</span>'
                 f'{score_bar(score, passed)}'
+                f'{reason_html}'
                 f'</div>',
                 unsafe_allow_html=True,
             )
