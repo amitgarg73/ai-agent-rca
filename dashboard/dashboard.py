@@ -553,8 +553,8 @@ def _render_call_chain_html(
         border = _border_color(a)
         bg     = _bg_color(a)
 
-        passed_names = [e["name"].split(".")[-1] for e in evs if e["passed"]]
-        failed_names = [e["name"].split(".")[-1] for e in evs if not e["passed"]]
+        passed_names = [e["eval_name"].split(".")[-1] for e in evs if e["passed"]]
+        failed_names = [e["eval_name"].split(".")[-1] for e in evs if not e["passed"]]
 
         banner = (
             '<div class="banner">ROOT CAUSE</div>'
