@@ -529,13 +529,14 @@ def _render_call_chain_html(
       </span>
     </div>"""
 
-    return f"""
-    <div style="background:#f8fafc;border-radius:12px;padding:16px 20px;">
-      <div style="display:flex;align-items:stretch;flex-wrap:nowrap;gap:0;overflow-x:auto;">
-        {cards_html}
-      </div>
-      {legend}
-    </div>"""
+    return (
+        f'<div style="background:#f8fafc;border-radius:12px;padding:16px 20px;">'
+        f'<div style="display:flex;align-items:stretch;flex-wrap:nowrap;gap:0;overflow-x:auto;">'
+        f"{cards_html}"
+        f"</div>"
+        f"{legend}"
+        f"</div>"
+    )
 
 
 def _build_timeline_fig(traces: list):
@@ -1543,7 +1544,7 @@ Each card shows cost, token count, latency, and eval pass/fail counts inline.
 
     _chain_html = _render_call_chain_html(agents_present, evals_by_agent, root_agent, agent_stats, sess_row)
     if _chain_html:
-        st.markdown(_chain_html, unsafe_allow_html=True)
+        st.markdown(_chain_html.strip(), unsafe_allow_html=True)
     else:
         st.info("No trace data available to build call chain.")
 
