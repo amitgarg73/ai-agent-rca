@@ -836,16 +836,16 @@ elif page == "RCA View":
     evals_df    = load_evals_for_session(rca_sid) if rca_sid else pd.DataFrame()
 
     # Header summary card
-    sev_color = {"critical":"#EF4444","warning":"#F59E0B","info":"#3B82F6"}.get(
-        inc_obj.severity,"#64748b"
-    )
+    sev_color  = {"critical":"#ef4444","warning":"#f59e0b","info":"#3b82f6"}.get(inc_obj.severity,"#64748b")
+    sev_bg     = {"critical":"#fff5f5","warning":"#fffbeb","info":"#eff6ff"}.get(inc_obj.severity,"#f8fafc")
+    sev_text   = {"critical":"#7f1d1d","warning":"#78350f","info":"#1e3a8a"}.get(inc_obj.severity,"#0f172a")
     st.markdown(
-        f'<div style="border:1px solid {sev_color};border-radius:8px;padding:16px 20px;'
-        f'background:#1e293b;margin-bottom:16px">'
+        f'<div style="border-left:4px solid {sev_color};border-radius:0 8px 8px 0;padding:16px 20px;'
+        f'background:{sev_bg};margin-bottom:16px">'
         f'{badge(inc_obj.severity, inc_obj.is_simulated)}'
-        f'<span style="font-size:1.3rem;font-weight:700;margin-left:12px">'
+        f'<span style="font-size:1.3rem;font-weight:700;margin-left:12px;color:{sev_text}">'
         f'{inc_obj.pattern_name}</span><br>'
-        f'<span style="color:#94a3b8;font-size:0.85rem">{inc_obj.root_cause}</span>'
+        f'<span style="color:#64748b;font-size:0.85rem;margin-top:4px;display:block">{inc_obj.root_cause}</span>'
         f'</div>',
         unsafe_allow_html=True,
     )
@@ -904,18 +904,26 @@ elif page == "RCA View":
 
     with rcol:
         st.markdown("#### Eval Scores")
+        st.caption(
+            "Automated quality checks run per agent at session end. "
+            "Each score is 0–1. Failed evals (✗) identify which agent "
+            "stage broke down, linking to the ROOT CAUSE step in the call stack."
+        )
 
         if not evals_df.empty:
             for _, ev in evals_df.iterrows():
                 passed = bool(ev.get("passed"))
                 score  = float(ev.get("score") or 0)
                 color  = "#10b981" if passed else "#ef4444"
+                bg     = "#f0fdf4" if passed else "#fff5f5"
                 icon   = "✓" if passed else "✗"
                 st.markdown(
-                    f'<div style="margin:6px 0;padding:6px 10px;background:#1e293b;border-radius:4px">'
+                    f'<div style="margin:6px 0;padding:6px 10px;background:{bg};'
+                    f'border-radius:4px;border:1px solid {"#bbf7d0" if passed else "#fecaca"}">'
                     f'<span style="color:{color};font-weight:700">{icon}</span> &nbsp;'
-                    f'<b>{ev["agent"]}</b>.<span style="color:#94a3b8">{ev["eval_name"]}</span>'
-                    f'<span style="float:right;color:{color}">{score:.2f}</span>'
+                    f'<b style="color:#0f172a">{ev["agent"]}</b>'
+                    f'<span style="color:#64748b">.{ev["eval_name"]}</span>'
+                    f'<span style="float:right;color:{color};font-weight:600">{score:.2f}</span>'
                     f'{score_bar(score, passed)}'
                     f'</div>',
                     unsafe_allow_html=True,
@@ -924,10 +932,12 @@ elif page == "RCA View":
             for fe in inc_obj.failed_evals:
                 score = float(fe.get("score",0))
                 st.markdown(
-                    f'<div style="margin:6px 0;padding:6px 10px;background:#1e293b;border-radius:4px">'
+                    f'<div style="margin:6px 0;padding:6px 10px;background:#fff5f5;'
+                    f'border-radius:4px;border:1px solid #fecaca">'
                     f'<span style="color:#ef4444;font-weight:700">✗</span> &nbsp;'
-                    f'<b>{fe["agent"]}</b>.<span style="color:#94a3b8">{fe["eval_name"]}</span>'
-                    f'<span style="float:right;color:#ef4444">{score:.2f}</span>'
+                    f'<b style="color:#0f172a">{fe["agent"]}</b>'
+                    f'<span style="color:#64748b">.{fe["eval_name"]}</span>'
+                    f'<span style="float:right;color:#ef4444;font-weight:600">{score:.2f}</span>'
                     f'{score_bar(score, False)}'
                     f'</div>',
                     unsafe_allow_html=True,
