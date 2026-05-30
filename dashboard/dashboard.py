@@ -7,7 +7,7 @@ Secrets: dashboard/.streamlit/secrets.toml (copy from observability/poc/.streaml
 """
 from __future__ import annotations
 
-import sys, os
+import sys, os, urllib.parse
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import time
@@ -30,61 +30,49 @@ st.set_page_config(
     page_title="AI Agent RCA",
     page_icon="🔍",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
 
 st.markdown("""
 <style>
-/* Hide Streamlit header bar */
-[data-testid="stHeader"] { display: none; }
+/* Hide Streamlit header and sidebar entirely */
+[data-testid="stHeader"]  { display: none; }
+[data-testid="stSidebar"] { display: none !important; }
+[data-testid="stSidebarCollapseButton"],
+[data-testid="stSidebarCollapsedControl"] { display: none !important; }
 
-/* Reduce top padding on main content (default is 5rem — way too much) */
-.block-container { padding-top: 1.2rem !important; padding-bottom: 1rem !important; }
-
-/* Desktop: lock sidebar open, hide toggle */
-@media (min-width: 768px) {
-    [data-testid="stSidebar"] {
-        min-width: 244px !important;
-        width: 244px !important;
-        transform: none !important;
-        display: block !important;
-        left: 0 !important;
-    }
-    [data-testid="stSidebar"][aria-expanded="false"] {
-        margin-left: 0 !important;
-    }
-    [data-testid="stSidebarCollapseButton"],
-    [data-testid="stSidebarCollapsedControl"],
-    button[aria-label="Close sidebar"],
-    button[aria-label="Open sidebar"] {
-        display: none !important;
-    }
+/* Push content below fixed nav (48px) */
+.block-container {
+    padding-top: 58px !important;
+    padding-bottom: 1rem !important;
+    padding-left: 1.5rem !important;
+    padding-right: 1.5rem !important;
 }
 
-/* Mobile: show expand button as a fixed hamburger in top-left */
-@media (max-width: 767px) {
-    /* Button that reopens sidebar when it's collapsed */
-    [data-testid="stSidebarCollapsedControl"] {
-        display: flex !important;
-        visibility: visible !important;
-        opacity: 1 !important;
-        position: fixed !important;
-        top: 8px !important;
-        left: 8px !important;
-        z-index: 9999 !important;
-        background: #fff !important;
-        border-radius: 6px !important;
-        box-shadow: 0 1px 4px rgba(0,0,0,0.15) !important;
-        padding: 4px !important;
-    }
-    /* Close button inside the open sidebar */
-    [data-testid="stSidebarCollapseButton"],
-    button[aria-label="Close sidebar"] {
-        display: flex !important;
-        opacity: 1 !important;
-        visibility: visible !important;
-    }
+/* Top nav bar */
+.top-nav {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 9999;
+    height: 48px;
+    background: #0f172a;
+    border-bottom: 1px solid #1e293b;
+    display: flex; align-items: center;
+    padding: 0 20px;
+    overflow-x: auto; white-space: nowrap;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
 }
+.top-nav::-webkit-scrollbar { display: none; }
+.tn-brand { font-weight: 700; color: #f8fafc; font-size: 0.85rem; flex-shrink: 0; }
+.tn-tag   { color: #64748b; font-size: 0.7rem; flex-shrink: 0; margin-left: 6px; }
+.tn-sep   { width: 1px; height: 18px; background: #334155; flex-shrink: 0; margin: 0 10px; }
+.top-nav a {
+    color: #94a3b8; text-decoration: none; font-size: 0.8rem;
+    padding: 0 10px; height: 48px;
+    display: inline-flex; align-items: center;
+    border-bottom: 2px solid transparent; flex-shrink: 0;
+}
+.top-nav a:hover  { color: #e2e8f0; }
+.top-nav a.active { color: #f8fafc; border-bottom-color: #3b82f6; font-weight: 500; }
 
 /* KPI cards */
 .kpi-card {
@@ -134,19 +122,6 @@ st.markdown("""
 .sim-live { background: #faf5ff; border: 1px solid #c4b5fd; border-radius: 6px;
             padding: 10px 16px; color: #5b21b6; font-size: 0.9rem; }
 </style>
-<script>
-// On desktop only: force sidebar open after Streamlit hydration
-(function keepSidebarOpen() {
-    if (window.innerWidth < 768) return;
-    function expand() {
-        var doc = window.parent ? window.parent.document : document;
-        var btn = doc.querySelector('[data-testid="stSidebarCollapsedControl"] button');
-        if (btn) { btn.click(); }
-    }
-    setTimeout(expand, 300);
-    setTimeout(expand, 800);
-})();
-</script>
 """, unsafe_allow_html=True)
 
 
@@ -794,31 +769,49 @@ def _build_cost_donut(sess_row: dict, sess_traces: list):
 
 
 
-# ── Sidebar ───────────────────────────────────────────────────────────────────
+# ── Page resolution ───────────────────────────────────────────────────────────
 
-with st.sidebar:
-    st.markdown("### AI Agent RCA")
-    st.markdown("<small style='color:#64748b'>Strategy C · Live</small>", unsafe_allow_html=True)
-    st.divider()
+_NAV_PAGES = [
+    "Ledger", "Session Deep Dive", "Quality Drift", "Before / After",
+    "Incidents Feed", "RCA View", "Failure Simulator", "Trace Inspector",
+]
 
-    _NAV_PAGES = [
-        "Ledger", "Session Deep Dive", "Quality Drift", "Before / After",
-        "──────────", "Incidents Feed", "RCA View", "Failure Simulator", "Trace Inspector",
-    ]
-    _default = st.session_state.pop("_page", None)
-    _idx = _NAV_PAGES.index(_default) if _default in _NAV_PAGES else 0
+if "_page" in st.session_state:
+    _forced = st.session_state.pop("_page")
+    st.query_params["page"] = _forced
+    page = _forced
+elif "sid" in st.query_params and "page" not in st.query_params:
+    st.query_params["page"] = "RCA View"
+    page = "RCA View"
+else:
+    page = st.query_params.get("page", "Ledger")
+    if page not in _NAV_PAGES:
+        page = "Ledger"
 
-    page = st.radio(
-        "Navigation",
-        _NAV_PAGES,
-        index=_idx,
-        label_visibility="collapsed",
-    )
+# ── Top navigation bar ────────────────────────────────────────────────────────
 
-    st.divider()
-    if st.button("Refresh Data", use_container_width=True):
-        st.cache_data.clear()
-        st.rerun()
+_nav_groups = [
+    ["Ledger", "Session Deep Dive", "Quality Drift", "Before / After"],
+    ["Incidents Feed", "RCA View", "Failure Simulator", "Trace Inspector"],
+]
+
+_links = ""
+for _gi, _group in enumerate(_nav_groups):
+    if _gi > 0:
+        _links += '<span class="tn-sep"></span>'
+    for _label in _group:
+        _cls = ' class="active"' if _label == page else ''
+        _href = "?" + urllib.parse.urlencode({"page": _label})
+        _links += f'<a href="{_href}"{_cls}>{_label}</a>'
+
+st.markdown(f"""
+<nav class="top-nav">
+  <span class="tn-brand">AI Agent RCA</span>
+  <span class="tn-tag">Strategy C · Live</span>
+  <span class="tn-sep"></span>
+  {_links}
+</nav>
+""", unsafe_allow_html=True)
 
 
 # ── Load shared data ──────────────────────────────────────────────────────────
@@ -2394,5 +2387,3 @@ elif page == "Trace Inspector":
                 for row in filtered_t.head(5).to_dict("records"):
                     st.json(row)
 
-elif page == "──────────":
-    st.info("Select a page from the sidebar.")
