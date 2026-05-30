@@ -908,81 +908,127 @@ elif page == "RCA View":
         return None if (v is None or (isinstance(v, float) and _math.isnan(v))) else str(v)
 
     def _eval_reason(eval_name: str, detail: dict, score: float, passed: bool) -> str:
-        """One-line human explanation of why an eval scored as it did."""
+        """
+        One-line explanation of how the score was calculated.
+        Covers new detail format AND old format (pre-refactor detail keys).
+        Never returns a misleading label (e.g. 'incomplete' for a passing eval).
+        """
         d = detail if isinstance(detail, dict) else {}
+
         if eval_name == "completion":
+            # New format: explicit flags
             if d.get("llm_ok") and d.get("tool_calls_ok"):
-                return "LLM ran and at least one tool call succeeded"
+                return "Scored 1.0 — LLM ran ✓ and at least one tool call succeeded ✓"
+            if d.get("llm_ok") is not None:
+                n = d.get("tool_calls", "")
+                suffix = f" ({n} tool calls all failed)" if n else " (all tool calls failed)"
+                return f"Scored 0.3 — LLM ran ✓ but data-fetch failed{suffix}. Threshold ≥ 0.7"
+            # Old format: decision_traces key
+            if d.get("decision_traces") is not None:
+                n = d["decision_traces"]
+                return (f"Scored 1.0 — {n} successful LLM/decision trace(s) found. "
+                        f"Note: re-run analysis to apply updated scoring")
             reason = d.get("reason", "")
-            n = d.get("tool_calls", "")
             if reason:
-                suffix = f" ({n} calls)" if n else ""
-                return reason + suffix
-            return "incomplete"
+                n = d.get("tool_calls", "")
+                return reason + (f" ({n} calls)" if n else "")
+            return "Scored 1.0 — research agent completed" if passed else "Scored 0.0 — research did not run"
+
         if eval_name == "tool_success_rate":
             total = d.get("total", 0)
             if not total:
-                return "no tool calls made"
+                return "No tool calls made — scored 1.0 by default"
             s, f = d.get("success", 0), d.get("failed", 0)
-            return f"{s}/{total} tool calls succeeded, {f} failed"
+            pct = int(round(score * 100))
+            return f"{s}/{total} tool calls succeeded ({pct}%) — threshold ≥ 80%"
+
         if eval_name == "token_efficiency":
             used = d.get("tokens_used")
             thr  = d.get("threshold")
+            if used is not None and thr:
+                return f"{used:,} tokens used vs {thr:,} limit — score = 1 − used/(2×limit)"
             if used is not None:
-                return f"{used:,} tokens used (limit {thr:,})" if thr else f"{used:,} tokens used"
+                return f"{used:,} tokens used"
+
         if eval_name == "data_completeness":
             reason = d.get("reason", "")
             if reason:
                 return reason
             t, s = d.get("total", 0), d.get("success", 0)
-            return f"{s}/{t} market traces succeeded" if t else ""
+            if t:
+                return f"{s}/{t} market traces succeeded — score = success/total, threshold ≥ 0.7"
+
         if eval_name == "data_freshness":
             reason = d.get("reason", "")
             if reason:
                 return reason
             if d.get("all_fresh"):
-                return f"{d.get('count', '')} traces within freshness window"
+                return f"{d.get('count', '')} traces all within freshness window — scored 1.0"
             age = d.get("max_age_ms")
             thr = d.get("threshold_ms")
             if age and thr:
-                return f"oldest data {age//1000}s ago (limit {thr//1000}s)"
+                return f"oldest data {age//1000}s ago — limit {thr//1000}s, scored by recency"
+
         if eval_name == "assessment_complete":
             reason = d.get("reason", "")
-            return reason if reason else f"risk assessment {'complete' if passed else 'incomplete'}"
+            if reason:
+                return reason
+            n = d.get("risk_traces", "")
+            return (f"Risk agent ran {n} traces — scored {score:.2f}" if n
+                    else f"Risk assessment {'present' if passed else 'absent'} — threshold 1.0")
+
         if eval_name == "within_parameters":
             reason = d.get("reason", "")
-            return reason if reason else f"score {score:.2f}"
+            if reason:
+                return reason
+            return f"Score {score:.2f} — checks if risk parameters are within policy bounds"
+
         if eval_name in ("decision_made", "consistency"):
             reason = d.get("reason", "")
             if reason:
                 return reason
             decisions = d.get("decisions")
             if decisions is not None:
-                return f"{decisions} decision trace{'s' if decisions != 1 else ''} found"
+                return f"{decisions} orchestrator decision trace(s) — scored {score:.2f}, threshold ≥ 0.7"
+            return f"Orchestrator {'produced a decision' if passed else 'did not reach a decision'}"
+
         if eval_name == "pipeline_completion":
             missing = d.get("missing", [])
             present = d.get("present", [])
+            n_req = len(present) + len(missing)
             if missing:
-                return f"missing agents: {', '.join(missing)}"
-            return f"all required agents ran: {', '.join(present)}"
+                return (f"{len(present)}/{n_req} required agents ran — "
+                        f"missing: {', '.join(missing)}")
+            return f"All {len(present)} required agents ran — scored 1.0"
+
         if eval_name == "cost_anomaly":
             reason = d.get("reason", "")
             if reason:
                 return reason
             z = d.get("z_score")
-            return f"{z:.1f}σ above mean" if z else ("within normal range" if passed else "")
+            if z:
+                return f"{z:.1f}σ above mean session cost — flagged above 2σ"
+            return "Within normal cost range — scored 1.0"
+
         if eval_name == "outcome_linkage":
             reason = d.get("reason", "")
             if reason:
                 return reason
             trades = d.get("trades")
+            cost   = d.get("cost")
             if trades is not None:
-                return f"{trades} trade{'s' if trades != 1 else ''} executed"
+                return (f"{trades} trade(s) executed for USD{cost:.4f} spent — "
+                        f"score = trades > 0 → 1.0, else 0.0") if cost else f"{trades} trade(s) executed"
+
         if eval_name == "tokens_per_decision":
             tpd = d.get("tokens_per_decision")
             thr = d.get("threshold")
-            if tpd:
-                return f"{tpd:,} tokens/decision (limit {thr:,})" if thr else f"{tpd:,} tokens/decision"
+            total = d.get("total_tokens")
+            dec   = d.get("decisions")
+            if tpd and thr:
+                return (f"{tpd:,} tokens ÷ {dec} decision(s) = {tpd:,}/decision "
+                        f"(limit {thr:,}) — score = limit/actual, capped at 1.0")
+
         return ""
 
     # Normalise evals into dicts grouped by agent
