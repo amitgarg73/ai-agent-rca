@@ -933,6 +933,13 @@ elif page == "RCA View":
         evs = evals_by_agent.get(key, [])
         if not evs:
             return
+        a_color = AGENT_COLORS.get(agent_name, "#94a3b8")
+        st.markdown(
+            f'<div style="margin:6px 0 3px 8px;font-size:0.75rem;color:#64748b;">'
+            f'Quality checks — <b style="color:{a_color}">{agent_name} agent</b>'
+            f' (scores reflect all steps above)</div>',
+            unsafe_allow_html=True,
+        )
         for ev in evs:
             passed = ev["passed"]
             score  = ev["score"]
@@ -941,7 +948,7 @@ elif page == "RCA View":
             border = "#bbf7d0" if passed else "#fecaca"
             icon   = "✓" if passed else "✗"
             st.markdown(
-                f'<div style="margin:2px 0 2px 28px;padding:4px 10px;background:{bg};'
+                f'<div style="margin:2px 0 2px 24px;padding:4px 10px;background:{bg};'
                 f'border-radius:4px;border:1px solid {border};border-left:3px solid {color};'
                 f'font-size:0.82rem">'
                 f'<span style="color:{color};font-weight:700">{icon}</span> &nbsp;'
@@ -953,11 +960,65 @@ elif page == "RCA View":
                 unsafe_allow_html=True,
             )
 
+    # Pre-process: collapse runs of repeated non-root errors into a summary row
+    processed: list[dict] = []
+    i = 0
+    while i < len(annotated):
+        frame = annotated[i]
+        ev_i  = _str(frame.get("error"))
+        is_err_i  = frame.get("outcome") == "error" or bool(ev_i)
+        is_root_i = frame.get("is_root", False)
+        tool_i    = frame.get("tool_name", "")
+        agent_i   = frame.get("agent", "")
+
+        if is_err_i and not is_root_i and tool_i:
+            j = i + 1
+            while j < len(annotated):
+                f2  = annotated[j]
+                e2  = _str(f2.get("error"))
+                if (
+                    (f2.get("outcome") == "error" or bool(e2))
+                    and not f2.get("is_root")
+                    and f2.get("tool_name") == tool_i
+                    and f2.get("agent") == agent_i
+                ):
+                    j += 1
+                else:
+                    break
+            extras = j - i - 1
+            processed.append(frame)
+            if extras > 0:
+                processed.append({
+                    "_collapse": True,
+                    "count": extras,
+                    "tool":  tool_i or "tool",
+                    "agent": agent_i,
+                })
+            i = j
+        else:
+            processed.append(frame)
+            i += 1
+
     rendered_agents: set[str] = set()
     prev_agent: str | None = None
 
-    for frame in annotated:
-        error_val   = _str(frame.get("error"))          # None if null/NaN, string if real
+    for frame in processed:
+        # Collapsed duplicate-error summary row
+        if frame.get("_collapse"):
+            n    = frame["count"]
+            tool = frame["tool"]
+            st.markdown(
+                f'<div style="margin:2px 0 2px 12px;padding:4px 10px;'
+                f'background:#fef9c3;border-radius:4px;border:1px dashed #fde68a;'
+                f'font-size:0.81rem;color:#78350f">'
+                f'⟳ &nbsp;{n} more identical <b>{tool}</b> timeout'
+                f'{"s" if n > 1 else ""} — same error, collapsed'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+            continue
+
+        error_val   = _str(frame.get("error"))
         is_root     = frame.get("is_root", False)
         is_relevant = frame.get("is_relevant", False)
         is_err      = frame.get("outcome") == "error" or bool(error_val)
@@ -978,7 +1039,7 @@ elif page == "RCA View":
         outcome  = frame.get("outcome", "")
         root_tag = " ← ROOT CAUSE" if is_root else ""
 
-        # New agent: flush previous agent's evals, then render a section header
+        # New agent: flush previous agent's evals, then render section header
         if agent != prev_agent:
             if prev_agent and prev_agent not in rendered_agents:
                 _render_agent_evals(prev_agent)
