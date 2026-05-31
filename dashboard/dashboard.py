@@ -1115,18 +1115,24 @@ elif page == "Quality Drift":
         line=dict(color="#f59e0b", dash="dot"),
     ))
 
-    # Overlay incidents
+    # Overlay incidents — add_vline fails on categorical axes; use add_shape instead
     if not incidents.empty:
         for _, inc in incidents.iterrows():
             sid = inc.get("session_id")
             match = s[s["id"] == sid]
             if not match.empty:
-                fig.add_vline(
-                    x=match.iloc[0]["label"],
-                    line=dict(color="#ef4444" if inc["severity"]=="critical" else "#f59e0b",
-                              dash="solid", width=1),
-                    annotation_text=inc["pattern_name"][:12],
-                    annotation_font_size=9,
+                _x   = match.iloc[0]["label"]
+                _clr = "#ef4444" if inc["severity"] == "critical" else "#f59e0b"
+                fig.add_shape(
+                    type="line", x0=_x, x1=_x, y0=0, y1=1,
+                    xref="x", yref="paper",
+                    line=dict(color=_clr, dash="solid", width=1),
+                )
+                fig.add_annotation(
+                    x=_x, y=1.02, xref="x", yref="paper",
+                    text=inc["pattern_name"][:12],
+                    font=dict(size=9, color=_clr),
+                    showarrow=False, yanchor="bottom",
                 )
 
     fig.update_layout(
