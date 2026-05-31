@@ -23,6 +23,11 @@ COST_ANOMALY_SIGMA         = 2.0
 DATA_FRESHNESS_MINUTES     = 10   # intraday: data must be fresh within 10 min
 TOOL_DIVERSITY_MIN         = 2    # research must call at least 2 distinct tools
 
+# Business outcome thresholds
+COST_PER_TRADE_THRESHOLD   = 0.50   # $0.50 max per trade
+RESEARCH_CONVERSION_MIN    = 0.30   # 30% of researched stocks become trades
+PROPOSAL_ACCEPTANCE_MIN    = 0.40   # 40% of risk-assessed proposals should execute
+
 # Terminal reason quality buckets
 _GOOD_EXITS    = {"eod_complete", "converged", "no_opportunity", "risk_rejected",
                   "market_closed", "position_limit", "daily_limit"}
@@ -351,6 +356,69 @@ def eval_session_tokens_per_decision(traces: list[dict], session: dict) -> EvalR
                        "threshold": TOKEN_SPIRAL_THRESHOLD})
 
 
+# ── Business outcome evals ────────────────────────────────────────────────────
+
+def eval_cost_per_trade(traces: list[dict], session: dict) -> EvalResult:
+    """Score 1.0 if cost-per-trade <= $0.50. 0-trade sessions scored on raw cost alone."""
+    cost   = float(session.get("total_cost_usd") or 0)
+    trades = int(session.get("trades_executed") or 0)
+    cpt    = cost / max(1, trades)
+    score  = max(0.0, 1.0 - cpt / (COST_PER_TRADE_THRESHOLD * 3))
+    return EvalResult("cost_per_trade", "business", round(score, 2),
+                      cpt <= COST_PER_TRADE_THRESHOLD, COST_PER_TRADE_THRESHOLD,
+                      {"cost_usd": round(cost, 4), "trades": trades,
+                       "cost_per_trade": round(cpt, 4)})
+
+
+def eval_research_conversion(traces: list[dict], session: dict) -> EvalResult:
+    """
+    Trades executed / successful research LLM completions.
+    Each successful research LLM call = one stock analyzed.
+    Threshold: 30% of analyzed stocks should produce a trade.
+    """
+    research_llm = [
+        t for t in traces
+        if (t.get("agent") or "").lower() == "research"
+        and (t.get("step_type") or "") in ("decision", "llm_call")
+        and (t.get("outcome") or "") == "success"
+    ]
+    trades = int(session.get("trades_executed") or 0)
+    n_analyzed = len(research_llm)
+    if n_analyzed == 0:
+        return EvalResult("research_conversion", "business", 0.0, False,
+                          RESEARCH_CONVERSION_MIN,
+                          {"trades": trades, "research_runs": 0,
+                           "reason": "no successful research LLM traces"})
+    rate  = trades / n_analyzed
+    score = min(1.0, rate / RESEARCH_CONVERSION_MIN)
+    return EvalResult("research_conversion", "business", round(score, 2),
+                      rate >= RESEARCH_CONVERSION_MIN, RESEARCH_CONVERSION_MIN,
+                      {"trades": trades, "research_runs": n_analyzed,
+                       "conversion_rate": round(rate, 3)})
+
+
+def eval_proposal_acceptance(traces: list[dict], session: dict) -> EvalResult:
+    """
+    Trades executed / trades proposed (from session record).
+    trades_proposed is recorded by the orchestrator when it calls the risk agent.
+    Threshold: 40% of proposed trades should be accepted.
+    """
+    trades   = int(session.get("trades_executed") or 0)
+    proposed = int(session.get("trades_proposed") or 0)
+    if proposed == 0:
+        score = 1.0 if trades == 0 else 0.0
+        return EvalResult("proposal_acceptance", "business", score, trades == 0,
+                          PROPOSAL_ACCEPTANCE_MIN,
+                          {"trades": trades, "proposed": 0,
+                           "reason": "no trades proposed this session"})
+    rate  = trades / proposed
+    score = min(1.0, rate / PROPOSAL_ACCEPTANCE_MIN)
+    return EvalResult("proposal_acceptance", "business", round(score, 2),
+                      rate >= PROPOSAL_ACCEPTANCE_MIN, PROPOSAL_ACCEPTANCE_MIN,
+                      {"trades": trades, "proposed": proposed,
+                       "acceptance_rate": round(rate, 3)})
+
+
 # ── Registry & runner ─────────────────────────────────────────────────────────
 
 PER_AGENT_EVALS = [
@@ -373,6 +441,12 @@ SESSION_EVALS = [
     eval_session_tokens_per_decision,
 ]
 
+BUSINESS_EVALS = [
+    eval_cost_per_trade,
+    eval_research_conversion,
+    eval_proposal_acceptance,
+]
+
 
 def run_all_evals(
     session: dict,
@@ -387,6 +461,8 @@ def run_all_evals(
             results.append(fn(traces, session, recent_costs))
         else:
             results.append(fn(traces, session))
+    for fn in BUSINESS_EVALS:
+        results.append(fn(traces, session))
     return results
 
 

@@ -1,5 +1,5 @@
 """
-Comprehensive tests for all 14 evals in eval_engine.py.
+Comprehensive tests for all 17 evals in eval_engine.py.
 Each eval has: pass case, fail case, edge case (empty/missing data).
 Run: python3 -m pytest tests/test_evals.py -v
 """
@@ -22,6 +22,9 @@ from engine.eval_engine import (
     eval_session_cost_anomaly,
     eval_session_outcome_linkage,
     eval_session_tokens_per_decision,
+    eval_cost_per_trade,
+    eval_research_conversion,
+    eval_proposal_acceptance,
     run_all_evals,
     REQUIRED_AGENTS,
 )
@@ -41,11 +44,12 @@ def make_trace(agent="research", step_type="tool_call", tool_name="get_stock_dat
     }
 
 def make_session(cost=0.10, trades=1, reason=None, started_at="2026-05-28T06:00:00Z",
-                 tokens_in=5000, tokens_out=2000):
+                 tokens_in=5000, tokens_out=2000, proposed=1):
     return {
         "id": "sess-001",
         "total_cost_usd":      cost,
         "trades_executed":     trades,
+        "trades_proposed":     proposed,
         "terminal_reason":     reason,
         "started_at":          started_at,
         "completed_at":        "2026-05-28T06:30:00Z",
@@ -473,10 +477,10 @@ class TestSessionEvals:
 # ── run_all_evals ─────────────────────────────────────────────────────────────
 
 class TestRunAllEvals:
-    def test_returns_14_results(self):
+    def test_returns_17_results(self):
         traces = [make_trace(agent=a) for a in REQUIRED_AGENTS]
         results = run_all_evals(make_session(), traces, [0.10]*10)
-        assert len(results) == 14
+        assert len(results) == 17
 
     def test_all_results_have_required_fields(self):
         results = run_all_evals(make_session(), [], [0.10]*10)
@@ -514,3 +518,96 @@ class TestRunAllEvals:
         assert not by_name["tool_diversity"].passed   # single tool looped
         assert not by_name["outcome_linkage"].passed
         assert not by_name["pipeline_completion"].passed
+
+
+# ── Business outcome evals ────────────────────────────────────────────────────
+
+class TestCostPerTrade:
+    def test_pass_low_cost(self):
+        r = eval_cost_per_trade([], make_session(cost=0.30, trades=1))
+        assert r.passed
+        assert r.detail["cost_per_trade"] == 0.30
+
+    def test_fail_high_cost(self):
+        r = eval_cost_per_trade([], make_session(cost=1.98, trades=0))
+        assert not r.passed
+        assert r.detail["cost_per_trade"] == 1.98
+
+    def test_divides_by_trades(self):
+        # $0.60 total, 2 trades = $0.30/trade → should pass
+        r = eval_cost_per_trade([], make_session(cost=0.60, trades=2))
+        assert r.passed
+        assert r.detail["cost_per_trade"] == 0.30
+
+    def test_score_zero_when_very_expensive(self):
+        r = eval_cost_per_trade([], make_session(cost=5.0, trades=0))
+        assert r.score == 0.0
+        assert not r.passed
+
+    def test_eval_name_and_agent(self):
+        r = eval_cost_per_trade([], make_session())
+        assert r.eval_name == "cost_per_trade"
+        assert r.agent == "business"
+
+
+class TestResearchConversion:
+    def _make_research_llm_trace(self):
+        return make_trace(agent="research", step_type="llm_call", outcome="success")
+
+    def test_pass_with_trade(self):
+        traces = [self._make_research_llm_trace()]
+        r = eval_research_conversion(traces, make_session(trades=1))
+        assert r.passed
+        assert r.detail["research_runs"] == 1
+
+    def test_fail_no_trade_from_research(self):
+        traces = [self._make_research_llm_trace(), self._make_research_llm_trace(),
+                  self._make_research_llm_trace(), self._make_research_llm_trace()]
+        r = eval_research_conversion(traces, make_session(trades=0))
+        assert not r.passed
+        assert r.detail["conversion_rate"] == 0.0
+
+    def test_fail_no_research_traces(self):
+        r = eval_research_conversion([], make_session(trades=1))
+        assert not r.passed
+        assert "no successful research" in r.detail["reason"]
+
+    def test_score_clipped_at_1(self):
+        traces = [self._make_research_llm_trace()]
+        r = eval_research_conversion(traces, make_session(trades=5))
+        assert r.score == 1.0
+
+    def test_eval_name_and_agent(self):
+        r = eval_research_conversion([], make_session())
+        assert r.eval_name == "research_conversion"
+        assert r.agent == "business"
+
+
+class TestProposalAcceptance:
+    def test_pass_all_proposed_executed(self):
+        r = eval_proposal_acceptance([], make_session(trades=2, proposed=2))
+        assert r.passed
+        assert r.detail["acceptance_rate"] == 1.0
+
+    def test_fail_low_acceptance(self):
+        r = eval_proposal_acceptance([], make_session(trades=0, proposed=5))
+        assert not r.passed
+        assert r.detail["acceptance_rate"] == 0.0
+
+    def test_pass_above_threshold(self):
+        # 2 of 3 proposed = 66% > 40% threshold
+        r = eval_proposal_acceptance([], make_session(trades=2, proposed=3))
+        assert r.passed
+
+    def test_zero_proposed_zero_trades_passes(self):
+        r = eval_proposal_acceptance([], make_session(trades=0, proposed=0))
+        assert r.passed
+
+    def test_zero_proposed_with_trades_fails(self):
+        r = eval_proposal_acceptance([], make_session(trades=1, proposed=0))
+        assert not r.passed
+
+    def test_eval_name_and_agent(self):
+        r = eval_proposal_acceptance([], make_session())
+        assert r.eval_name == "proposal_acceptance"
+        assert r.agent == "business"
