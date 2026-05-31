@@ -49,51 +49,47 @@ st.markdown("""
     padding-right: 1.5rem !important;
 }
 
-/* ── Top nav bar (st.radio styled as navbar) ── */
-div[data-testid="stHorizontalBlock"]:has(div[data-testid="stRadio"]) {
+/* ── Top nav bar ── */
+.topnav-header {
     background: #0f172a;
     border-bottom: 1px solid #1e293b;
-    padding: 0 20px !important;
-    margin: -0.5rem -1.5rem 0.5rem -1.5rem !important;
+    padding: 10px 20px 0;
+    margin: -0.5rem -1.5rem 0 -1.5rem;
+    display: flex;
+    align-items: center;
+    gap: 8px;
 }
-div[data-testid="stRadio"] > label { display: none; }
-div[data-testid="stRadio"] > div {
-    display: flex !important;
-    flex-direction: row !important;
-    flex-wrap: nowrap !important;
-    gap: 0 !important;
-    overflow-x: auto;
-    scrollbar-width: none;
+.topnav-brand { color: #f8fafc; font-weight: 700; font-size: 0.9rem; }
+.topnav-tag   { color: #64748b; font-size: 0.72rem; }
+/* Pills widget — dark bar continuation */
+div[data-testid="stPillsGroup"],
+div[data-testid="stPillsRoot"] {
+    background: #0f172a !important;
+    padding: 4px 20px 8px !important;
+    margin: 0 -1.5rem 0.5rem !important;
+    border-bottom: 1px solid #1e293b;
 }
-div[data-testid="stRadio"] > div::-webkit-scrollbar { display: none; }
-div[data-testid="stRadio"] > div > label {
-    color: #94a3b8 !important;
-    font-size: 0.8rem !important;
-    padding: 0 12px !important;
-    height: 48px !important;
-    display: inline-flex !important;
-    align-items: center !important;
-    border-bottom: 2px solid transparent !important;
-    cursor: pointer !important;
-    white-space: nowrap !important;
-    flex-shrink: 0 !important;
+/* Each pill button */
+div[data-testid="stPillsGroup"] button,
+div[data-testid="stPillsRoot"] button {
     background: transparent !important;
-    border-radius: 0 !important;
+    color: #94a3b8 !important;
+    border: 1px solid #334155 !important;
+    font-size: 0.78rem !important;
 }
-div[data-testid="stRadio"] > div > label:hover { color: #e2e8f0 !important; }
-div[data-testid="stRadio"] > div > label:has(input:checked) {
-    color: #f8fafc !important;
-    border-bottom-color: #3b82f6 !important;
-    font-weight: 500 !important;
+div[data-testid="stPillsGroup"] button:hover,
+div[data-testid="stPillsRoot"] button:hover {
+    color: #e2e8f0 !important;
+    border-color: #4b5563 !important;
 }
-div[data-testid="stRadio"] input[type="radio"] { display: none !important; }
-/* Brand label in the nav row */
-div[data-testid="stHorizontalBlock"]:has(div[data-testid="stRadio"]) span[data-testid="stMarkdownContainer"] p {
-    color: #f8fafc !important;
-    font-size: 0.85rem !important;
-    font-weight: 700 !important;
-    white-space: nowrap !important;
-    padding-top: 14px !important;
+/* Active/selected pill */
+div[data-testid="stPillsGroup"] button[aria-pressed="true"],
+div[data-testid="stPillsGroup"] button[data-selected="true"],
+div[data-testid="stPillsRoot"]  button[aria-pressed="true"],
+div[data-testid="stPillsRoot"]  button[data-selected="true"] {
+    background: #1e3a5f !important;
+    color: #93c5fd !important;
+    border-color: #3b82f6 !important;
 }
 
 /* KPI cards */
@@ -810,20 +806,25 @@ else:
     if page not in _NAV_PAGES:
         page = "Ledger"
 
-# ── Top navigation bar (native st.radio — no JS, no iframe) ──────────────────
+# ── Top navigation bar (st.pills — no JS, no iframe) ─────────────────────────
 
-_nav_col1, _nav_col2 = st.columns([1, 8])
-with _nav_col1:
-    st.markdown("**AI Agent RCA**")
-with _nav_col2:
-    _nav_idx = _NAV_PAGES.index(page) if page in _NAV_PAGES else 0
-    _nav_sel = st.radio(
-        "nav", _NAV_PAGES, index=_nav_idx,
-        horizontal=True, label_visibility="collapsed",
-        key="topnav",
-    )
+st.markdown(
+    '<div class="topnav-header">'
+    '<span class="topnav-brand">AI Agent RCA</span>'
+    '<span class="topnav-tag">Strategy C · Live</span>'
+    '</div>',
+    unsafe_allow_html=True,
+)
 
-if _nav_sel != page:
+_nav_sel = st.pills(
+    "Navigation", _NAV_PAGES,
+    selection_mode="single",
+    default=page,
+    label_visibility="collapsed",
+    key=f"topnav_{page}",
+)
+
+if _nav_sel and _nav_sel != page:
     st.query_params["page"] = _nav_sel
     st.rerun()
 
