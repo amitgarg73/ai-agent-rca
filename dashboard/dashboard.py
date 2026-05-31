@@ -53,7 +53,7 @@ st.markdown("""
 .topnav-header {
     background: #0f172a;
     border-bottom: none;
-    padding: 14px 24px 10px;
+    padding: 16px 24px 16px;
     margin: -0.5rem -1.5rem 0 -1.5rem;
     display: flex;
     align-items: center;
@@ -65,7 +65,7 @@ st.markdown("""
 div[data-testid="stPillsGroup"],
 div[data-testid="stPillsRoot"] {
     background: #0f172a !important;
-    padding: 0 24px 12px !important;
+    padding: 10px 24px 14px !important;
     margin: 0 -1.5rem 1rem !important;
     border-bottom: 1px solid #1e293b;
 }
@@ -833,7 +833,8 @@ st.markdown(
     '<div class="topnav-header">'
     '<span class="topnav-brand">AI Agent RCA</span>'
     '<span class="topnav-tag">Strategy C · Live</span>'
-    '</div>',
+    '</div>'
+    '<div style="background:#0f172a;padding:8px 0 0;margin:0 -1.5rem;"></div>',
     unsafe_allow_html=True,
 )
 
