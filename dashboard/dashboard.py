@@ -930,13 +930,35 @@ if page == "Ledger":
             return ["background-color: #fef9c3; color: #713f12"] * len(row)
         return [""] * len(row)
 
+    _PAGE_SIZE = 20
+    if "ledger_page" not in st.session_state:
+        st.session_state.ledger_page = 0
+    _total_pages = max(1, (len(tbl) + _PAGE_SIZE - 1) // _PAGE_SIZE)
+    st.session_state.ledger_page = min(st.session_state.ledger_page, _total_pages - 1)
+    _p = st.session_state.ledger_page
+    _page_tbl = tbl.iloc[_p * _PAGE_SIZE : (_p + 1) * _PAGE_SIZE]
+
+    # Fixed height: header row + 20 data rows at ~35px each
     st.dataframe(
-        tbl.style.apply(row_style, axis=1).format({"Cost ($)": "${:.4f}"}),
+        _page_tbl.style.apply(row_style, axis=1).format({"Cost ($)": "${:.4f}"}),
         use_container_width=True,
-        height=480,
+        height=740,
     )
 
-    st.caption("Red rows = incidents detected. Amber rows = 0 trades (wasted).")
+    _ca, _cb, _cc = st.columns([1, 3, 1])
+    with _ca:
+        if st.button("← Prev", disabled=(_p == 0), key="ledger_prev"):
+            st.session_state.ledger_page -= 1
+            st.rerun()
+    with _cb:
+        st.caption(
+            f"Page {_p + 1} of {_total_pages} · {len(tbl)} sessions · "
+            "Red = incidents · Amber = 0 trades"
+        )
+    with _cc:
+        if st.button("Next →", disabled=(_p >= _total_pages - 1), key="ledger_next"):
+            st.session_state.ledger_page += 1
+            st.rerun()
 
     # Agent cost breakdown
     if sessions["cost_breakdown"].notna().any():
