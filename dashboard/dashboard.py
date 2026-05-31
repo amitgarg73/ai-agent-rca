@@ -7,7 +7,7 @@ Secrets: dashboard/.streamlit/secrets.toml (copy from observability/poc/.streaml
 """
 from __future__ import annotations
 
-import sys, os, urllib.parse
+import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import time
@@ -49,9 +49,51 @@ st.markdown("""
     padding-right: 1.5rem !important;
 }
 
-/* Remove margin/padding around the nav iframe */
-[data-testid="stCustomComponentV1"] {
+/* ── Top nav bar (st.radio styled as navbar) ── */
+div[data-testid="stHorizontalBlock"]:has(div[data-testid="stRadio"]) {
+    background: #0f172a;
+    border-bottom: 1px solid #1e293b;
+    padding: 0 20px !important;
     margin: -0.5rem -1.5rem 0.5rem -1.5rem !important;
+}
+div[data-testid="stRadio"] > label { display: none; }
+div[data-testid="stRadio"] > div {
+    display: flex !important;
+    flex-direction: row !important;
+    flex-wrap: nowrap !important;
+    gap: 0 !important;
+    overflow-x: auto;
+    scrollbar-width: none;
+}
+div[data-testid="stRadio"] > div::-webkit-scrollbar { display: none; }
+div[data-testid="stRadio"] > div > label {
+    color: #94a3b8 !important;
+    font-size: 0.8rem !important;
+    padding: 0 12px !important;
+    height: 48px !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    border-bottom: 2px solid transparent !important;
+    cursor: pointer !important;
+    white-space: nowrap !important;
+    flex-shrink: 0 !important;
+    background: transparent !important;
+    border-radius: 0 !important;
+}
+div[data-testid="stRadio"] > div > label:hover { color: #e2e8f0 !important; }
+div[data-testid="stRadio"] > div > label:has(input:checked) {
+    color: #f8fafc !important;
+    border-bottom-color: #3b82f6 !important;
+    font-weight: 500 !important;
+}
+div[data-testid="stRadio"] input[type="radio"] { display: none !important; }
+/* Brand label in the nav row */
+div[data-testid="stHorizontalBlock"]:has(div[data-testid="stRadio"]) span[data-testid="stMarkdownContainer"] p {
+    color: #f8fafc !important;
+    font-size: 0.85rem !important;
+    font-weight: 700 !important;
+    white-space: nowrap !important;
+    padding-top: 14px !important;
 }
 
 /* KPI cards */
@@ -768,55 +810,22 @@ else:
     if page not in _NAV_PAGES:
         page = "Ledger"
 
-# ── Top navigation bar ────────────────────────────────────────────────────────
+# ── Top navigation bar (native st.radio — no JS, no iframe) ──────────────────
 
-def _build_topnav(active: str) -> str:
-    groups = [
-        ["Ledger", "Session Deep Dive", "Quality Drift", "Before / After"],
-        ["Incidents Feed", "RCA View", "Failure Simulator", "Trace Inspector"],
-    ]
-    links = ""
-    for gi, group in enumerate(groups):
-        if gi > 0:
-            links += '<span class="sep"></span>'
-        for label in group:
-            cls = ' class="active"' if label == active else ""
-            enc = urllib.parse.quote(label, safe="")
-            links += f'<a{cls} onclick="nav(\'{enc}\')">{label}</a>'
-    return f"""<!DOCTYPE html><html><head><style>
-*{{margin:0;padding:0;box-sizing:border-box}}
-body{{overflow:hidden;background:#0f172a;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}}
-nav{{display:flex;align-items:center;height:48px;background:#0f172a;
-     border-bottom:1px solid #1e293b;padding:0 20px;overflow-x:auto;
-     white-space:nowrap;scrollbar-width:none;-webkit-overflow-scrolling:touch}}
-nav::-webkit-scrollbar{{display:none}}
-.brand{{font-weight:700;color:#f8fafc;font-size:.85rem;flex-shrink:0}}
-.tag{{color:#64748b;font-size:.7rem;flex-shrink:0;margin-left:6px;margin-right:4px}}
-.sep{{width:1px;height:18px;background:#334155;flex-shrink:0;margin:0 8px}}
-a{{color:#94a3b8;text-decoration:none;font-size:.8rem;padding:0 10px;height:48px;
-   display:inline-flex;align-items:center;border-bottom:2px solid transparent;
-   flex-shrink:0;cursor:pointer;user-select:none}}
-a:hover{{color:#e2e8f0}}
-a.active{{color:#f8fafc;border-bottom-color:#3b82f6;font-weight:500}}
-</style></head><body>
-<nav>
-  <span class="brand">AI Agent RCA</span>
-  <span class="tag">Strategy C · Live</span>
-  <span class="sep"></span>
-  {links}
-</nav>
-<script>
-function nav(p){{
-  try{{
-    var u=new URL(window.parent.location.href);
-    u.searchParams.set('page',decodeURIComponent(p));
-    window.parent.location.href=u.toString();
-  }}catch(e){{window.location.href='?page='+p;}}
-}}
-</script>
-</body></html>"""
+_nav_col1, _nav_col2 = st.columns([1, 8])
+with _nav_col1:
+    st.markdown("**AI Agent RCA**")
+with _nav_col2:
+    _nav_idx = _NAV_PAGES.index(page) if page in _NAV_PAGES else 0
+    _nav_sel = st.radio(
+        "nav", _NAV_PAGES, index=_nav_idx,
+        horizontal=True, label_visibility="collapsed",
+        key="topnav",
+    )
 
-st_components.html(_build_topnav(page), height=50, scrolling=False)
+if _nav_sel != page:
+    st.query_params["page"] = _nav_sel
+    st.rerun()
 
 
 # ── Load shared data ──────────────────────────────────────────────────────────
