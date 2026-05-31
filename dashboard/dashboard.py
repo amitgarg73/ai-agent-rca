@@ -802,7 +802,7 @@ for _gi, _group in enumerate(_nav_groups):
     for _label in _group:
         _cls = ' class="active"' if _label == page else ''
         _href = "?" + urllib.parse.urlencode({"page": _label})
-        _links += f'<a href="{_href}"{_cls}>{_label}</a>'
+        _links += f'<a href="{_href}" target="_parent"{_cls}>{_label}</a>'
 
 st.markdown(f"""
 <nav class="top-nav">
