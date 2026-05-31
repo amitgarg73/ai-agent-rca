@@ -1,4 +1,5 @@
 streamlit>=1.40
+streamlit-aggrid>=1.0
 supabase>=2.0
 pandas
 plotly

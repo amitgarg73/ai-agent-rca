@@ -14,6 +14,8 @@ import time
 from collections import defaultdict
 import streamlit as st
 import streamlit.components.v1 as st_components
+from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
+from st_aggrid.shared import JsCode
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
@@ -947,13 +949,7 @@ if page == "Ledger":
     }
     tbl = display[cols].rename(columns=rename).copy()
     tbl["Session"] = tbl["Session"].dt.strftime("%m-%d %H:%M")
-
-    def row_style(row):
-        if row["Incidents"] > 0:
-            return ["background-color: #fee2e2; color: #7f1d1d"] * len(row)
-        if row["Trades"] == 0:
-            return ["background-color: #fef9c3; color: #713f12"] * len(row)
-        return [""] * len(row)
+    tbl["Cost ($)"] = tbl["Cost ($)"].map("${:.4f}".format)
 
     _PAGE_SIZE = 20
     if "ledger_page" not in st.session_state:
@@ -964,19 +960,38 @@ if page == "Ledger":
     st.session_state.ledger_page = min(st.session_state.ledger_page, _total_pages - 1)
     _p = st.session_state.ledger_page
 
-    _page_ids = display["id"].iloc[_p * _PAGE_SIZE : (_p + 1) * _PAGE_SIZE].reset_index(drop=True)
-    _page_tbl = tbl.iloc[_p * _PAGE_SIZE : (_p + 1) * _PAGE_SIZE].reset_index(drop=True)
+    _page_ids  = display["id"].iloc[_p * _PAGE_SIZE : (_p + 1) * _PAGE_SIZE].reset_index(drop=True)
+    _page_tbl  = tbl.iloc[_p * _PAGE_SIZE : (_p + 1) * _PAGE_SIZE].reset_index(drop=True).copy()
+    _page_tbl.insert(0, "_id", _page_ids.values)
 
-    _grid_event = st.dataframe(
-        _page_tbl.style.apply(row_style, axis=1).format({"Cost ($)": "${:.4f}"}),
-        use_container_width=True,
-        height=400,
-        selection_mode="single-row",
-        on_select="rerun",
-        key=f"ledger_grid_p{_p}",
+    _gb = GridOptionsBuilder.from_dataframe(_page_tbl)
+    _gb.configure_column("_id", hide=True)
+    _gb.configure_selection("single", use_checkbox=False)
+    _gb.configure_grid_options(
+        getRowStyle=JsCode("""
+            function(params) {
+                if (params.data.Incidents > 0)
+                    return {'background': '#fee2e2', 'color': '#7f1d1d'};
+                if (parseInt(params.data.Trades) === 0)
+                    return {'background': '#fef9c3', 'color': '#713f12'};
+            }
+        """),
+        rowHeight=34,
+        headerHeight=36,
     )
-    if _grid_event.selection.rows:
-        st.session_state.ledger_selected_id = _page_ids.iloc[_grid_event.selection.rows[0]]
+    _resp = AgGrid(
+        _page_tbl,
+        gridOptions=_gb.build(),
+        update_mode=GridUpdateMode.SELECTION_CHANGED,
+        height=400,
+        use_container_width=True,
+        allow_unsafe_jscode=True,
+        theme="streamlit",
+    )
+    _sel = _resp.selected_rows
+    if _sel is not None and len(_sel) > 0:
+        _row = _sel.iloc[0] if hasattr(_sel, "iloc") else _sel[0]
+        st.session_state.ledger_selected_id = _row["_id"]
 
     _ca, _cb, _cc = st.columns([1, 3, 1])
     with _ca:
