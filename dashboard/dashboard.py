@@ -52,8 +52,8 @@ st.markdown("""
 /* ── Top nav bar ── */
 .topnav-header {
     background: #0f172a;
-    border-bottom: 1px solid #1e293b;
-    padding: 10px 20px 0;
+    border-bottom: none;
+    padding: 14px 24px 10px;
     margin: -0.5rem -1.5rem 0 -1.5rem;
     display: flex;
     align-items: center;
@@ -65,14 +65,14 @@ st.markdown("""
 div[data-testid="stPillsGroup"],
 div[data-testid="stPillsRoot"] {
     background: #0f172a !important;
-    padding: 4px 20px 8px !important;
-    margin: 0 -1.5rem 0.5rem !important;
+    padding: 0 24px 12px !important;
+    margin: 0 -1.5rem 1rem !important;
     border-bottom: 1px solid #1e293b;
 }
 /* Pills row — space them out */
 div[data-testid="stPillsGroup"] > div,
 div[data-testid="stPillsRoot"] > div {
-    gap: 20px !important;
+    gap: 28px !important;
 }
 /* Each pill button */
 div[data-testid="stPillsGroup"] button,
