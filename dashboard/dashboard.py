@@ -10,8 +10,10 @@ from __future__ import annotations
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import json
 import time
 from collections import defaultdict
+import anthropic
 import streamlit as st
 import streamlit.components.v1 as st_components
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
@@ -140,6 +142,24 @@ div[data-testid="stPillsRoot"]  button[data-selected="true"] {
 /* Sim live indicator */
 .sim-live { background: #faf5ff; border: 1px solid #c4b5fd; border-radius: 6px;
             padding: 10px 16px; color: #5b21b6; font-size: 0.9rem; }
+
+/* AI analyst insight box */
+.ai-insight-page {
+    background: #f0f9ff; border: 1px solid #bae6fd;
+    border-left: 4px solid #0ea5e9;
+    border-radius: 0 8px 8px 0;
+    padding: 12px 16px; margin: 0 0 12px 0;
+    font-size: 0.88rem; color: #0c4a6e; line-height: 1.6;
+}
+.ai-insight-page .ai-label {
+    font-size: 0.68rem; font-weight: 700; letter-spacing: 0.08em;
+    color: #0ea5e9; text-transform: uppercase; margin-bottom: 6px;
+}
+.ai-insight-section {
+    font-size: 0.82rem; color: #475569;
+    font-style: italic; margin: 4px 0 10px 0;
+    padding-left: 10px; border-left: 2px solid #cbd5e1;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -286,6 +306,72 @@ def run_analysis_for_session(session_row: dict, traces: list[dict],
     evals     = run_all_evals(session_row, traces, recent_costs)
     incidents = run_all_detectors(session_row, traces, evals, recent_costs)
     return evals, incidents
+
+
+def _ledger_summary_cache_key(
+    n_sessions: int, total_cost: float, total_trades: int,
+    n_wasted: int, wasted_cost: float, n_incidents: int,
+    top_agent: str, top_agent_cost: float,
+) -> str:
+    return f"{n_sessions}:{total_cost:.4f}:{total_trades}:{n_wasted}:{wasted_cost:.4f}:{n_incidents}:{top_agent}:{top_agent_cost:.4f}"
+
+
+def generate_ledger_insights(
+    n_sessions: int, total_cost: float, total_trades: int,
+    n_wasted: int, wasted_cost: float, wasted_pct: float,
+    n_incidents: int, top_agent: str, top_agent_cost: float,
+    top_agent_pct: float, n_sessions_with_cost_data: int,
+    recent_terminal_reasons: list[str],
+) -> dict:
+    cache_key = _ledger_summary_cache_key(
+        n_sessions, total_cost, total_trades, n_wasted,
+        wasted_cost, n_incidents, top_agent, top_agent_cost,
+    )
+    if st.session_state.get("_ledger_summary_key") == cache_key:
+        return st.session_state["_ledger_summary"]
+
+    prompt = f"""You are an AI reliability analyst reviewing the Outcome Ledger for Strategy C — a 6-agent trading pipeline (market, news_analyst, research, risk, orchestrator, synthesis).
+
+Data snapshot:
+- Sessions run: {n_sessions}
+- Total LLM spend: ${total_cost:.4f}
+- Trades executed: {total_trades}
+- Wasted sessions (0 trades, cost > 0): {n_wasted} sessions · ${wasted_cost:.4f} · {wasted_pct:.0f}% of spend
+- Incidents detected: {n_incidents}
+- Top cost agent: {top_agent} (${top_agent_cost:.4f}, {top_agent_pct:.0f}% of spend) across {n_sessions_with_cost_data} sessions
+- Recent exit reasons: {", ".join(recent_terminal_reasons[:10]) if recent_terminal_reasons else "none"}
+
+Return a JSON object with exactly these 4 keys. Each value is a single sentence — direct, analytical, no filler:
+
+{{
+  "page_summary": "2-3 sentence narrative: what this data says about the pipeline's overall health and the single most important thing to act on",
+  "kpi_insight": "one sentence interpreting the cost-to-trade ratio and what the wasted session rate means",
+  "cost_insight": "one sentence on whether the top agent's cost share is expected or a signal worth investigating",
+  "sessions_insight": "one sentence on what patterns to look for in the session list given the exit reason distribution"
+}}
+
+No markdown, no extra keys, valid JSON only."""
+
+    client = anthropic.Anthropic(api_key=st.secrets.get("ANTHROPIC_API_KEY"))
+    msg = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=400,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    raw = msg.content[0].text.strip()
+    try:
+        result = json.loads(raw)
+    except json.JSONDecodeError:
+        import re
+        m = re.search(r'\{.*\}', raw, re.DOTALL)
+        result = json.loads(m.group()) if m else {
+            "page_summary": raw,
+            "kpi_insight": "", "cost_insight": "", "sessions_insight": "",
+        }
+
+    st.session_state["_ledger_summary_key"] = cache_key
+    st.session_state["_ledger_summary"] = result
+    return result
 
 
 
@@ -873,17 +959,72 @@ if page == "Ledger":
         st.info("No sessions found.")
         st.stop()
 
-    st.caption(
-        "Start here. Red rows = incidents detected. Amber rows = cost spent with 0 trades. "
-        "Go to Incidents Feed to run analysis and drill into root causes."
-    )
-
-    # KPI row
+    # ── Pre-compute KPI values (needed for LLM summary and display) ──────────
     total_cost  = sessions["total_cost_usd"].sum()
     total_trade = sessions["trades_executed"].sum()
     wasted      = sessions[(sessions["trades_executed"] == 0) & (sessions["total_cost_usd"] > 0)]
     wasted_cost = wasted["total_cost_usd"].sum()
+    wasted_pct  = (wasted_cost / total_cost * 100) if total_cost else 0
     inc_count   = len(incidents) if not incidents.empty else 0
+
+    # Derive top agent for summary context
+    _top_agent, _top_agent_cost, _top_agent_pct, _n_bd = "unknown", 0.0, 0.0, 0
+    _all_agent_costs: dict[str, float] = defaultdict(float)
+    for _, _r in sessions.iterrows():
+        _bd = _r.get("cost_breakdown") or {}
+        if not isinstance(_bd, dict) or not _bd:
+            continue
+        _n_bd += 1
+        for _k, _v in _bd.items():
+            if isinstance(_v, dict):
+                _norm = "research" if _k.startswith("research_") else _k
+                _all_agent_costs[_norm] += _v.get("cost_usd", 0)
+    if _all_agent_costs:
+        _top_agent = max(_all_agent_costs, key=_all_agent_costs.get)
+        _top_agent_cost = _all_agent_costs[_top_agent]
+        _top_agent_pct  = _top_agent_cost / sum(_all_agent_costs.values()) * 100
+
+    _recent_reasons = (
+        sessions.sort_values("started_at", ascending=False)["terminal_reason"]
+        .dropna().tolist()
+    )
+
+    # ── LLM page summary (cached by data snapshot) ────────────────────────────
+    with st.spinner("Analyzing..."):
+        try:
+            _insights = generate_ledger_insights(
+                n_sessions=len(sessions),
+                total_cost=total_cost,
+                total_trades=int(total_trade),
+                n_wasted=len(wasted),
+                wasted_cost=wasted_cost,
+                wasted_pct=wasted_pct,
+                n_incidents=inc_count,
+                top_agent=_top_agent,
+                top_agent_cost=_top_agent_cost,
+                top_agent_pct=_top_agent_pct,
+                n_sessions_with_cost_data=_n_bd,
+                recent_terminal_reasons=_recent_reasons,
+            )
+        except Exception:
+            _insights = {}
+
+    if _insights.get("page_summary"):
+        st.markdown(
+            f'<div class="ai-insight-page">'
+            f'<div class="ai-label">AI Analyst</div>'
+            f'{_insights["page_summary"]}'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+    # ── KPI row ───────────────────────────────────────────────────────────────
+    st.markdown("#### Pipeline Health")
+    if _insights.get("kpi_insight"):
+        st.markdown(
+            f'<div class="ai-insight-section">{_insights["kpi_insight"]}</div>',
+            unsafe_allow_html=True,
+        )
 
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.markdown(kpi("Total Sessions", str(len(sessions))), unsafe_allow_html=True)
@@ -891,7 +1032,7 @@ if page == "Ledger":
     c3.markdown(kpi("Trades Executed", str(int(total_trade))), unsafe_allow_html=True)
     c4.markdown(kpi("Wasted Sessions",
         f"{len(wasted)} · ${wasted_cost:.2f}",
-        f"{wasted_cost/total_cost*100:.0f}% of spend" if total_cost else ""),
+        f"{wasted_pct:.0f}% of spend" if total_cost else ""),
         unsafe_allow_html=True)
     c5.markdown(kpi("Incidents Detected", str(inc_count)), unsafe_allow_html=True)
 
@@ -900,6 +1041,11 @@ if page == "Ledger":
     # Cost by Agent — donut + drill-down
     if sessions["cost_breakdown"].notna().any():
         st.markdown("#### Cost by Agent")
+        if _insights.get("cost_insight"):
+            st.markdown(
+                f'<div class="ai-insight-section">{_insights["cost_insight"]}</div>',
+                unsafe_allow_html=True,
+            )
 
         # Aggregate cost_breakdown across all sessions with data.
         # research_TICKER keys (new format) are normalised to "research" for the
@@ -1059,7 +1205,14 @@ if page == "Ledger":
 
         st.divider()
 
-    # Session table
+    # ── Session table ─────────────────────────────────────────────────────────
+    st.markdown("#### Sessions")
+    if _insights.get("sessions_insight"):
+        st.markdown(
+            f'<div class="ai-insight-section">{_insights["sessions_insight"]}</div>',
+            unsafe_allow_html=True,
+        )
+
     display = sessions.copy()
     display["Duration (s)"] = (
         display["total_latency_ms"] / 1000
