@@ -901,9 +901,17 @@ if page == "Ledger":
     if sessions["cost_breakdown"].notna().any():
         st.markdown("#### Cost by Agent")
 
-        # Aggregate cost_breakdown across all sessions with data
+        # Aggregate cost_breakdown across all sessions with data.
+        # research_TICKER keys (new format) are normalised to "research" for the
+        # agent-level donut while per-ticker detail is kept separately.
         agent_costs: dict[str, float] = defaultdict(float)
-        agent_llm: dict[str, dict] = defaultdict(lambda: {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "model": None})
+        agent_llm: dict[str, dict] = defaultdict(
+            lambda: {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "model": None}
+        )
+        ticker_costs: dict[str, float] = defaultdict(float)
+        ticker_llm:  dict[str, dict]  = defaultdict(
+            lambda: {"input": 0, "output": 0, "model": None}
+        )
         sessions_with_bd = 0
         for _, _row in sessions.iterrows():
             bd = _row.get("cost_breakdown") or {}
@@ -911,14 +919,29 @@ if page == "Ledger":
                 continue
             sessions_with_bd += 1
             for _agent, _data in bd.items():
-                if isinstance(_data, dict):
-                    agent_costs[_agent] += _data.get("cost_usd", 0)
-                    agent_llm[_agent]["input"]       += _data.get("input", 0)
-                    agent_llm[_agent]["output"]      += _data.get("output", 0)
-                    agent_llm[_agent]["cache_read"]  += _data.get("cache_read", 0)
-                    agent_llm[_agent]["cache_write"] += _data.get("cache_write", 0)
+                if not isinstance(_data, dict):
+                    continue
+                _parts = _agent.split("_", 1)
+                _is_research_ticker = _parts[0] == "research" and len(_parts) > 1
+                _norm = "research" if _is_research_ticker else _agent
+
+                # Agent-level totals
+                agent_costs[_norm]               += _data.get("cost_usd", 0)
+                agent_llm[_norm]["input"]        += _data.get("input", 0)
+                agent_llm[_norm]["output"]       += _data.get("output", 0)
+                agent_llm[_norm]["cache_read"]   += _data.get("cache_read", 0)
+                agent_llm[_norm]["cache_write"]  += _data.get("cache_write", 0)
+                if _data.get("model"):
+                    agent_llm[_norm]["model"] = _data["model"]
+
+                # Per-ticker detail (only for research_TICKER keys)
+                if _is_research_ticker:
+                    _tk = _parts[1]
+                    ticker_costs[_tk]            += _data.get("cost_usd", 0)
+                    ticker_llm[_tk]["input"]     += _data.get("input", 0)
+                    ticker_llm[_tk]["output"]    += _data.get("output", 0)
                     if _data.get("model"):
-                        agent_llm[_agent]["model"] = _data["model"]
+                        ticker_llm[_tk]["model"] = _data["model"]
 
         if agent_costs:
             _agents_list = sorted(agent_costs, key=agent_costs.get, reverse=True)
@@ -968,11 +991,43 @@ if page == "Ledger":
                     if _llm.get("model"):
                         st.caption(f"Model: `{_llm['model']}`  ·  Cache write: {_llm['cache_write']:,} tok")
 
-                    # Tool call breakdown from traces
-                    _atr = traces_all[
-                        (traces_all["agent"] == _sel_agent) &
-                        (traces_all["step_type"] == "tool_call")
-                    ]
+                    # Per-ticker cost breakdown (research agent only)
+                    if _sel_agent == "research" and ticker_costs:
+                        st.markdown("**Cost by Ticker**")
+                        _tks = sorted(ticker_costs, key=ticker_costs.get, reverse=True)
+                        _fig_tk = go.Figure(go.Bar(
+                            x=[ticker_costs[t] for t in _tks],
+                            y=_tks,
+                            orientation="h",
+                            marker_color=AGENT_COLORS.get("research", "#94a3b8"),
+                            text=[f"${ticker_costs[t]:.4f}" for t in _tks],
+                            textposition="outside",
+                            hovertemplate="<b>%{y}</b><br>$%{x:.4f}<extra></extra>",
+                        ))
+                        _fig_tk.update_layout(
+                            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                            font_color="#1e293b",
+                            height=max(120, len(_tks) * 30 + 40),
+                            margin=dict(t=5, b=5, l=10, r=60),
+                            xaxis=dict(title="Cost (USD)", tickformat="$.4f"),
+                            yaxis=dict(autorange="reversed"),
+                        )
+                        st.plotly_chart(_fig_tk, use_container_width=True)
+
+                    # Tool call breakdown from traces.
+                    # For research, match agent names that start with "research"
+                    # (covers both old "research" and new "research_TICKER" rows).
+                    if _sel_agent == "research":
+                        _atr = traces_all[
+                            traces_all["agent"].str.startswith("research") &
+                            (traces_all["step_type"] == "tool_call")
+                        ]
+                    else:
+                        _atr = traces_all[
+                            (traces_all["agent"] == _sel_agent) &
+                            (traces_all["step_type"] == "tool_call")
+                        ]
+
                     if not _atr.empty:
                         st.markdown("**Tool calls**")
                         _ts = (
@@ -990,7 +1045,7 @@ if page == "Ledger":
                         _ts["Error %"]      = (_ts["Errors"] / _ts["Calls"] * 100).round(1).astype(str) + "%"
                         st.dataframe(
                             _ts[["Tool", "Calls", "Latency (ms)", "Errors", "Error %"]],
-                            use_container_width=True, hide_index=True, height=210,
+                            use_container_width=True, hide_index=True, height=200,
                         )
                     else:
                         st.caption("No tool calls recorded for this agent.")
