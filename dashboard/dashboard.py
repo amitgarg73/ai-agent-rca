@@ -41,38 +41,18 @@ st.markdown("""
 [data-testid="stSidebarCollapseButton"],
 [data-testid="stSidebarCollapsedControl"] { display: none !important; }
 
-/* Push content below fixed nav (48px) */
+/* Minimal top padding — nav component sits in natural flow */
 .block-container {
-    padding-top: 58px !important;
+    padding-top: 0.5rem !important;
     padding-bottom: 1rem !important;
     padding-left: 1.5rem !important;
     padding-right: 1.5rem !important;
 }
 
-/* Top nav bar */
-.top-nav {
-    position: fixed; top: 0; left: 0; right: 0; z-index: 9999;
-    height: 48px;
-    background: #0f172a;
-    border-bottom: 1px solid #1e293b;
-    display: flex; align-items: center;
-    padding: 0 20px;
-    overflow-x: auto; white-space: nowrap;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: none;
+/* Remove margin/padding around the nav iframe */
+[data-testid="stCustomComponentV1"] {
+    margin: -0.5rem -1.5rem 0.5rem -1.5rem !important;
 }
-.top-nav::-webkit-scrollbar { display: none; }
-.tn-brand { font-weight: 700; color: #f8fafc; font-size: 0.85rem; flex-shrink: 0; }
-.tn-tag   { color: #64748b; font-size: 0.7rem; flex-shrink: 0; margin-left: 6px; }
-.tn-sep   { width: 1px; height: 18px; background: #334155; flex-shrink: 0; margin: 0 10px; }
-.top-nav a {
-    color: #94a3b8; text-decoration: none; font-size: 0.8rem;
-    padding: 0 10px; height: 48px;
-    display: inline-flex; align-items: center;
-    border-bottom: 2px solid transparent; flex-shrink: 0;
-}
-.top-nav a:hover  { color: #e2e8f0; }
-.top-nav a.active { color: #f8fafc; border-bottom-color: #3b82f6; font-weight: 500; }
 
 /* KPI cards */
 .kpi-card {
@@ -790,28 +770,53 @@ else:
 
 # ── Top navigation bar ────────────────────────────────────────────────────────
 
-_nav_groups = [
-    ["Ledger", "Session Deep Dive", "Quality Drift", "Before / After"],
-    ["Incidents Feed", "RCA View", "Failure Simulator", "Trace Inspector"],
-]
-
-_links = ""
-for _gi, _group in enumerate(_nav_groups):
-    if _gi > 0:
-        _links += '<span class="tn-sep"></span>'
-    for _label in _group:
-        _cls = ' class="active"' if _label == page else ''
-        _url  = "?" + urllib.parse.urlencode({"page": _label})
-        _links += f'<a href="javascript:void(0)" onclick="(window.top||window.parent).location.href=\'{_url}\'"{_cls}>{_label}</a>'
-
-st.markdown(f"""
-<nav class="top-nav">
-  <span class="tn-brand">AI Agent RCA</span>
-  <span class="tn-tag">Strategy C · Live</span>
-  <span class="tn-sep"></span>
-  {_links}
+def _build_topnav(active: str) -> str:
+    groups = [
+        ["Ledger", "Session Deep Dive", "Quality Drift", "Before / After"],
+        ["Incidents Feed", "RCA View", "Failure Simulator", "Trace Inspector"],
+    ]
+    links = ""
+    for gi, group in enumerate(groups):
+        if gi > 0:
+            links += '<span class="sep"></span>'
+        for label in group:
+            cls = ' class="active"' if label == active else ""
+            enc = urllib.parse.quote(label, safe="")
+            links += f'<a{cls} onclick="nav(\'{enc}\')">{label}</a>'
+    return f"""<!DOCTYPE html><html><head><style>
+*{{margin:0;padding:0;box-sizing:border-box}}
+body{{overflow:hidden;background:#0f172a;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}}
+nav{{display:flex;align-items:center;height:48px;background:#0f172a;
+     border-bottom:1px solid #1e293b;padding:0 20px;overflow-x:auto;
+     white-space:nowrap;scrollbar-width:none;-webkit-overflow-scrolling:touch}}
+nav::-webkit-scrollbar{{display:none}}
+.brand{{font-weight:700;color:#f8fafc;font-size:.85rem;flex-shrink:0}}
+.tag{{color:#64748b;font-size:.7rem;flex-shrink:0;margin-left:6px;margin-right:4px}}
+.sep{{width:1px;height:18px;background:#334155;flex-shrink:0;margin:0 8px}}
+a{{color:#94a3b8;text-decoration:none;font-size:.8rem;padding:0 10px;height:48px;
+   display:inline-flex;align-items:center;border-bottom:2px solid transparent;
+   flex-shrink:0;cursor:pointer;user-select:none}}
+a:hover{{color:#e2e8f0}}
+a.active{{color:#f8fafc;border-bottom-color:#3b82f6;font-weight:500}}
+</style></head><body>
+<nav>
+  <span class="brand">AI Agent RCA</span>
+  <span class="tag">Strategy C · Live</span>
+  <span class="sep"></span>
+  {links}
 </nav>
-""", unsafe_allow_html=True)
+<script>
+function nav(p){{
+  try{{
+    var u=new URL(window.parent.location.href);
+    u.searchParams.set('page',decodeURIComponent(p));
+    window.parent.location.href=u.toString();
+  }}catch(e){{window.location.href='?page='+p;}}
+}}
+</script>
+</body></html>"""
+
+st_components.html(_build_topnav(page), height=50, scrolling=False)
 
 
 # ── Load shared data ──────────────────────────────────────────────────────────
