@@ -895,6 +895,32 @@ if page == "Ledger":
 
     st.divider()
 
+    # Cost by Agent (aggregate, shown before the grid)
+    if sessions["cost_breakdown"].notna().any():
+        st.markdown("#### Cost by Agent")
+        agent_costs: dict[str, float] = defaultdict(float)
+        for _, row in sessions.iterrows():
+            bd = row.get("cost_breakdown") or {}
+            if isinstance(bd, dict):
+                for agent, data in bd.items():
+                    if isinstance(data, dict):
+                        agent_costs[agent] += data.get("cost_usd", 0)
+        if agent_costs:
+            fig = go.Figure(go.Bar(
+                x=list(agent_costs.keys()),
+                y=list(agent_costs.values()),
+                marker_color=[AGENT_COLORS.get(a, "#94a3b8") for a in agent_costs],
+                text=[f"${v:.4f}" for v in agent_costs.values()],
+                textposition="outside",
+            ))
+            fig.update_layout(
+                paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
+                font_color="#1e293b", margin=dict(t=20, b=20),
+                yaxis_title="Cost (USD)", height=280,
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        st.divider()
+
     # Session table
     display = sessions.copy()
     display["Duration (s)"] = (
@@ -902,7 +928,6 @@ if page == "Ledger":
     ).round(0).astype(int)
     display["Tokens"] = (display["total_tokens_input"] + display["total_tokens_output"]).astype(int)
 
-    # Add incident count per session
     if not incidents.empty:
         inc_counts = incidents.groupby("session_id").size().reset_index(name="Incidents")
         display = display.merge(inc_counts, left_on="id", right_on="session_id", how="left")
@@ -933,77 +958,49 @@ if page == "Ledger":
     _PAGE_SIZE = 20
     if "ledger_page" not in st.session_state:
         st.session_state.ledger_page = 0
+    if "ledger_selected_id" not in st.session_state:
+        st.session_state.ledger_selected_id = None
     _total_pages = max(1, (len(tbl) + _PAGE_SIZE - 1) // _PAGE_SIZE)
     st.session_state.ledger_page = min(st.session_state.ledger_page, _total_pages - 1)
     _p = st.session_state.ledger_page
-    _page_tbl = tbl.iloc[_p * _PAGE_SIZE : (_p + 1) * _PAGE_SIZE]
 
-    st.dataframe(
+    _page_ids = display["id"].iloc[_p * _PAGE_SIZE : (_p + 1) * _PAGE_SIZE].reset_index(drop=True)
+    _page_tbl = tbl.iloc[_p * _PAGE_SIZE : (_p + 1) * _PAGE_SIZE].reset_index(drop=True)
+
+    _grid_event = st.dataframe(
         _page_tbl.style.apply(row_style, axis=1).format({"Cost ($)": "${:.4f}"}),
         use_container_width=True,
         height=400,
+        selection_mode="single-row",
+        on_select="rerun",
+        key=f"ledger_grid_p{_p}",
     )
+    if _grid_event.selection.rows:
+        st.session_state.ledger_selected_id = _page_ids.iloc[_grid_event.selection.rows[0]]
 
     _ca, _cb, _cc = st.columns([1, 3, 1])
     with _ca:
         if st.button("← Prev", disabled=(_p == 0), key="ledger_prev"):
             st.session_state.ledger_page -= 1
+            st.session_state.ledger_selected_id = None
             st.rerun()
     with _cb:
         st.caption(
             f"Page {_p + 1} of {_total_pages} · {len(tbl)} sessions · "
-            "Red = incidents · Amber = 0 trades"
+            "Red = incidents · Amber = 0 trades · Click a row for details"
         )
     with _cc:
         if st.button("Next →", disabled=(_p >= _total_pages - 1), key="ledger_next"):
             st.session_state.ledger_page += 1
+            st.session_state.ledger_selected_id = None
             st.rerun()
 
-    # Agent cost breakdown
-    if sessions["cost_breakdown"].notna().any():
+    # ── Inline session detail (row-click driven) ──────────────────────────────
+    _dsid = st.session_state.ledger_selected_id
+    if _dsid:
         st.divider()
-        st.markdown("#### Cost by Agent")
-        agent_costs: dict[str, float] = defaultdict(float)
-        for _, row in sessions.iterrows():
-            bd = row.get("cost_breakdown") or {}
-            if isinstance(bd, dict):
-                for agent, data in bd.items():
-                    if isinstance(data, dict):
-                        agent_costs[agent] += data.get("cost_usd", 0)
-        if agent_costs:
-            fig = go.Figure(go.Bar(
-                x=list(agent_costs.keys()),
-                y=list(agent_costs.values()),
-                marker_color=[AGENT_COLORS.get(a, "#94a3b8") for a in agent_costs],
-                text=[f"${v:.4f}" for v in agent_costs.values()],
-                textposition="outside",
-            ))
-            fig.update_layout(
-                paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
-                font_color="#1e293b", margin=dict(t=20, b=20),
-                yaxis_title="Cost (USD)", height=280,
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-    # ── Inline session detail ─────────────────────────────────────────────────
-    st.divider()
-    st.markdown("#### Session Detail")
-
-    _drill_options = {
-        f"{row['started_at'].strftime('%m-%d %H:%M') if pd.notna(row['started_at']) else row['id'][:8]}"
-        f"  |  ${row['total_cost_usd']:.4f}"
-        f"  |  {int(row['trades_executed'])} trades": row["id"]
-        for _, row in sessions.iterrows()
-    }
-    _drill_label = st.selectbox(
-        "Select session", ["— select —"] + list(_drill_options.keys()),
-        label_visibility="collapsed",
-    )
-
-    if _drill_label != "— select —":
-        _dsid  = _drill_options[_drill_label]
-        _drow  = sessions[sessions["id"] == _dsid].iloc[0].to_dict()
-        _dtr   = traces_all[traces_all["session_id"] == _dsid].sort_values("created_at")
+        st.markdown("#### Session Detail")
+        _drow = sessions[sessions["id"] == _dsid].iloc[0].to_dict()
 
         dc1, dc2, dc3, dc4 = st.columns(4)
         dc1.metric("Cost",     f"${_drow['total_cost_usd']:.4f}")
@@ -1014,7 +1011,6 @@ if page == "Ledger":
         if _drow.get("terminal_reason"):
             st.info(f"Exit reason: {_drow['terminal_reason']}")
 
-        # Incidents
         if not incidents.empty:
             _dinc = incidents[incidents["session_id"] == _dsid]
             if not _dinc.empty:
@@ -1030,7 +1026,6 @@ if page == "Ledger":
                         if st.button("RCA →", key=f"drill_rca_{_inc['id']}"):
                             goto_rca(_inc.to_dict(), _dsid)
 
-        # Eval scores
         _dev = load_evals_for_session(_dsid)
         if not _dev.empty:
             st.markdown("**Evals**")
