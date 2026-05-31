@@ -69,6 +69,11 @@ div[data-testid="stPillsRoot"] {
     margin: 0 -1.5rem 0.5rem !important;
     border-bottom: 1px solid #1e293b;
 }
+/* Pills row — space them out */
+div[data-testid="stPillsGroup"] > div,
+div[data-testid="stPillsRoot"] > div {
+    gap: 10px !important;
+}
 /* Each pill button */
 div[data-testid="stPillsGroup"] button,
 div[data-testid="stPillsRoot"] button {
@@ -76,6 +81,7 @@ div[data-testid="stPillsRoot"] button {
     color: #94a3b8 !important;
     border: 1px solid #334155 !important;
     font-size: 0.78rem !important;
+    padding: 4px 16px !important;
 }
 div[data-testid="stPillsGroup"] button:hover,
 div[data-testid="stPillsRoot"] button:hover {
