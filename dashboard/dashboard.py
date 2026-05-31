@@ -801,8 +801,8 @@ for _gi, _group in enumerate(_nav_groups):
         _links += '<span class="tn-sep"></span>'
     for _label in _group:
         _cls = ' class="active"' if _label == page else ''
-        _href = "?" + urllib.parse.urlencode({"page": _label})
-        _links += f'<a href="{_href}" target="_parent"{_cls}>{_label}</a>'
+        _url  = "?" + urllib.parse.urlencode({"page": _label})
+        _links += f'<a href="javascript:void(0)" onclick="(window.top||window.parent).location.href=\'{_url}\'"{_cls}>{_label}</a>'
 
 st.markdown(f"""
 <nav class="top-nav">
