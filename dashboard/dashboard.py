@@ -1046,7 +1046,10 @@ if page == "Ledger":
     _page_tbl.insert(0, "_id", _page_ids.values)
 
     _gb = GridOptionsBuilder.from_dataframe(_page_tbl)
-    _gb.configure_column("_id", hide=True)
+    _gb.configure_default_column(
+        suppressMenu=True, sortable=True, resizable=False, filter=False,
+    )
+    _gb.configure_column("_id", hide=True, suppressColumnsToolPanel=True)
     _gb.configure_selection("single", use_checkbox=False)
     _gb.configure_grid_options(
         getRowStyle=JsCode("""
@@ -1059,6 +1062,7 @@ if page == "Ledger":
         """),
         rowHeight=34,
         headerHeight=36,
+        suppressHorizontalScroll=True,
     )
     _resp = AgGrid(
         _page_tbl,
@@ -1067,6 +1071,7 @@ if page == "Ledger":
         height=250,
         use_container_width=True,
         allow_unsafe_jscode=True,
+        fit_columns_on_grid_load=True,
         theme="streamlit",
     )
     _sel = _resp.selected_rows
