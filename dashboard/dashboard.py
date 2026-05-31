@@ -49,32 +49,26 @@ st.markdown("""
     padding-right: 1.5rem !important;
 }
 
-/* ── Top nav bar ── */
-.topnav-header {
-    background: #0f172a;
-    border-bottom: none;
-    padding: 16px 24px 16px;
-    margin: -0.5rem -1.5rem 0 -1.5rem;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-}
-.topnav-brand { color: #f8fafc; font-weight: 700; font-size: 0.9rem; }
-.topnav-tag   { color: #64748b; font-size: 0.72rem; }
-/* Pills widget — dark bar continuation */
-div[data-testid="stPillsGroup"],
-div[data-testid="stPillsRoot"] {
+/* ── Top nav bar — brand left, pills right, one row ── */
+div[data-testid="stHorizontalBlock"]:has(.topnav-brand-cell) {
     background: #0f172a !important;
-    padding: 10px 24px 14px !important;
-    margin: 0 -1.5rem 1rem !important;
-    border-bottom: 1px solid #1e293b;
+    border-bottom: 1px solid #1e293b !important;
+    padding: 0 8px !important;
+    margin: -0.5rem -1.5rem 1rem -1.5rem !important;
+    align-items: center !important;
+    min-height: 56px !important;
 }
-/* Pills row — space them out */
+.topnav-brand-cell {
+    padding: 10px 0 10px 8px;
+    line-height: 1.4;
+}
+.topnav-brand { color: #f8fafc; font-weight: 700; font-size: 0.88rem; display: block; }
+.topnav-tag   { color: #64748b; font-size: 0.7rem; display: block; }
+/* Pills inside the nav row */
 div[data-testid="stPillsGroup"] > div,
 div[data-testid="stPillsRoot"] > div {
     gap: 28px !important;
 }
-/* Each pill button */
 div[data-testid="stPillsGroup"] button,
 div[data-testid="stPillsRoot"] button {
     background: transparent !important;
@@ -88,7 +82,6 @@ div[data-testid="stPillsRoot"] button:hover {
     color: #e2e8f0 !important;
     border-color: #4b5563 !important;
 }
-/* Active/selected pill */
 div[data-testid="stPillsGroup"] button[aria-pressed="true"],
 div[data-testid="stPillsGroup"] button[data-selected="true"],
 div[data-testid="stPillsRoot"]  button[aria-pressed="true"],
@@ -829,22 +822,23 @@ else:
 
 # ── Top navigation bar (st.pills — no JS, no iframe) ─────────────────────────
 
-st.markdown(
-    '<div class="topnav-header">'
-    '<span class="topnav-brand">AI Agent RCA</span>'
-    '<span class="topnav-tag">Strategy C · Live</span>'
-    '</div>'
-    '<div style="background:#0f172a;padding:8px 0 0;margin:0 -1.5rem;"></div>',
-    unsafe_allow_html=True,
-)
-
-_nav_sel = st.pills(
-    "Navigation", _NAV_PAGES,
-    selection_mode="single",
-    default=page,
-    label_visibility="collapsed",
-    key=f"topnav_{page}",
-)
+_nav_brand_col, _nav_pills_col = st.columns([2, 10])
+with _nav_brand_col:
+    st.markdown(
+        '<div class="topnav-brand-cell">'
+        '<span class="topnav-brand">AI Agent RCA</span><br>'
+        '<span class="topnav-tag">Strategy C · Live</span>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+with _nav_pills_col:
+    _nav_sel = st.pills(
+        "Navigation", _NAV_PAGES,
+        selection_mode="single",
+        default=page,
+        label_visibility="collapsed",
+        key=f"topnav_{page}",
+    )
 
 if _nav_sel and _nav_sel != page:
     st.query_params["page"] = _nav_sel
