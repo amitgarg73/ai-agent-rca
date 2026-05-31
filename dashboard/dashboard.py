@@ -64,8 +64,8 @@ div[data-testid="stHorizontalBlock"]:has(.topnav-brand-cell) {
     padding: 10px 0 10px 8px;
     line-height: 1.4;
 }
-.topnav-brand { color: #f8fafc; font-weight: 700; font-size: 0.88rem; display: block; }
-.topnav-tag   { color: #64748b; font-size: 0.7rem; display: block; }
+.topnav-brand { color: #f8fafc; font-weight: 700; font-size: 0.88rem; display: inline; }
+.topnav-tag   { color: #64748b; font-size: 0.75rem; display: inline; }
 /* Pills inside the nav row */
 div[data-testid="stPillsGroup"] > div,
 div[data-testid="stPillsRoot"] > div {
@@ -824,12 +824,12 @@ else:
 
 # ── Top navigation bar (st.pills — no JS, no iframe) ─────────────────────────
 
-_nav_brand_col, _nav_pills_col = st.columns([2, 10])
+_nav_brand_col, _nav_pills_col = st.columns([3, 9])
 with _nav_brand_col:
     st.markdown(
         '<div class="topnav-brand-cell">'
-        '<span class="topnav-brand">AI Agent RCA</span><br>'
-        '<span class="topnav-tag">Strategy C · Live</span>'
+        '<span class="topnav-brand">AI Agent RCA</span>'
+        '<span class="topnav-tag">&nbsp;·&nbsp;Strategy C · Live</span>'
         '</div>',
         unsafe_allow_html=True,
     )
@@ -983,7 +983,7 @@ if page == "Ledger":
         _page_tbl,
         gridOptions=_gb.build(),
         update_mode=GridUpdateMode.SELECTION_CHANGED,
-        height=400,
+        height=250,
         use_container_width=True,
         allow_unsafe_jscode=True,
         theme="streamlit",
