@@ -948,16 +948,19 @@ if page == "Ledger":
                     font_color="#1e293b", height=260,
                     margin=dict(t=10, b=0, l=0, r=0), showlegend=False,
                 )
-                st.plotly_chart(_donut, use_container_width=True)
-                st.caption(f"LLM cost only · {sessions_with_bd} of {len(sessions)} sessions have data")
-
-                _sel_agent = st.pills(
-                    "Agent", _agents_list, selection_mode="single",
-                    key="cost_agent_drill", label_visibility="collapsed",
+                _donut_event = st.plotly_chart(
+                    _donut, use_container_width=True,
+                    on_select="rerun", key="agent_donut",
                 )
+                st.caption(f"Click a slice · LLM cost only · {sessions_with_bd} of {len(sessions)} sessions have data")
+
+                _pts = _donut_event.selection.points if _donut_event else []
+                if _pts:
+                    st.session_state["cost_agent_sel"] = _pts[0].get("label")
+                _sel_agent = st.session_state.get("cost_agent_sel")
 
             with _detail_col:
-                if _sel_agent:
+                if _sel_agent and _sel_agent in agent_costs:
                     _llm = agent_llm[_sel_agent]
                     st.markdown(f"**{_sel_agent}**")
                     _mc1, _mc2, _mc3, _mc4 = st.columns(4)
