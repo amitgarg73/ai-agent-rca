@@ -990,24 +990,29 @@ if page == "Ledger":
     )
 
     # ── LLM page summary (cached by data snapshot) ────────────────────────────
-    with st.spinner("Analyzing..."):
-        try:
-            _insights = generate_ledger_insights(
-                n_sessions=len(sessions),
-                total_cost=total_cost,
-                total_trades=int(total_trade),
-                n_wasted=len(wasted),
-                wasted_cost=wasted_cost,
-                wasted_pct=wasted_pct,
-                n_incidents=inc_count,
-                top_agent=_top_agent,
-                top_agent_cost=_top_agent_cost,
-                top_agent_pct=_top_agent_pct,
-                n_sessions_with_cost_data=_n_bd,
-                recent_terminal_reasons=_recent_reasons,
-            )
-        except Exception:
-            _insights = {}
+    _insights = {}
+    _api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
+    if not _api_key:
+        st.warning("Add ANTHROPIC_API_KEY to Streamlit secrets to enable AI summaries.")
+    else:
+        with st.spinner("Generating analyst summary..."):
+            try:
+                _insights = generate_ledger_insights(
+                    n_sessions=len(sessions),
+                    total_cost=total_cost,
+                    total_trades=int(total_trade),
+                    n_wasted=len(wasted),
+                    wasted_cost=wasted_cost,
+                    wasted_pct=wasted_pct,
+                    n_incidents=inc_count,
+                    top_agent=_top_agent,
+                    top_agent_cost=_top_agent_cost,
+                    top_agent_pct=_top_agent_pct,
+                    n_sessions_with_cost_data=_n_bd,
+                    recent_terminal_reasons=_recent_reasons,
+                )
+            except Exception as _e:
+                st.warning(f"AI summary unavailable: {_e}")
 
     if _insights.get("page_summary"):
         st.markdown(
