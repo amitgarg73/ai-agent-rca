@@ -72,7 +72,7 @@ div[data-testid="stPillsRoot"] {
 /* Pills row — space them out */
 div[data-testid="stPillsGroup"] > div,
 div[data-testid="stPillsRoot"] > div {
-    gap: 10px !important;
+    gap: 20px !important;
 }
 /* Each pill button */
 div[data-testid="stPillsGroup"] button,
