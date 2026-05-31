@@ -897,30 +897,111 @@ if page == "Ledger":
 
     st.divider()
 
-    # Cost by Agent (aggregate, shown before the grid)
+    # Cost by Agent — donut + drill-down
     if sessions["cost_breakdown"].notna().any():
         st.markdown("#### Cost by Agent")
+
+        # Aggregate cost_breakdown across all sessions with data
         agent_costs: dict[str, float] = defaultdict(float)
-        for _, row in sessions.iterrows():
-            bd = row.get("cost_breakdown") or {}
-            if isinstance(bd, dict):
-                for agent, data in bd.items():
-                    if isinstance(data, dict):
-                        agent_costs[agent] += data.get("cost_usd", 0)
+        agent_llm: dict[str, dict] = defaultdict(lambda: {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "model": None})
+        sessions_with_bd = 0
+        for _, _row in sessions.iterrows():
+            bd = _row.get("cost_breakdown") or {}
+            if not isinstance(bd, dict) or not bd:
+                continue
+            sessions_with_bd += 1
+            for _agent, _data in bd.items():
+                if isinstance(_data, dict):
+                    agent_costs[_agent] += _data.get("cost_usd", 0)
+                    agent_llm[_agent]["input"]       += _data.get("input", 0)
+                    agent_llm[_agent]["output"]      += _data.get("output", 0)
+                    agent_llm[_agent]["cache_read"]  += _data.get("cache_read", 0)
+                    agent_llm[_agent]["cache_write"] += _data.get("cache_write", 0)
+                    if _data.get("model"):
+                        agent_llm[_agent]["model"] = _data["model"]
+
         if agent_costs:
-            fig = go.Figure(go.Bar(
-                x=list(agent_costs.keys()),
-                y=list(agent_costs.values()),
-                marker_color=[AGENT_COLORS.get(a, "#94a3b8") for a in agent_costs],
-                text=[f"${v:.4f}" for v in agent_costs.values()],
-                textposition="outside",
-            ))
-            fig.update_layout(
-                paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
-                font_color="#1e293b", margin=dict(t=20, b=20),
-                yaxis_title="Cost (USD)", height=280,
-            )
-            st.plotly_chart(fig, use_container_width=True)
+            _agents_list = sorted(agent_costs, key=agent_costs.get, reverse=True)
+
+            _donut_col, _detail_col = st.columns([4, 6])
+
+            with _donut_col:
+                _donut = go.Figure(go.Pie(
+                    labels=_agents_list,
+                    values=[agent_costs[a] for a in _agents_list],
+                    hole=0.55,
+                    marker=dict(colors=[AGENT_COLORS.get(a, "#94a3b8") for a in _agents_list]),
+                    textinfo="label+percent",
+                    textfont=dict(size=11),
+                    hovertemplate="<b>%{label}</b><br>$%{value:.4f} · %{percent}<extra></extra>",
+                    direction="clockwise",
+                    sort=False,
+                ))
+                _donut.add_annotation(
+                    text=f"${sum(agent_costs.values()):.3f}",
+                    x=0.5, y=0.5,
+                    font=dict(size=13, color="#0f172a"),
+                    showarrow=False,
+                )
+                _donut.update_layout(
+                    paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                    font_color="#1e293b", height=260,
+                    margin=dict(t=10, b=0, l=0, r=0), showlegend=False,
+                )
+                st.plotly_chart(_donut, use_container_width=True)
+                st.caption(f"LLM cost only · {sessions_with_bd} of {len(sessions)} sessions have data")
+
+                _sel_agent = st.pills(
+                    "Agent", _agents_list, selection_mode="single",
+                    key="cost_agent_drill", label_visibility="collapsed",
+                )
+
+            with _detail_col:
+                if _sel_agent:
+                    _llm = agent_llm[_sel_agent]
+                    st.markdown(f"**{_sel_agent}**")
+                    _mc1, _mc2, _mc3, _mc4 = st.columns(4)
+                    _mc1.metric("Cost",    f"${agent_costs[_sel_agent]:.4f}")
+                    _mc2.metric("Input",   f"{_llm['input']:,}")
+                    _mc3.metric("Output",  f"{_llm['output']:,}")
+                    _mc4.metric("Cache ↩", f"{_llm['cache_read']:,}")
+                    if _llm.get("model"):
+                        st.caption(f"Model: `{_llm['model']}`  ·  Cache write: {_llm['cache_write']:,} tok")
+
+                    # Tool call breakdown from traces
+                    _atr = traces_all[
+                        (traces_all["agent"] == _sel_agent) &
+                        (traces_all["step_type"] == "tool_call")
+                    ]
+                    if not _atr.empty:
+                        st.markdown("**Tool calls**")
+                        _ts = (
+                            _atr.groupby("tool_name")
+                            .agg(
+                                Calls    =("tool_name",  "count"),
+                                Latency  =("latency_ms", "mean"),
+                                Errors   =("error",      lambda x: x.notna().sum()),
+                            )
+                            .reset_index()
+                            .rename(columns={"tool_name": "Tool"})
+                            .sort_values("Calls", ascending=False)
+                        )
+                        _ts["Latency (ms)"] = _ts["Latency"].round(0).astype(int)
+                        _ts["Error %"]      = (_ts["Errors"] / _ts["Calls"] * 100).round(1).astype(str) + "%"
+                        st.dataframe(
+                            _ts[["Tool", "Calls", "Latency (ms)", "Errors", "Error %"]],
+                            use_container_width=True, hide_index=True, height=210,
+                        )
+                    else:
+                        st.caption("No tool calls recorded for this agent.")
+                else:
+                    st.markdown(
+                        '<div style="display:flex;align-items:center;justify-content:center;'
+                        'height:200px;color:#94a3b8;font-size:0.88rem;">'
+                        'Select an agent below the chart</div>',
+                        unsafe_allow_html=True,
+                    )
+
         st.divider()
 
     # Session table
