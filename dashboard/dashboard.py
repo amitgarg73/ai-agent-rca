@@ -224,6 +224,21 @@ def load_evals_for_session(session_id: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+@st.cache_data(ttl=60)
+def load_all_evals() -> pd.DataFrame:
+    try:
+        r = _db().table("c_evals").select(
+            "session_id,agent,eval_name,score,passed"
+        ).execute()
+        df = pd.DataFrame(r.data or [])
+        if not df.empty:
+            df["score"]  = pd.to_numeric(df["score"],  errors="coerce").fillna(0)
+            df["passed"] = df["passed"].astype(bool)
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
 def goto_rca(incident_dict: dict, session_id: str) -> None:
     """Navigate to RCA View with the given incident pre-selected."""
     st.session_state["rca_incident"] = incident_dict
@@ -796,7 +811,7 @@ def _build_cost_donut(sess_row: dict, sess_traces: list):
 # ── Page resolution ───────────────────────────────────────────────────────────
 
 _NAV_PAGES = [
-    "Ledger", "Session Deep Dive", "Quality Drift", "Before / After",
+    "Ledger", "Quality Drift",
     "Incidents Feed", "RCA View", "Failure Simulator", "Trace Inspector",
 ]
 
@@ -954,355 +969,334 @@ if page == "Ledger":
             )
             st.plotly_chart(fig, use_container_width=True)
 
+    # ── Inline session detail ─────────────────────────────────────────────────
+    st.divider()
+    st.markdown("#### Session Detail")
 
-# ══════════════════════════════════════════════════════════════════════════════
-# PAGE: Session Deep Dive
-# ══════════════════════════════════════════════════════════════════════════════
-elif page == "Session Deep Dive":
-    st.markdown("## Session Deep Dive")
-
-    if sessions.empty:
-        st.info("No sessions found.")
-        st.stop()
-
-    session_options = {
+    _drill_options = {
         f"{row['started_at'].strftime('%m-%d %H:%M') if pd.notna(row['started_at']) else row['id'][:8]}"
         f"  |  ${row['total_cost_usd']:.4f}"
         f"  |  {int(row['trades_executed'])} trades": row["id"]
         for _, row in sessions.iterrows()
     }
-    chosen_label = st.selectbox("Select session", list(session_options.keys()))
-    session_id   = session_options[chosen_label]
-    session_row  = sessions[sessions["id"] == session_id].iloc[0].to_dict()
-    sess_traces  = traces_all[traces_all["session_id"] == session_id].sort_values("created_at")
+    _drill_label = st.selectbox(
+        "Select session", ["— select —"] + list(_drill_options.keys()),
+        label_visibility="collapsed",
+    )
 
-    # Session KPIs
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Cost",     f"${session_row['total_cost_usd']:.4f}")
-    c2.metric("Duration", f"{int(session_row['total_latency_ms']//1000)}s")
-    c3.metric("Tokens",   f"{int(session_row['total_tokens_input']+session_row['total_tokens_output']):,}")
-    c4.metric("Trades",   str(int(session_row["trades_executed"])))
+    if _drill_label != "— select —":
+        _dsid  = _drill_options[_drill_label]
+        _drow  = sessions[sessions["id"] == _dsid].iloc[0].to_dict()
+        _dtr   = traces_all[traces_all["session_id"] == _dsid].sort_values("created_at")
 
-    if session_row.get("terminal_reason"):
-        st.info(f"Exit reason: {session_row['terminal_reason']}")
+        dc1, dc2, dc3, dc4 = st.columns(4)
+        dc1.metric("Cost",     f"${_drow['total_cost_usd']:.4f}")
+        dc2.metric("Duration", f"{int(_drow['total_latency_ms']//1000)}s")
+        dc3.metric("Tokens",   f"{int(_drow['total_tokens_input']+_drow['total_tokens_output']):,}")
+        dc4.metric("Trades",   str(int(_drow["trades_executed"])))
 
-    # Incidents for this session
-    if not incidents.empty:
-        sess_inc = incidents[incidents["session_id"] == session_id]
-        if not sess_inc.empty:
-            st.divider()
-            st.markdown("#### Incidents Detected")
-            for _, inc in sess_inc.iterrows():
-                sim = inc.get("is_simulated", False)
-                st.markdown(
-                    f"{badge(inc['severity'], sim)} &nbsp; **{inc['pattern_name']}** — "
-                    f"{inc['root_cause']}",
-                    unsafe_allow_html=True,
-                )
-                if st.button(f"View RCA →", key=f"rca_{inc['id']}"):
-                    goto_rca(inc.to_dict() if hasattr(inc, "to_dict") else inc, session_id)
+        if _drow.get("terminal_reason"):
+            st.info(f"Exit reason: {_drow['terminal_reason']}")
 
-    # Evals for this session
-    evals_df = load_evals_for_session(session_id)
-    if not evals_df.empty:
-        st.divider()
-        st.markdown("#### Eval Scores")
-        ecols = st.columns(2)
-        for i, (_, ev) in enumerate(evals_df.iterrows()):
-            col = ecols[i % 2]
-            with col:
-                passed = bool(ev.get("passed"))
-                score  = float(ev.get("score") or 0)
-                icon   = "✓" if passed else "✗"
-                color  = "#10b981" if passed else "#ef4444"
-                col.markdown(
-                    f'<div style="margin:4px 0">'
-                    f'<span style="color:{color};font-weight:600">{icon}</span> '
-                    f'<b>{ev["agent"]}.{ev["eval_name"]}</b> &nbsp; '
-                    f'<code>{score:.2f}</code>'
-                    f'{score_bar(score, passed)}'
-                    f'</div>',
-                    unsafe_allow_html=True,
-                )
+        # Incidents
+        if not incidents.empty:
+            _dinc = incidents[incidents["session_id"] == _dsid]
+            if not _dinc.empty:
+                st.markdown("**Incidents**")
+                for _, _inc in _dinc.iterrows():
+                    _ic1, _ic2 = st.columns([6, 1])
+                    with _ic1:
+                        st.markdown(
+                            f"{badge(_inc['severity'])} &nbsp; **{_inc['pattern_name']}** — {_inc['root_cause']}",
+                            unsafe_allow_html=True,
+                        )
+                    with _ic2:
+                        if st.button("RCA →", key=f"drill_rca_{_inc['id']}"):
+                            goto_rca(_inc.to_dict(), _dsid)
 
-    # Trace tree — collapsed by default
-    st.divider()
-    st.markdown("#### Trace Tree")
-    st.caption("Expand an agent group to see individual steps. Click any step for details.")
-
-    if sess_traces.empty:
-        st.info("No traces for this session.")
-    else:
-        for agent_name, group in sess_traces.groupby("agent"):
-            errors    = (group["outcome"] == "error").sum() + group["error"].notna().sum()
-            tok_total = int(group["tokens_input"].sum() + group["tokens_output"].sum())
-            label_color = "#ef4444" if errors > 0 else "#10b981"
-            label = (
-                f"{agent_name.upper()}  —  "
-                f"{len(group)} steps  ·  "
-                f"{tok_total:,} tokens  ·  "
-                f"{int(group['latency_ms'].sum()//1000)}s"
-            )
-            if errors:
-                label += f"  ·  ⚠ {errors} error(s)"
-
-            with st.expander(label, expanded=False):
-                for _, t in group.sort_values("created_at").iterrows():
-                    is_err  = bool(t.get("error")) or t.get("outcome") == "error"
-                    css     = "trace-error" if is_err else "trace-success"
-                    step    = t.get("tool_name") or t.get("step_type") or "step"
-                    lat     = int(t.get("latency_ms") or 0)
-                    tok     = int((t.get("tokens_input") or 0) + (t.get("tokens_output") or 0))
-                    outcome = t.get("outcome") or ""
-                    ts_str  = (
-                        t["created_at"].strftime("%H:%M:%S")
-                        if pd.notna(t.get("created_at")) else ""
+        # Eval scores
+        _dev = load_evals_for_session(_dsid)
+        if not _dev.empty:
+            st.markdown("**Evals**")
+            _ec = st.columns(2)
+            for _i, (_, _ev) in enumerate(_dev.iterrows()):
+                with _ec[_i % 2]:
+                    _passed = bool(_ev.get("passed"))
+                    _score  = float(_ev.get("score") or 0)
+                    _icon   = "✓" if _passed else "✗"
+                    _color  = "#10b981" if _passed else "#ef4444"
+                    st.markdown(
+                        f'<div style="margin:4px 0">'
+                        f'<span style="color:{_color};font-weight:600">{_icon}</span> '
+                        f'<b>{_ev["agent"]}.{_ev["eval_name"]}</b> &nbsp; '
+                        f'<code>{_score:.2f}</code>'
+                        f'{score_bar(_score, _passed)}'
+                        f'</div>',
+                        unsafe_allow_html=True,
                     )
 
-                    row_html = (
-                        f'<div class="trace-row {css}">'
-                        f'<b>{step}</b> &nbsp;'
-                        f'<span style="color:#64748b">{ts_str}</span> &nbsp; '
-                        f'<code>{lat}ms</code> &nbsp; '
-                        f'<code>{tok} tok</code> &nbsp; '
-                        f'<span style="color:{"#ef4444" if is_err else "#10b981"}">'
-                        f'{outcome or ("error" if is_err else "")}'
-                        f'</span>'
-                        f'</div>'
-                    )
-                    st.markdown(row_html, unsafe_allow_html=True)
 
-                    if is_err and t.get("error"):
-                        with st.expander(f"Error detail — {step}", expanded=False):
-                            st.error(t["error"])
-
-    # Agent token timeline
-    if not sess_traces.empty and (sess_traces["tokens_input"] + sess_traces["tokens_output"]).sum() > 0:
-        st.divider()
-        st.markdown("#### Token Usage Timeline")
-        plot_df = sess_traces.copy()
-        plot_df["tokens"] = plot_df["tokens_input"] + plot_df["tokens_output"]
-        plot_df = plot_df[plot_df["tokens"] > 0].copy()
-        if not plot_df.empty:
-            fig = px.scatter(
-                plot_df, x="created_at", y="tokens",
-                color="agent", color_discrete_map=AGENT_COLORS,
-                size="tokens", size_max=20,
-                hover_data=["step_type","tool_name","latency_ms","outcome"],
-            )
-            fig.update_layout(
-                paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
-                font_color="#1e293b", margin=dict(t=10, b=10), height=280,
-                legend_title="Agent",
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-
+# ══════════════════════════════════════════════════════════════════════════════
+# (Session Deep Dive removed — functionality absorbed into Ledger inline detail)
+# ══════════════════════════════════════════════════════════════════════════════
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE: Quality Drift
 # ══════════════════════════════════════════════════════════════════════════════
 elif page == "Quality Drift":
     st.markdown("## Quality Drift")
+    st.caption(
+        "Are the agents getting worse over time? "
+        "Each chart answers a different dimension: output decisions, eval health, "
+        "critical per-agent scores, and pipeline completion."
+    )
 
     if sessions.empty:
         st.info("No sessions found.")
         st.stop()
 
     s = sessions.sort_values("started_at").copy()
-    s["mean"]  = s["total_cost_usd"].expanding().mean()
-    s["sigma"] = s["total_cost_usd"].expanding().std().fillna(0)
-    s["upper"] = s["mean"] + 2 * s["sigma"]
-    s["anomaly"] = s["total_cost_usd"] > s["upper"]
-    s["label"]   = s["started_at"].dt.strftime("%m-%d %H:%M")
+    s["label"] = s["started_at"].dt.strftime("%m-%d %H:%M")
+    all_evals  = load_all_evals()
 
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
+    # Join evals with session timestamps
+    if not all_evals.empty and not s.empty:
+        evals_ts = all_evals.merge(
+            s[["id", "started_at", "label"]],
+            left_on="session_id", right_on="id", how="left",
+        ).sort_values("started_at")
+    else:
+        evals_ts = pd.DataFrame()
+
+    # ── Section 1: Health KPIs ────────────────────────────────────────────────
+    _n_recent = min(7, len(s))
+    _n_prev   = min(7, max(0, len(s) - _n_recent))
+    if not evals_ts.empty:
+        _recent_sids = s.iloc[-_n_recent:]["id"].tolist()
+        _prev_sids   = s.iloc[-_n_recent - _n_prev : -_n_recent]["id"].tolist() if _n_prev else []
+        _recent_pass = evals_ts[evals_ts["session_id"].isin(_recent_sids)]["passed"].mean()
+        _prev_pass   = evals_ts[evals_ts["session_id"].isin(_prev_sids)]["passed"].mean() if _prev_sids else None
+        _pass_delta  = (_recent_pass - _prev_pass) if _prev_pass is not None else None
+    else:
+        _recent_pass = _pass_delta = None
+
+    _recent_trades    = s.iloc[-_n_recent:]["trades_executed"].mean() if _n_recent else 0
+    _prev_trades      = s.iloc[-_n_recent - _n_prev : -_n_recent]["trades_executed"].mean() if _n_prev else None
+    _trades_delta     = (_recent_trades - _prev_trades) if _prev_trades is not None else None
+
+    _recent_inc_count = len(incidents[incidents["session_id"].isin(s.iloc[-_n_recent:]["id"])]) if not incidents.empty else 0
+
+    kc1, kc2, kc3 = st.columns(3)
+    kc1.markdown(
+        kpi("Eval Pass Rate (last 7)",
+            f"{_recent_pass*100:.0f}%" if _recent_pass is not None else "—",
+            (f"{'▲' if _pass_delta >= 0 else '▼'} {abs(_pass_delta)*100:.0f}pp vs prior 7"
+             if _pass_delta is not None else ""),
+        ), unsafe_allow_html=True,
+    )
+    kc2.markdown(
+        kpi("Avg Trades / Session (last 7)",
+            f"{_recent_trades:.1f}",
+            (f"{'▲' if _trades_delta >= 0 else '▼'} {abs(_trades_delta):.1f} vs prior 7"
+             if _trades_delta is not None else ""),
+        ), unsafe_allow_html=True,
+    )
+    kc3.markdown(
+        kpi("Incidents (last 7 sessions)", str(_recent_inc_count)),
+        unsafe_allow_html=True,
+    )
+
+    st.divider()
+
+    # ── Section 2: Rolling eval pass rate by agent ────────────────────────────
+    st.markdown("#### Eval Pass Rate by Agent")
+    st.caption("Rolling 5-session average. A declining line means that agent's quality is degrading.")
+
+    if not evals_ts.empty:
+        _agent_pass = (
+            evals_ts.groupby(["session_id", "agent", "started_at"])["passed"]
+            .mean().reset_index()
+            .sort_values("started_at")
+        )
+        fig_pass = go.Figure()
+        for _ag, _clr in AGENT_COLORS.items():
+            _ag_data = _agent_pass[_agent_pass["agent"] == _ag].copy()
+            if len(_ag_data) < 2:
+                continue
+            _ag_data["rolling"] = _ag_data["passed"].rolling(5, min_periods=1).mean()
+            _ag_data["lbl"] = _ag_data["started_at"].dt.strftime("%m-%d %H:%M")
+            fig_pass.add_trace(go.Scatter(
+                x=_ag_data["lbl"], y=_ag_data["rolling"],
+                mode="lines+markers", name=_ag,
+                line=dict(color=_clr, width=2),
+                marker=dict(size=5),
+            ))
+        # Incident markers
+        if not incidents.empty:
+            for _, _inc in incidents.iterrows():
+                _match = s[s["id"] == _inc["session_id"]]
+                if not _match.empty:
+                    _x = _match.iloc[0]["label"]
+                    _c = "#ef4444" if _inc["severity"] == "critical" else "#f59e0b"
+                    fig_pass.add_shape(type="line", x0=_x, x1=_x, y0=0, y1=1,
+                        xref="x", yref="paper", line=dict(color=_c, dash="dot", width=1))
+        fig_pass.update_layout(
+            paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
+            font_color="#1e293b", height=300,
+            yaxis=dict(title="Pass rate", tickformat=".0%", range=[0, 1.05]),
+            xaxis_tickangle=-30, legend=dict(orientation="h", y=1.08),
+            margin=dict(t=40, b=60),
+        )
+        st.plotly_chart(fig_pass, use_container_width=True)
+    else:
+        st.info("No eval data found. Run the backfill script to populate c_evals.")
+
+    st.divider()
+
+    # ── Section 3: Decision rate + cost trend ─────────────────────────────────
+    st.markdown("#### Decision Rate vs Cost")
+    st.caption(
+        "Cost staying flat while trades/session drops = agent running but not deciding. "
+        "Cost rising while trades stay flat = waste."
+    )
+
+    s["rolling_trades"] = s["trades_executed"].rolling(7, min_periods=1).mean()
+    s["rolling_cost"]   = s["total_cost_usd"].rolling(7, min_periods=1).mean()
+
+    fig_dr = go.Figure()
+    fig_dr.add_trace(go.Bar(
+        x=s["label"], y=s["trades_executed"],
+        name="Trades", marker_color="#10b981", opacity=0.6,
+        yaxis="y",
+    ))
+    fig_dr.add_trace(go.Scatter(
+        x=s["label"], y=s["rolling_trades"],
+        mode="lines", name="7-session avg trades",
+        line=dict(color="#064e3b", width=2, dash="dash"),
+        yaxis="y",
+    ))
+    fig_dr.add_trace(go.Scatter(
         x=s["label"], y=s["total_cost_usd"],
-        mode="lines+markers", name="Session cost",
-        line=dict(color="#3b82f6", width=1.5),
-        marker=dict(
-            size=[10 if a else 5 for a in s["anomaly"]],
-            color=["#ef4444" if a else "#3b82f6" for a in s["anomaly"]],
-        ),
+        mode="lines+markers", name="Cost ($)",
+        line=dict(color="#f59e0b", width=1.5),
+        marker=dict(size=5),
+        yaxis="y2",
     ))
-    fig.add_trace(go.Scatter(
-        x=s["label"], y=s["mean"],
-        mode="lines", name="Rolling mean",
-        line=dict(color="#64748b", dash="dash"),
-    ))
-    fig.add_trace(go.Scatter(
-        x=s["label"], y=s["upper"],
-        mode="lines", name="2σ threshold",
-        line=dict(color="#f59e0b", dash="dot"),
-    ))
-
-    # Overlay incidents — add_vline fails on categorical axes; use add_shape instead
     if not incidents.empty:
-        for _, inc in incidents.iterrows():
-            sid = inc.get("session_id")
-            match = s[s["id"] == sid]
-            if not match.empty:
-                _x   = match.iloc[0]["label"]
-                _clr = "#ef4444" if inc["severity"] == "critical" else "#f59e0b"
-                fig.add_shape(
-                    type="line", x0=_x, x1=_x, y0=0, y1=1,
-                    xref="x", yref="paper",
-                    line=dict(color=_clr, dash="solid", width=1),
-                )
-                fig.add_annotation(
-                    x=_x, y=1.02, xref="x", yref="paper",
-                    text=inc["pattern_name"][:12],
-                    font=dict(size=9, color=_clr),
-                    showarrow=False, yanchor="bottom",
-                )
-
-    fig.update_layout(
+        for _, _inc in incidents.iterrows():
+            _match = s[s["id"] == _inc["session_id"]]
+            if not _match.empty:
+                _x = _match.iloc[0]["label"]
+                _c = "#ef4444" if _inc["severity"] == "critical" else "#f59e0b"
+                fig_dr.add_shape(type="line", x0=_x, x1=_x, y0=0, y1=1,
+                    xref="x", yref="paper", line=dict(color=_c, dash="dot", width=1))
+    fig_dr.update_layout(
         paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
-        font_color="#1e293b", height=380,
-        yaxis_title="Cost (USD)", xaxis_tickangle=-30,
-        legend=dict(orientation="h", y=1.05),
+        font_color="#1e293b", height=300,
+        xaxis_tickangle=-30,
+        yaxis=dict(title="Trades", side="left"),
+        yaxis2=dict(title="Cost (USD)", side="right", overlaying="y"),
+        legend=dict(orientation="h", y=1.08),
         margin=dict(t=40, b=60),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig_dr, use_container_width=True)
 
-    # Anomalies table
-    anomalies = s[s["anomaly"]].copy()
-    if not anomalies.empty:
-        st.markdown(f"#### {len(anomalies)} Cost Anomalies Detected")
-        st.dataframe(
-            anomalies[["label","total_cost_usd","mean","upper","trades_executed"]]
-            .rename(columns={"label":"Session","total_cost_usd":"Cost",
-                             "mean":"Mean","upper":"2σ Limit","trades_executed":"Trades"})
-            .style.format({"Cost":"${:.4f}","Mean":"${:.4f}","2σ Limit":"${:.4f}"}),
-            use_container_width=True,
-        )
-
-    # Token efficiency
     st.divider()
-    st.markdown("#### Tokens per Session")
-    s["total_tokens"] = s["total_tokens_input"] + s["total_tokens_output"]
-    s["tok_per_dollar"] = s.apply(
-        lambda r: r["total_tokens"] / r["total_cost_usd"]
-        if r["total_cost_usd"] > 0 else 0, axis=1
+
+    # ── Section 4: Critical eval scores over time ─────────────────────────────
+    st.markdown("#### Critical Eval Scores Over Time")
+    st.caption(
+        "These three evals are leading indicators of failure. "
+        "Scores below their thresholds are where incidents originate."
     )
-    fig2 = go.Figure()
-    fig2.add_trace(go.Bar(
-        x=s["label"], y=s["total_tokens"],
-        marker_color=["#ef4444" if t==0 else "#3b82f6" for t in s["trades_executed"]],
-        name="Tokens",
-    ))
-    fig2.update_layout(
-        paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
-        font_color="#1e293b", height=250,
-        yaxis_title="Total tokens", margin=dict(t=10,b=60),
-        xaxis_tickangle=-30,
-    )
-    st.plotly_chart(fig2, use_container_width=True)
-    st.caption("Red bars = sessions with 0 trades.")
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# PAGE: Before / After
-# ══════════════════════════════════════════════════════════════════════════════
-elif page == "Before / After":
-    st.markdown("## Before / After")
-    st.markdown("Compare raw trace data with the RCA dashboard view for any session.")
-
-    if sessions.empty:
-        st.info("No sessions found.")
-        st.stop()
-
-    # Default to most expensive session
-    most_expensive_idx = sessions["total_cost_usd"].idxmax()
-    default_sid = sessions.loc[most_expensive_idx, "id"] if most_expensive_idx is not None else sessions.iloc[0]["id"]
-
-    session_options = {
-        f"{row['started_at'].strftime('%m-%d %H:%M') if pd.notna(row['started_at']) else row['id'][:8]}"
-        f"  |  ${row['total_cost_usd']:.4f}"
-        f"  |  {int(row['trades_executed'])} trades": row["id"]
-        for _, row in sessions.iterrows()
+    _KEY_EVALS = {
+        "research.tool_success_rate":    ("#f59e0b", 0.80),
+        "orchestrator.exit_quality":     ("#3b82f6", 0.70),
+        "risk.assessment_complete":      ("#10b981", 1.00),
     }
-    default_label = next((k for k, v in session_options.items() if v == default_sid), None)
-    chosen = st.selectbox("Select session", list(session_options.keys()),
-                          index=list(session_options.keys()).index(default_label) if default_label else 0)
-    session_id  = session_options[chosen]
-    session_row = sessions[sessions["id"] == session_id].iloc[0].to_dict()
-    sess_traces = traces_all[traces_all["session_id"] == session_id]
+
+    if not evals_ts.empty:
+        fig_ev = go.Figure()
+        for _key, (_clr, _thr) in _KEY_EVALS.items():
+            _ag, _en = _key.split(".", 1)
+            _ev_data = evals_ts[
+                (evals_ts["agent"] == _ag) & (evals_ts["eval_name"] == _en)
+            ].copy().sort_values("started_at")
+            if _ev_data.empty:
+                continue
+            _ev_data["lbl"] = _ev_data["started_at"].dt.strftime("%m-%d %H:%M")
+            fig_ev.add_trace(go.Scatter(
+                x=_ev_data["lbl"], y=_ev_data["score"],
+                mode="lines+markers", name=_key,
+                line=dict(color=_clr, width=1.5),
+                marker=dict(
+                    size=[8 if not p else 5 for p in _ev_data["passed"]],
+                    color=[("#ef4444" if not p else _clr) for p in _ev_data["passed"]],
+                ),
+            ))
+            # Threshold line
+            fig_ev.add_hline(
+                y=_thr, line_dash="dot", line_color=_clr,
+                annotation_text=f"{_key} threshold",
+                annotation_position="bottom right",
+                annotation_font_size=9,
+            )
+        if not incidents.empty:
+            for _, _inc in incidents.iterrows():
+                _match = s[s["id"] == _inc["session_id"]]
+                if not _match.empty:
+                    _x = _match.iloc[0]["label"]
+                    _c = "#ef4444" if _inc["severity"] == "critical" else "#f59e0b"
+                    fig_ev.add_shape(type="line", x0=_x, x1=_x, y0=0, y1=1,
+                        xref="x", yref="paper", line=dict(color=_c, dash="dot", width=1))
+        fig_ev.update_layout(
+            paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
+            font_color="#1e293b", height=320,
+            yaxis=dict(title="Score", range=[-0.05, 1.1]),
+            xaxis_tickangle=-30,
+            legend=dict(orientation="h", y=1.08),
+            margin=dict(t=40, b=60),
+        )
+        st.plotly_chart(fig_ev, use_container_width=True)
+    else:
+        st.info("No eval data found.")
 
     st.divider()
-    left, right = st.columns(2)
 
-    with left:
-        st.markdown("#### Before — Raw Data")
-        st.markdown(
-            '<div class="callout callout-warning">'
-            'What an engineer sees today: a session row and hundreds of trace rows. '
-            'No diagnosis. No pattern name. No fix suggestion.'
-            '</div>',
-            unsafe_allow_html=True,
-        )
-        st.markdown("**c_sessions row:**")
-        raw_session = {
-            "id":              session_id[:16] + "...",
-            "total_cost_usd":  session_row["total_cost_usd"],
-            "total_latency_ms":session_row["total_latency_ms"],
-            "trades_executed": session_row["trades_executed"],
-            "terminal_reason": session_row.get("terminal_reason") or "null",
-        }
-        st.json(raw_session)
-        st.markdown(f"**c_traces ({len(sess_traces)} rows):**")
-        st.dataframe(
-            sess_traces[["created_at","agent","step_type","tool_name","outcome","error","latency_ms"]]
-            .head(30).astype(str),
-            height=300,
-            use_container_width=True,
-        )
-        if len(sess_traces) > 30:
-            st.caption(f"... and {len(sess_traces)-30} more rows")
+    # ── Section 5: Pipeline completion rate ───────────────────────────────────
+    st.markdown("#### Pipeline Completion Rate")
+    st.caption("Fraction of sessions where all 4 agents ran. Drops signal systemic pipeline breaks.")
 
-    with right:
-        st.markdown("#### After — RCA Dashboard")
-        st.markdown(
-            '<div class="callout">'
-            'Same data. Processed in seconds. Pattern named, root cause explained, fix suggested.'
-            '</div>',
-            unsafe_allow_html=True,
-        )
+    if not evals_ts.empty:
+        _pc = evals_ts[evals_ts["eval_name"] == "pipeline_completion"].copy()
+        if not _pc.empty:
+            _pc = _pc.sort_values("started_at")
+            _pc["lbl"] = _pc["started_at"].dt.strftime("%m-%d %H:%M")
+            _pc["rolling_pc"] = _pc["score"].rolling(7, min_periods=1).mean()
 
-        # Run analysis on the fly
-        traces_list = sess_traces.to_dict("records")
-        evals       = run_all_evals(session_row, traces_list, recent_costs)
-        inc_list    = run_all_detectors(session_row, traces_list, evals, recent_costs)
-
-        if inc_list:
-            inc = inc_list[0]
-            st.markdown(
-                f'{badge(inc.severity)} &nbsp; **{inc.pattern_name}**',
-                unsafe_allow_html=True,
+            fig_pc = go.Figure()
+            fig_pc.add_trace(go.Bar(
+                x=_pc["lbl"], y=_pc["score"],
+                name="Completed",
+                marker_color=["#10b981" if v == 1.0 else "#ef4444" for v in _pc["score"]],
+                opacity=0.7,
+            ))
+            fig_pc.add_trace(go.Scatter(
+                x=_pc["lbl"], y=_pc["rolling_pc"],
+                mode="lines", name="7-session avg",
+                line=dict(color="#0f172a", width=2, dash="dash"),
+            ))
+            fig_pc.update_layout(
+                paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
+                font_color="#1e293b", height=250,
+                yaxis=dict(title="Score", range=[0, 1.1]),
+                xaxis_tickangle=-30,
+                legend=dict(orientation="h", y=1.08),
+                margin=dict(t=40, b=60),
             )
-            st.markdown(f"**Root cause:** {inc.root_cause}")
-            st.markdown("**Failed evals:**")
-            for fe in inc.failed_evals[:4]:
-                st.markdown(
-                    f'- `{fe["agent"]}.{fe["eval_name"]}` — '
-                    f'score **{fe["score"]:.2f}** (threshold {fe["threshold"]})'
-                )
-            st.markdown(
-                f'<div class="fix-box">{generate_fix_suggestion(inc, traces_list)}</div>',
-                unsafe_allow_html=True,
-            )
-            st.metric("Cost attributed to incident", f"${inc.cost_wasted:.4f}")
+            st.plotly_chart(fig_pc, use_container_width=True)
         else:
-            st.success("No incidents detected for this session.")
-            st.markdown("**Eval summary:**")
-            for e in evals:
-                icon = "✓" if e.passed else "✗"
-                color = "#10b981" if e.passed else "#ef4444"
-                st.markdown(
-                    f'<span style="color:{color}">{icon}</span> '
-                    f'`{e.agent}.{e.eval_name}` — {e.score:.2f}',
-                    unsafe_allow_html=True,
-                )
+            st.info("No pipeline_completion eval data found.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
