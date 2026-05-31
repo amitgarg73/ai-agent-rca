@@ -16,7 +16,6 @@ import streamlit as st
 import streamlit.components.v1 as st_components
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 from st_aggrid.shared import JsCode
-from streamlit_plotly_events import plotly_events
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
@@ -949,18 +948,16 @@ if page == "Ledger":
                     font_color="#1e293b", height=260,
                     margin=dict(t=10, b=0, l=0, r=0), showlegend=False,
                 )
-                _clicked = plotly_events(
-                    _donut, click_event=True,
-                    override_height=260, key="agent_donut",
-                )
-                st.caption(f"Click a slice · LLM cost only · {sessions_with_bd} of {len(sessions)} sessions have data")
+                st.plotly_chart(_donut, use_container_width=True)
+                st.caption(f"LLM cost only · {sessions_with_bd} of {len(sessions)} sessions have data")
 
-                if _clicked:
-                    st.session_state["cost_agent_sel"] = _clicked[0].get("label")
-                _sel_agent = st.session_state.get("cost_agent_sel")
+                _sel_agent = st.pills(
+                    "Agent", _agents_list, selection_mode="single",
+                    key="cost_agent_drill", label_visibility="collapsed",
+                )
 
             with _detail_col:
-                if _sel_agent and _sel_agent in agent_costs:
+                if _sel_agent:
                     _llm = agent_llm[_sel_agent]
                     st.markdown(f"**{_sel_agent}**")
                     _mc1, _mc2, _mc3, _mc4 = st.columns(4)
