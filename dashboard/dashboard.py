@@ -938,11 +938,10 @@ if page == "Ledger":
     _p = st.session_state.ledger_page
     _page_tbl = tbl.iloc[_p * _PAGE_SIZE : (_p + 1) * _PAGE_SIZE]
 
-    # Fixed height: header row + 20 data rows at ~35px each
     st.dataframe(
         _page_tbl.style.apply(row_style, axis=1).format({"Cost ($)": "${:.4f}"}),
         use_container_width=True,
-        height=740,
+        height=400,
     )
 
     _ca, _cb, _cc = st.columns([1, 3, 1])
