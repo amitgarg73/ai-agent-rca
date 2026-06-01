@@ -134,28 +134,21 @@
 
         /* ── Sequence ── */
         #seq-panel {
-            overflow-y: auto;
+            overflow: auto;
             padding: 28px 32px 48px;
             background: #0f172a;
             flex-direction: column;
-            align-items: center;
+            align-items: flex-start;
         }
         .seq-label {
-            font-size: 12px;
+            font-size: 13px;
             color: #475569;
             margin-bottom: 18px;
-            align-self: flex-start;
         }
-        .mermaid { width: 100%; max-width: 1800px; }
-        .mermaid svg { font-size: 26px !important; }
-        .mermaid svg text,
-        .mermaid svg .actor,
-        .mermaid svg .messageText,
-        .mermaid svg .labelText,
-        .mermaid svg .loopText,
-        .mermaid svg .noteText { font-size: 26px !important; }
-        .mermaid svg .note text,
-        .mermaid svg .label text { font-size: 22px !important; }
+        .mermaid {
+            zoom: 1.9;
+            transform-origin: top left;
+        }
 
         /* ── Tooltip ── */
         .tooltip {
