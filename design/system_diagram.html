@@ -70,8 +70,8 @@
         .panel.active { display: flex; }
 
         /* ── Architecture ── */
-        #arch-panel { flex-direction: column; }
-        #arch-network { flex: 1; min-height: 0; height: 100%; background: #0b1120; }
+        #arch-panel { display: block !important; }
+        #arch-network { position: absolute; inset: 0; background: #0b1120; }
 
         .legend {
             position: absolute;
@@ -354,7 +354,10 @@ document.querySelectorAll('.tab').forEach(tab => {
         if (name === 'arch') {
             setTimeout(() => {
                 if (!window.network) { initNetwork(); return; }
-                window.network.setSize('100%', '100%');
+                const w = window.innerWidth;
+                const h = window.innerHeight - document.querySelector('.header').offsetHeight
+                                             - document.querySelector('.tabs').offsetHeight;
+                window.network.setSize(w + 'px', h + 'px');
                 window.network.fit({ animation: { duration: 400, easingFunction: 'easeInOutQuad' } });
             }, 60);
         }
@@ -559,15 +562,12 @@ const ttBody  = document.getElementById('tt-body');
 function initNetwork() {
     if (window.network) return;
 
-    // Force the container to fill its parent before vis.js measures it
-    const panel = document.getElementById('arch-panel');
-    const panelH = panel.getBoundingClientRect().height;
-    if (panelH < 20) {
-        // Layout not ready; retry in 60ms
-        setTimeout(initNetwork, 60);
-        return;
-    }
-    container.style.height = panelH + 'px';
+    // Explicit pixel size — vis.js needs non-zero dimensions at init time
+    const w = window.innerWidth;
+    const h = window.innerHeight - document.querySelector('.header').offsetHeight
+                                 - document.querySelector('.tabs').offsetHeight;
+    container.style.width  = w + 'px';
+    container.style.height = h + 'px';
 
     window.network = new vis.Network(container, { nodes, edges }, {
         physics: { enabled: false },
