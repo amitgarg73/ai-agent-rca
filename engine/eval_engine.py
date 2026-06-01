@@ -110,7 +110,7 @@ def eval_research_completion(traces: list[dict], session: dict) -> EvalResult:
     """
     research = [t for t in traces if (t.get("agent") or "").lower() == "research"]
     if not research:
-        return EvalResult("completion", "research", 0.0, False, 0.7,
+        return EvalResult("completion", "research", 0.0, False, 0.9,
                           {"reason": "no research agent traces"})
     # llm_call traces use outcome="success"; agent_message/decision use terminal reason strings
     llm_ok = any(
@@ -120,17 +120,17 @@ def eval_research_completion(traces: list[dict], session: dict) -> EvalResult:
         for t in research
     )
     if not llm_ok:
-        return EvalResult("completion", "research", 0.0, False, 0.7,
+        return EvalResult("completion", "research", 0.0, False, 0.9,
                           {"reason": "no successful llm_call or agent_message trace"})
     tool_calls = [t for t in research if (t.get("step_type") or "") == "tool_call"]
     # tool_call: outcome=None means success, outcome="error" means failed
     tool_ok    = any(t.get("outcome") != "error" for t in tool_calls)
     if tool_calls and not tool_ok:
         # LLM ran but every tool call failed — agent couldn't fetch data
-        return EvalResult("completion", "research", 0.3, False, 0.7,
+        return EvalResult("completion", "research", 0.3, False, 0.9,
                           {"reason": "llm ran but all tool calls failed",
                            "tool_calls": len(tool_calls)})
-    return EvalResult("completion", "research", 1.0, True, 0.7,
+    return EvalResult("completion", "research", 1.0, True, 0.9,
                       {"llm_ok": True, "tool_calls_ok": True})
 
 
@@ -234,22 +234,22 @@ def eval_orchestrator_decision_made(traces: list[dict], session: dict) -> EvalRe
     orch   = [t for t in traces if (t.get("agent") or "").lower() == "orchestrator"]
 
     if trades > 0:
-        return EvalResult("decision_made", "orchestrator", 1.0, True, 0.7,
+        return EvalResult("decision_made", "orchestrator", 1.0, True, 0.9,
                           {"trades_executed": trades})
     if reason in _GOOD_EXITS:
-        return EvalResult("decision_made", "orchestrator", 1.0, True, 0.7,
+        return EvalResult("decision_made", "orchestrator", 1.0, True, 0.9,
                           {"terminal_reason": reason})
     if reason in _PARTIAL_EXITS:
-        return EvalResult("decision_made", "orchestrator", 0.5, False, 0.7,
+        return EvalResult("decision_made", "orchestrator", 0.5, False, 0.9,
                           {"terminal_reason": reason, "reason": "pipeline structurally blocked"})
     if reason in _BAD_EXITS:
-        return EvalResult("decision_made", "orchestrator", 0.2, False, 0.7,
+        return EvalResult("decision_made", "orchestrator", 0.2, False, 0.9,
                           {"terminal_reason": reason, "reason": "bad exit — session did not complete cleanly"})
     if orch:
-        return EvalResult("decision_made", "orchestrator", 0.2, False, 0.7,
+        return EvalResult("decision_made", "orchestrator", 0.2, False, 0.9,
                           {"reason": "orchestrator ran but no decision or reason recorded",
                            "orch_traces": len(orch)})
-    return EvalResult("decision_made", "orchestrator", 0.0, False, 0.7,
+    return EvalResult("decision_made", "orchestrator", 0.0, False, 0.9,
                       {"reason": "orchestrator never ran"})
 
 
@@ -265,20 +265,20 @@ def eval_orchestrator_exit_quality(traces: list[dict], session: dict) -> EvalRes
     trades = int(session.get("trades_executed") or 0)
 
     if reason in _GOOD_EXITS:
-        return EvalResult("exit_quality", "orchestrator", 1.0, True, 0.7,
+        return EvalResult("exit_quality", "orchestrator", 1.0, True, 0.9,
                           {"terminal_reason": reason})
     if reason in _PARTIAL_EXITS:
-        return EvalResult("exit_quality", "orchestrator", 0.5, False, 0.7,
+        return EvalResult("exit_quality", "orchestrator", 0.5, False, 0.9,
                           {"terminal_reason": reason, "reason": "structural block prevented clean exit"})
     if reason in _BAD_EXITS:
-        return EvalResult("exit_quality", "orchestrator", 0.2, False, 0.7,
+        return EvalResult("exit_quality", "orchestrator", 0.2, False, 0.9,
                           {"terminal_reason": reason, "reason": "bad exit state"})
     if trades > 0:
         # trades produced but no terminal reason — acceptable
-        return EvalResult("exit_quality", "orchestrator", 0.8, True, 0.7,
+        return EvalResult("exit_quality", "orchestrator", 0.8, True, 0.9,
                           {"reason": "trades produced but no terminal_reason logged",
                            "trades_executed": trades})
-    return EvalResult("exit_quality", "orchestrator", 0.0, False, 0.7,
+    return EvalResult("exit_quality", "orchestrator", 0.0, False, 0.9,
                       {"reason": "no terminal_reason and 0 trades — silent exit"})
 
 
@@ -328,18 +328,18 @@ def eval_session_outcome_linkage(traces: list[dict], session: dict) -> EvalResul
     reason = (session.get("terminal_reason") or "").lower()
 
     if trades > 0:
-        return EvalResult("outcome_linkage", "session", 1.0, True, 0.7,
+        return EvalResult("outcome_linkage", "session", 1.0, True, 0.9,
                           {"trades_executed": trades})
     if reason in _GOOD_EXITS:
-        return EvalResult("outcome_linkage", "session", 1.0, True, 0.7,
+        return EvalResult("outcome_linkage", "session", 1.0, True, 0.9,
                           {"terminal_reason": reason, "trades_executed": 0})
     if reason in _PARTIAL_EXITS:
-        return EvalResult("outcome_linkage", "session", 0.5, False, 0.7,
+        return EvalResult("outcome_linkage", "session", 0.5, False, 0.9,
                           {"terminal_reason": reason, "reason": "pipeline structurally blocked"})
     if reason in _BAD_EXITS:
-        return EvalResult("outcome_linkage", "session", 0.2, False, 0.7,
+        return EvalResult("outcome_linkage", "session", 0.2, False, 0.9,
                           {"terminal_reason": reason, "reason": "bad exit state"})
-    return EvalResult("outcome_linkage", "session", 0.0, False, 0.7,
+    return EvalResult("outcome_linkage", "session", 0.0, False, 0.9,
                       {"reason": "0 trades and no terminal_reason — silent exit"})
 
 
