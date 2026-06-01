@@ -139,6 +139,13 @@ class TestResearchCompletion:
         r = eval_research_completion(traces, make_session())
         assert r.passed
 
+    def test_pass_per_ticker_agent_name(self):
+        # Real agent names are research_AAPL, research_NVDA, etc. — must match
+        traces = [make_trace(agent="research_AAPL", step_type="agent_message", outcome="success"),
+                  make_trace(agent="research_NVDA", step_type="tool_call",     outcome=None)]
+        r = eval_research_completion(traces, make_session())
+        assert r.passed
+
     def test_fail_no_research_traces(self):
         traces = [make_trace(agent="market", outcome="success")]
         r = eval_research_completion(traces, make_session())
@@ -412,6 +419,13 @@ class TestSessionEvals:
         r = eval_session_pipeline_completion(traces, make_session())
         assert r.passed
 
+    def test_pipeline_completion_per_ticker_research_counts(self):
+        # research_AAPL, research_NVDA etc. must satisfy the "research" requirement
+        traces = [make_trace(agent=a) for a in ["market","research_AAPL","research_NVDA","risk","orchestrator"]]
+        r = eval_session_pipeline_completion(traces, make_session())
+        assert r.passed
+        assert "research" not in r.detail["missing"]
+
     def test_pipeline_completion_empty(self):
         r = eval_session_pipeline_completion([], make_session())
         assert not r.passed
@@ -583,6 +597,14 @@ class TestResearchConversion:
         traces = [self._make_ticker_trace("AAPL"), self._make_ticker_trace("AAPL"),
                   self._make_ticker_trace("MSFT")]
         r = eval_research_conversion(traces, make_session(trades=1))
+        assert r.detail["tickers_researched"] == 2
+
+    def test_per_ticker_agent_name_works(self):
+        # Real traces use research_AAPL, research_NVDA — must count as research tool calls
+        traces = [make_trace(agent="research_AAPL", step_type="tool_call", outcome=None, entity_id="AAPL"),
+                  make_trace(agent="research_NVDA", step_type="tool_call", outcome=None, entity_id="NVDA")]
+        r = eval_research_conversion(traces, make_session(trades=1))
+        assert r.passed
         assert r.detail["tickers_researched"] == 2
 
     def test_eval_name_and_agent(self):

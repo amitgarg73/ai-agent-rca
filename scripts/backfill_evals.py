@@ -59,8 +59,16 @@ def main():
     print(f"  {len(sessions)} sessions found")
 
     print("Loading traces...")
-    traces_resp = db.table("c_traces").select("*").execute()
-    all_traces  = traces_resp.data or []
+    all_traces: list[dict] = []
+    page_size = 1000
+    offset    = 0
+    while True:
+        batch = db.table("c_traces").select("*").range(offset, offset + page_size - 1).execute()
+        rows  = batch.data or []
+        all_traces.extend(rows)
+        if len(rows) < page_size:
+            break
+        offset += page_size
     print(f"  {len(all_traces)} traces found")
 
     # Index traces by session_id

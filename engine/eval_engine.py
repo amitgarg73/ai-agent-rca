@@ -108,7 +108,7 @@ def eval_research_completion(traces: list[dict], session: dict) -> EvalResult:
     Score 0.3 if LLM ran but all tool calls failed (agent started but couldn't fetch data).
     Score 0.0 if no research traces or no successful LLM call at all.
     """
-    research = [t for t in traces if (t.get("agent") or "").lower() == "research"]
+    research = [t for t in traces if (t.get("agent") or "").lower().startswith("research")]
     if not research:
         return EvalResult("completion", "research", 0.0, False, 0.9,
                           {"reason": "no research agent traces"})
@@ -136,7 +136,7 @@ def eval_research_completion(traces: list[dict], session: dict) -> EvalResult:
 
 def eval_research_token_efficiency(traces: list[dict], session: dict) -> EvalResult:
     """Score 1.0 if research agent used < 30K tokens total."""
-    research = [t for t in traces if (t.get("agent") or "").lower() == "research"]
+    research = [t for t in traces if (t.get("agent") or "").lower().startswith("research")]
     tokens   = sum((t.get("tokens_input") or 0) + (t.get("tokens_output") or 0) for t in research)
     score    = max(0.0, 1.0 - tokens / (TOKEN_EFFICIENCY_THRESHOLD * 2))
     return EvalResult("token_efficiency", "research", round(score, 2),
@@ -148,7 +148,7 @@ def eval_research_tool_success_rate(traces: list[dict], session: dict) -> EvalRe
     """Score 1.0 if >= 80% of research agent tool calls succeeded."""
     tools = [
         t for t in traces
-        if (t.get("agent") or "").lower() == "research"
+        if (t.get("agent") or "").lower().startswith("research")
         and (t.get("step_type") or "") == "tool_call"
     ]
     if not tools:
@@ -172,7 +172,7 @@ def eval_research_tool_diversity(traces: list[dict], session: dict) -> EvalResul
     """
     tools = [
         t for t in traces
-        if (t.get("agent") or "").lower() == "research"
+        if (t.get("agent") or "").lower().startswith("research")
         and (t.get("step_type") or "") == "tool_call"
     ]
     distinct = len({(t.get("tool_name") or "").strip() for t in tools
@@ -287,9 +287,11 @@ def eval_orchestrator_exit_quality(traces: list[dict], session: dict) -> EvalRes
 def eval_session_pipeline_completion(traces: list[dict], session: dict) -> EvalResult:
     """Score 1.0 if all 4 required agents have at least one trace."""
     agents_present = {(t.get("agent") or "").lower() for t in traces}
-    # market_shadow counts as market
+    # market_shadow counts as market; research_TICKER counts as research
     if "market_shadow" in agents_present:
         agents_present.add("market")
+    if any(a.startswith("research_") for a in agents_present):
+        agents_present.add("research")
     missing = [a for a in REQUIRED_AGENTS if a not in agents_present]
     score   = len([a for a in REQUIRED_AGENTS if a in agents_present]) / len(REQUIRED_AGENTS)
     return EvalResult("pipeline_completion", "session", round(score, 2),
@@ -387,7 +389,7 @@ def eval_research_conversion(traces: list[dict], session: dict) -> EvalResult:
     """
     research_tools = [
         t for t in traces
-        if (t.get("agent") or "").lower() == "research"
+        if (t.get("agent") or "").lower().startswith("research")
         and (t.get("step_type") or "") == "tool_call"
         and t.get("outcome") != "error"
     ]
