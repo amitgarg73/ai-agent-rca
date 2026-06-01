@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Agent RCA — System Architecture</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background: #0f172a;
+            color: #e2e8f0;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        /* ── Header ── */
+        .header {
+            padding: 14px 28px;
+            border-bottom: 1px solid #1e293b;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-shrink: 0;
+        }
+        .header-left { display: flex; align-items: center; gap: 20px; }
+        .header-title { font-size: 16px; font-weight: 600; color: #f1f5f9; }
+        .header-sub { font-size: 11px; color: #64748b; margin-top: 2px; }
+        .badges { display: flex; gap: 6px; }
+        .badge {
+            background: #1e293b;
+            border: 1px solid #334155;
+            color: #94a3b8;
+            font-size: 11px;
+            padding: 2px 8px;
+            border-radius: 4px;
+            white-space: nowrap;
+        }
+
+        /* ── Tabs ── */
+        .tabs {
+            display: flex;
+            padding: 0 28px;
+            border-bottom: 1px solid #1e293b;
+            flex-shrink: 0;
+        }
+        .tab {
+            padding: 10px 18px;
+            font-size: 13px;
+            font-weight: 500;
+            color: #64748b;
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            transition: color 0.15s;
+            user-select: none;
+        }
+        .tab:hover { color: #cbd5e1; }
+        .tab.active { color: #60a5fa; border-bottom-color: #60a5fa; }
+
+        /* ── Panels ── */
+        .content { flex: 1; overflow: hidden; position: relative; }
+        .panel { position: absolute; inset: 0; display: none; }
+        .panel.active { display: flex; }
+
+        /* ── Architecture ── */
+        #arch-panel { flex-direction: column; }
+        #arch-network { flex: 1; background: #0b1120; }
+
+        .legend {
+            position: absolute;
+            top: 14px;
+            left: 14px;
+            background: rgba(15, 23, 42, 0.95);
+            border: 1px solid #1e293b;
+            border-radius: 8px;
+            padding: 12px 14px;
+            z-index: 10;
+            min-width: 170px;
+        }
+        .legend-title {
+            font-size: 10px;
+            font-weight: 600;
+            color: #475569;
+            text-transform: uppercase;
+            letter-spacing: 0.07em;
+            margin-bottom: 9px;
+        }
+        .legend-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 11px;
+            color: #94a3b8;
+            margin-bottom: 5px;
+        }
+        .legend-swatch {
+            width: 10px;
+            height: 10px;
+            border-radius: 2px;
+            flex-shrink: 0;
+        }
+        .legend-row.dashed .legend-swatch {
+            border: 1px dashed #f59e0b;
+            background: #2d1a00;
+        }
+
+        .controls {
+            position: absolute;
+            top: 14px;
+            right: 14px;
+            display: flex;
+            gap: 6px;
+            z-index: 10;
+        }
+        .btn {
+            background: #1e293b;
+            border: 1px solid #334155;
+            color: #94a3b8;
+            font-size: 11px;
+            padding: 5px 11px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-family: 'Inter', sans-serif;
+            transition: background 0.15s, color 0.15s;
+        }
+        .btn:hover { background: #334155; color: #e2e8f0; }
+
+        /* ── Sequence ── */
+        #seq-panel {
+            overflow-y: auto;
+            padding: 28px 32px 48px;
+            background: #0f172a;
+            flex-direction: column;
+            align-items: center;
+        }
+        .seq-label {
+            font-size: 12px;
+            color: #475569;
+            margin-bottom: 18px;
+            align-self: flex-start;
+        }
+        .mermaid { width: 100%; max-width: 1500px; }
+
+        /* ── Tooltip ── */
+        .tooltip {
+            position: fixed;
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            padding: 10px 13px;
+            font-size: 12px;
+            color: #e2e8f0;
+            max-width: 300px;
+            pointer-events: none;
+            z-index: 200;
+            display: none;
+            line-height: 1.55;
+            box-shadow: 0 4px 24px rgba(0,0,0,0.5);
+        }
+        .tt-title { font-weight: 600; color: #f1f5f9; margin-bottom: 4px; font-size: 13px; }
+        .tt-body { color: #94a3b8; }
+    </style>
+</head>
+<body>
+
+<!-- Header -->
+<div class="header">
+    <div class="header-left">
+        <div>
+            <div class="header-title">AI Agent RCA</div>
+            <div class="header-sub">Strategy C · 6-agent pipeline · Supabase · Streamlit Cloud</div>
+        </div>
+        <div class="badges">
+            <span class="badge">17 evals</span>
+            <span class="badge">6 patterns</span>
+            <span class="badge">27 sessions · 946 traces</span>
+            <span class="badge">Phase 0 — simulation</span>
+        </div>
+    </div>
+</div>
+
+<!-- Tabs -->
+<div class="tabs">
+    <div class="tab active" data-tab="arch">System Architecture</div>
+    <div class="tab" data-tab="seq">Premarket Session Flow</div>
+</div>
+
+<!-- Content -->
+<div class="content">
+
+    <!-- Architecture panel -->
+    <div id="arch-panel" class="panel active">
+        <div id="arch-network"></div>
+
+        <div class="legend">
+            <div class="legend-title">Components</div>
+            <div class="legend-row"><div class="legend-swatch" style="background:#475569"></div>Triggers</div>
+            <div class="legend-row"><div class="legend-swatch" style="background:#2563eb"></div>Claude Agents</div>
+            <div class="legend-row"><div class="legend-swatch" style="background:#0284c7"></div>Agent Tools</div>
+            <div class="legend-row"><div class="legend-swatch" style="background:#7c3aed"></div>External Services</div>
+            <div class="legend-row"><div class="legend-swatch" style="background:#0d9488"></div>Observability</div>
+            <div class="legend-row"><div class="legend-swatch" style="background:#059669"></div>Supabase Tables</div>
+            <div class="legend-row"><div class="legend-swatch" style="background:#ea580c"></div>RCA Engine</div>
+            <div class="legend-row"><div class="legend-swatch" style="background:#16a34a"></div>Dashboard</div>
+            <div class="legend-row dashed"><div class="legend-swatch"></div>Planned (Phase Q1)</div>
+        </div>
+
+        <div class="controls">
+            <button class="btn" id="btn-fit">Fit to screen</button>
+            <button class="btn" id="btn-relayout">Re-layout</button>
+        </div>
+    </div>
+
+    <!-- Sequence panel -->
+    <div id="seq-panel" class="panel">
+        <div class="seq-label">Premarket pipeline · 7:15 AM ET · cron-job.org → trade execution → RCA evaluation</div>
+        <div class="mermaid">
+%%{init: {
+  "theme": "dark",
+  "themeVariables": {
+    "background":           "#0f172a",
+    "primaryColor":         "#1e3a5f",
+    "primaryTextColor":     "#e2e8f0",
+    "primaryBorderColor":   "#334155",
+    "secondaryColor":       "#1e293b",
+    "tertiaryColor":        "#162032",
+    "edgeLabelBackground":  "#1e293b",
+    "sequenceNumberColor":  "#60a5fa",
+    "actorBkg":             "#1e293b",
+    "actorBorder":          "#334155",
+    "actorTextColor":       "#e2e8f0",
+    "actorLineColor":       "#334155",
+    "signalColor":          "#60a5fa",
+    "signalTextColor":      "#cbd5e1",
+    "labelBoxBkgColor":     "#1e293b",
+    "labelBoxBorderColor":  "#334155",
+    "labelTextColor":       "#94a3b8",
+    "loopTextColor":        "#94a3b8",
+    "noteBkgColor":         "#1e293b",
+    "noteBorderColor":      "#334155",
+    "noteTextColor":        "#94a3b8",
+    "activationBkgColor":   "#1e3a5f",
+    "activationBorderColor":"#3b82f6"
+  }
+}}%%
+sequenceDiagram
+    autonumber
+    participant CR as ⏰ cron-job.org
+    participant GA as ⚙️ GitHub Actions
+    participant OC as 🧠 Orchestrator
+    participant MA as 📊 Market Agent
+    participant RA as 🔬 Research Agent
+    participant RK as 🛡️ Risk Agent
+    participant AP as 💹 Alpaca
+    participant SB as 🗄️ Supabase
+    participant RC as 🔍 RCA Engine
+
+    CR->>GA: POST /workflow_dispatch (7:15 AM ET)
+    GA->>OC: python premarket.py
+    OC->>SB: open_session() — write c_sessions row
+
+    rect rgb(20, 40, 90)
+        Note over OC,MA: Market Analysis
+        OC->>MA: run_market_agent()
+        MA->>MA: get_vix() · get_futures(ES/NQ/YM) · get_fear_greed() · get_news()
+        MA->>SB: TraceLogger — c_traces (tool_calls: outcome=None, agent_message: outcome=completed)
+        MA-->>OC: market_report {decision: GO | CAUTION | SKIP, summary}
+        OC->>SB: flush_cost_breakdown() — partial cost persisted
+    end
+
+    alt decision == SKIP
+        OC->>SB: close_session(terminal_reason=skip_propagated, trades=0)
+    else decision == GO or CAUTION
+
+        rect rgb(5, 55, 45)
+            Note over OC,RA: Research — one Haiku call per candidate ticker
+            OC->>RA: run_research_agent(market_report, params)
+            loop per candidate ticker
+                RA->>RA: get_candidates() · get_live_price() · get_news(ticker) · get_atr(ticker)
+                Note right of RA: entity_id = ticker on each trace
+            end
+            RA->>SB: TraceLogger — c_traces (tool_calls × N tickers, agent_message)
+            RA-->>OC: trade_proposals [{ticker, entry, target, stop, confidence, reasoning}]
+            OC->>SB: flush_cost_breakdown()
+        end
+
+        rect rgb(55, 15, 80)
+            Note over OC,RK: Risk Validation
+            OC->>RK: run_risk_agent(proposals, params)
+            RK->>RK: get_open_positions() · get_today_pnl() · get_buying_power()
+            RK->>SB: TraceLogger — c_traces
+            RK-->>OC: verdicts [{ticker, verdict: APPROVED|REJECTED, reason}]
+            OC->>SB: flush_cost_breakdown()
+        end
+
+        rect rgb(80, 30, 8)
+            Note over OC: Synthesis — Sonnet LLM call (no tools)
+            OC->>OC: _run_synthesis_call() — compute shares, R:R, final trade list
+            Note right of OC: "Do not second-guess agents. Synthesis only."
+            OC->>SB: TraceLogger — c_traces (decision: converged | structural_block)
+            OC->>SB: flush_cost_breakdown()
+        end
+
+        alt retry_needed == true and market != CAUTION
+            Note over OC: One retry — remove rejected tickers, re-run Risk
+            OC->>RK: run_risk_agent(filtered_proposals, params)
+            RK-->>OC: verdicts_retry
+            OC->>OC: _run_synthesis_call() loop_iteration=2
+        end
+
+        loop per approved trade
+            OC->>AP: submit_bracket_order(entry × 1.001, target, stop)
+            AP-->>OC: order_id, fill_price
+        end
+
+        OC->>SB: close_session(terminal_reason=converged, trades_executed=N)
+    end
+
+    Note over RC,SB: ── Post-session async (backfill_evals.py or realtime subscription) ──
+
+    RC->>SB: load c_sessions row + c_traces for session_id
+    RC->>RC: run_all_evals() — 17 evals across market · research · risk · orchestrator · session
+    RC->>SB: write c_evals (17 rows, scores + passed + threshold + detail JSON)
+    RC->>RC: run_all_detectors() — 6 named patterns (Tool Timeout Loop, Context Spiral, etc.)
+    RC->>SB: write c_incidents (0–N rows, severity + call_stack + fix_suggestion)
+    Note over RC: Dashboard reads all tables on next page load
+        </div>
+    </div>
+
+</div>
+
+<!-- Tooltip -->
+<div class="tooltip" id="tooltip">
+    <div class="tt-title" id="tt-title"></div>
+    <div class="tt-body" id="tt-body"></div>
+</div>
+
+<script>
+// ── Tab switching ────────────────────────────────────────────────
+document.querySelectorAll('.tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+        const name = tab.dataset.tab;
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+        tab.classList.add('active');
+        document.getElementById(name + '-panel').classList.add('active');
+        if (name === 'arch' && window.network) {
+            setTimeout(() => network.fit({ animation: { duration: 400, easingFunction: 'easeInOutQuad' } }), 50);
+        }
+    });
+});
+
+// ── Mermaid ──────────────────────────────────────────────────────
+mermaid.initialize({ startOnLoad: true, theme: 'dark', securityLevel: 'loose' });
+
+// ── Node tooltips ─────────────────────────────────────────────────
+const TOOLTIPS = {
+    cron:        { title: 'cron-job.org', body: 'External HTTP trigger. Fires workflow_dispatch at exact times: 7:15 AM ET (premarket), every 15 min 9:15–3:50 PM (intraday), 3:55 PM (EOD). GitHub native schedule kept as backup.' },
+    ga:          { title: 'GitHub Actions', body: 'Receives workflow_dispatch, runs Python pipeline in Ubuntu runner. 3 active workflows: trading.yml (pipeline), health_check.yml (8:45 AM ET), universe_refresh.yml (Mondays).' },
+    orch:        { title: 'Orchestrator (Sonnet 4.6)', body: 'Pipeline coordinator. Sequences Market → Research → Risk → Synthesis. Manages one retry on fixable rejections. Short-circuits on SKIP or CAUTION+all-rejected. Sets terminal_reason. Never re-analyzes upstream agent outputs.' },
+    ma:          { title: 'Market Agent (Haiku 4.5)', body: 'Macro signal. Checks VIX (tiered: 2–15 positions), ES/NQ/YM futures (-1.5% = SKIP, -0.5% = CAUTION), Fear & Greed Index, news headlines. Returns GO / CAUTION / SKIP.' },
+    na:          { title: 'News Analyst (Haiku 4.5 / TypeScript)', body: 'Headline sentiment analysis. TypeScript service emitting OpenTelemetry spans. Multi-language agent proves the RCA product handles heterogeneous trace formats.' },
+    ra:          { title: 'Research Agent (Haiku 4.5)', body: 'Per-ticker deep dive with 4 tools, 12-turn cap. entity_id auto-tagged per ticker (research_NVDA → entity_id=NVDA). Cost ~$0.002/ticker. Runs in parallel across candidates.' },
+    rk:          { title: 'Risk Agent (Haiku 4.5)', body: '5 hard constraints: daily loss limit, position count, sector concentration, no duplicate tickers, buying power. Returns APPROVED / REJECTED per proposal with reason.' },
+    la:          { title: 'Learning Agent (Sonnet 4.6)', body: 'EOD only. Analyses session performance, adjusts StrategyParams for next session. Never modifies principal protection tiers 1–6. Results stored in c_sessions.' },
+    ma_tools:    { title: 'Market Tools', body: 'get_vix(), get_futures() (ES/NQ/YM, period=5d), get_fear_greed(), get_news_headlines(). All tool_call traces: outcome=None (success), outcome="error" (failure).' },
+    ra_tools:    { title: 'Research Tools', body: 'get_candidates() (pool-filtered), get_live_price() (Alpaca ask), get_news(ticker), get_atr(ticker). outcome=None=success. entity_id tagged per ticker for per-stock cost breakdown.' },
+    rk_tools:    { title: 'Risk Tools', body: 'get_open_positions(), get_today_pnl(), get_buying_power(). All read-only. outcome=None in traces (Haiku does not set "success" on tool_call step_types).' },
+    alpaca:      { title: 'Alpaca Paper Trading', body: 'Bracket orders: limit entry (price × 1.001) + take-profit + stop-loss OCO in one call. Strategy C uses stratc_ client_order_id prefix. Separate paper account and API keys from Strategy A/B.' },
+    tl:          { title: 'TraceLogger', body: 'Central observability layer. Writes every tool_call, agent_message, llm_call, decision, error step to c_traces. flush_cost_breakdown() upserts cost per agent mid-pipeline. close_session() writes final state.' },
+    c_sessions:  { title: 'c_sessions (27 rows)', body: 'id, started_at, terminal_reason, trades_executed, trades_proposed, total_cost_usd, cost_breakdown (JSON per agent/ticker), total_tokens_input/output.' },
+    c_traces:    { title: 'c_traces (946 rows)', body: 'session_id, agent, step_type (tool_call|agent_message|llm_call|decision|error), tool_name, outcome, error, latency_ms, tokens_input/output, entity_id, created_at.' },
+    c_positions: { title: 'c_positions', body: 'Open and closed positions synced from Alpaca. Tracks fill_price, exit_mechanism (TARGET|STOP|EOD|NATIVE_TRAIL), realized_pnl. Not modified by RCA product.' },
+    backfill:    { title: 'backfill_evals.py', body: 'Deletes then re-inserts c_evals + c_incidents for all sessions. Idempotent. Supports --dry-run. Run after any eval logic or threshold change.' },
+    eval_eng:    { title: 'eval_engine.py — 17 evals', body: '3 registries: PER_AGENT_EVALS (10 evals across market/research/risk/orchestrator), SESSION_EVALS (4 holistic), BUSINESS_EVALS (3 on-the-fly). Pure Python <1ms. Thresholds calibrated from real session data 2026-05-31.' },
+    pat_det:     { title: 'pattern_detector.py — 6 patterns', body: 'Tool Timeout Loop (critical), Context Spiral (warning), Pipeline Break (critical), Empty Result Loop (warning), Cost Anomaly (warning), Silent Exit (info). Fires from eval scores + raw trace data.' },
+    rca_eng:     { title: 'rca_engine.py', body: 'Builds annotated call stack from traces per incident. Generates natural-language fix suggestion via Claude. Powers the RCA View page — shows exactly which step failed and what to change.' },
+    calib:       { title: 'calibrate_thresholds.py', body: 'Classifies sessions as clean/degraded/structural. Computes p20 of clean sessions as recommended threshold. Reports TPR (degraded caught) and FPR (clean false-flagged) per eval. Re-run at 10+ clean sessions.' },
+    qj:          { title: 'quality_judge.py — Phase Q1 (planned)', body: 'One Haiku call per session, all 4 agents batched with system prompt caching. Returns output_quality score (0–1) + rationale per agent. Stores in c_evals as agent=research_quality etc. Cost ~$0.002/session. Never in pipeline critical path.' },
+    c_evals:     { title: 'c_evals (459 rows)', body: '17 rows per session. Fields: session_id, agent, eval_name, score (0–1), passed (bool), threshold, detail (JSON with raw values). Thresholds for key evals raised to 0.9 after calibration.' },
+    c_incidents: { title: 'c_incidents (19 rows across 14 sessions)', body: 'session_id, pattern_name, severity, call_stack (annotated trace), fix_suggestion (Claude-generated), created_at. Sessions 23-27 show Tool Timeout Loop + Pipeline Break (yfinance hang, fixed 2026-05-31).' },
+    dash:        { title: 'Dashboard — 6 pages (Streamlit Cloud)', body: 'Ledger (KPIs + session grid + LLM analyst summary) · Quality Drift (3 tabs: heatmap / operational+business / health timeline) · Incidents Feed · RCA View (call stack + fix) · Failure Simulator · Trace Inspector. Password protected.' },
+};
+
+// ── vis.js architecture diagram ──────────────────────────────────
+const CX = { trig: 60, orch: 280, ag: 510, tool: 730, obs: 960, raw: 1180, rca: 1410, out: 1640 };
+
+function n(id, label, group, x, y, opts = {}) {
+    const palette = {
+        trigger:    { bg: '#1a2540', border: '#475569', font: '#94a3b8' },
+        agent:      { bg: '#172554', border: '#2563eb', font: '#bfdbfe' },
+        tool:       { bg: '#0c3d5e', border: '#0284c7', font: '#bae6fd' },
+        external:   { bg: '#2e1065', border: '#7c3aed', font: '#ddd6fe' },
+        obs:        { bg: '#0d3d3a', border: '#0d9488', font: '#99f6e4' },
+        data:       { bg: '#052e16', border: '#059669', font: '#6ee7b7' },
+        rca:        { bg: '#3d1500', border: '#ea580c', font: '#fdba74' },
+        rca_future: { bg: '#2d1a00', border: '#d97706', font: '#fde68a' },
+        dashboard:  { bg: '#052e16', border: '#16a34a', font: '#86efac' },
+    };
+    const c = palette[group];
+    return {
+        id, label, x, y,
+        color: {
+            background: c.bg,
+            border: c.border,
+            highlight: { background: c.bg, border: '#f1f5f9' },
+            hover: { background: c.bg, border: '#e2e8f0' }
+        },
+        font: { color: c.font, size: 11, face: 'Inter', multi: true },
+        borderWidth: 1.5,
+        shape: opts.shape || 'box',
+        margin: { top: 8, bottom: 8, left: 10, right: 10 },
+        fixed: { x: true, y: true },
+        physics: false,
+        widthConstraint: opts.width || 130,
+        ...opts
+    };
+}
+
+function e(from, to, label, opts = {}) {
+    return {
+        from, to,
+        label: label || '',
+        arrows: { to: { enabled: true, scaleFactor: 0.55 } },
+        color: { color: opts.color || '#2d3f55', highlight: '#60a5fa', hover: '#60a5fa' },
+        font: { color: '#4b6070', size: 10, face: 'Inter', background: 'transparent', strokeWidth: 0 },
+        width: opts.w || 1.2,
+        smooth: { type: 'curvedCW', roundness: opts.r || 0.08 },
+        dashes: opts.d || false,
+        selectionWidth: 2,
+    };
+}
+
+const nodes = new vis.DataSet([
+    // Triggers
+    n('cron',  '⏰ cron-job.org',           'trigger',  CX.trig,  220),
+    n('ga',    '⚙️ GitHub Actions',          'trigger',  CX.trig,  430),
+
+    // Orchestrator
+    n('orch',  '🧠 Orchestrator\n(Sonnet 4.6)',  'agent', CX.orch, 430),
+
+    // Agents
+    n('ma',  '📊 Market Agent\n(Haiku 4.5)',      'agent', CX.ag, 100),
+    n('na',  '📰 News Analyst\n(Haiku / TS)',       'agent', CX.ag, 270),
+    n('ra',  '🔬 Research Agent\n(Haiku 4.5)',     'agent', CX.ag, 430),
+    n('rk',  '🛡️ Risk Agent\n(Haiku 4.5)',         'agent', CX.ag, 590),
+    n('la',  '📖 Learning Agent\n(Sonnet 4.6)',    'agent', CX.ag, 760),
+
+    // Tools
+    n('ma_tools', 'VIX · Futures\nF&G · Headlines', 'tool', CX.tool, 100, { shape: 'diamond', width: 140 }),
+    n('ra_tools', 'Price · News\nCandidates · ATR', 'tool', CX.tool, 430, { shape: 'diamond', width: 140 }),
+    n('rk_tools', 'Positions · P&L\nBuying Power',  'tool', CX.tool, 590, { shape: 'diamond', width: 140 }),
+    n('alpaca',   '💹 Alpaca\nPaper Trading',        'external', CX.tool, 760),
+
+    // Observability
+    n('tl', '📡 TraceLogger',  'obs', CX.obs, 370),
+
+    // Raw data
+    n('c_sessions',  'c_sessions\n27 rows',  'data', CX.raw, 200, { shape: 'database' }),
+    n('c_traces',    'c_traces\n946 rows',   'data', CX.raw, 380, { shape: 'database' }),
+    n('c_positions', 'c_positions',          'data', CX.raw, 760, { shape: 'database' }),
+
+    // RCA Engine
+    n('backfill', '⚡ backfill_evals.py',      'rca', CX.rca,  60),
+    n('eval_eng', '📐 eval_engine.py\n17 evals', 'rca', CX.rca, 220),
+    n('pat_det',  '🔍 pattern_detector.py\n6 patterns', 'rca', CX.rca, 400),
+    n('rca_eng',  '🩺 rca_engine.py\nCall stack + fixes', 'rca', CX.rca, 570),
+    n('calib',    '📊 calibrate_\nthresholds.py', 'rca', CX.rca, 730),
+    n('qj',       '✨ quality_judge.py\n[Phase Q1 — Haiku]', 'rca_future', CX.rca, 900),
+
+    // Output + Dashboard
+    n('c_evals',     'c_evals\n459 rows',     'data', CX.out, 220, { shape: 'database' }),
+    n('c_incidents', 'c_incidents\n19 rows',  'data', CX.out, 430, { shape: 'database' }),
+    n('dash',        '📊 Dashboard\n6 pages · Streamlit', 'dashboard', CX.out, 660, { width: 150 }),
+]);
+
+const edges = new vis.DataSet([
+    // Trigger chain
+    e('cron', 'ga',   'HTTP trigger',   { color: '#475569' }),
+    e('ga',   'orch', 'run pipeline',   { color: '#475569' }),
+
+    // Orchestrator → agents
+    e('orch', 'ma',  'premarket',  { color: '#3b82f6', r: 0.25 }),
+    e('orch', 'na',  'premarket',  { color: '#3b82f6', r: 0.15 }),
+    e('orch', 'ra',  '',           { color: '#3b82f6' }),
+    e('orch', 'rk',  '',           { color: '#3b82f6', r: -0.1 }),
+    e('orch', 'la',  'EOD',        { color: '#3b82f6', r: -0.22 }),
+
+    // Agents → tools
+    e('ma',  'ma_tools',  'tool calls',  { color: '#0284c7' }),
+    e('ra',  'ra_tools',  'tool calls',  { color: '#0284c7' }),
+    e('rk',  'rk_tools',  'tool calls',  { color: '#0284c7' }),
+
+    // Orchestrator → Alpaca
+    e('orch', 'alpaca', 'bracket orders', { color: '#7c3aed', r: -0.3 }),
+    e('alpaca', 'c_positions', 'sync', { color: '#7c3aed' }),
+
+    // Agents → TraceLogger
+    e('ma',   'tl', '', { color: '#0d9488', r: 0.3,   w: 1 }),
+    e('na',   'tl', '', { color: '#0d9488', r: 0.2,   w: 1 }),
+    e('ra',   'tl', '', { color: '#0d9488', r: 0.05,  w: 1 }),
+    e('rk',   'tl', '', { color: '#0d9488', r: -0.05, w: 1 }),
+    e('orch', 'tl', '', { color: '#0d9488', r: 0.25,  w: 1 }),
+    e('la',   'tl', '', { color: '#0d9488', r: -0.18, w: 1 }),
+
+    // TraceLogger → data
+    e('tl', 'c_traces',   'write',        { color: '#059669' }),
+    e('tl', 'c_sessions', 'flush · close', { color: '#059669', r: -0.12 }),
+
+    // Backfill → eval engine
+    e('backfill', 'eval_eng', 'triggers', { color: '#ea580c' }),
+
+    // Data → eval engine (reads, dashed)
+    e('c_sessions', 'eval_eng', 'reads', { color: '#059669', d: true, r: 0.12 }),
+    e('c_traces',   'eval_eng', 'reads', { color: '#059669', d: true }),
+
+    // RCA internal
+    e('eval_eng', 'pat_det',     'feeds', { color: '#ea580c' }),
+    e('eval_eng', 'c_evals',     'write', { color: '#ea580c' }),
+    e('pat_det',  'c_incidents', 'write', { color: '#ea580c' }),
+
+    // rca_engine reads
+    e('c_evals',  'rca_eng', 'reads', { color: '#ea580c', d: true, r: 0.18 }),
+    e('c_traces', 'rca_eng', 'reads', { color: '#059669', d: true, r: 0.22 }),
+
+    // calibrate reads
+    e('c_evals',     'calib', 'reads', { color: '#ea580c', d: true, r: -0.1 }),
+    e('c_incidents', 'calib', 'reads', { color: '#ea580c', d: true }),
+
+    // quality_judge (future)
+    e('qj', 'c_evals', 'write [Q1]', { color: '#d97706', d: true, r: -0.15 }),
+
+    // Dashboard reads
+    e('c_sessions',  'dash', 'reads', { color: '#16a34a', d: true, r: 0.22 }),
+    e('c_traces',    'dash', 'reads', { color: '#16a34a', d: true, r: 0.15 }),
+    e('c_evals',     'dash', 'reads', { color: '#16a34a', d: true }),
+    e('c_incidents', 'dash', 'reads', { color: '#16a34a', d: true, r: -0.1 }),
+    e('c_positions', 'dash', 'reads', { color: '#16a34a', d: true, r: -0.18 }),
+]);
+
+const container = document.getElementById('arch-network');
+window.network = new vis.Network(container, { nodes, edges }, {
+    physics: { enabled: false },
+    interaction: { hover: true, tooltipDelay: 80, zoomView: true, dragView: true, dragNodes: false },
+    nodes: { borderWidthSelected: 2.5 },
+    edges: { selectionWidth: 2 },
+});
+
+// Fit on first draw
+network.once('afterDrawing', () => {
+    network.fit({ animation: { duration: 600, easingFunction: 'easeInOutQuad' } });
+});
+
+// Buttons
+document.getElementById('btn-fit').addEventListener('click', () => {
+    network.fit({ animation: { duration: 400, easingFunction: 'easeInOutQuad' } });
+});
+document.getElementById('btn-relayout').addEventListener('click', () => {
+    network.setOptions({ physics: { enabled: true } });
+    setTimeout(() => network.setOptions({ physics: { enabled: false } }), 2500);
+});
+
+// Tooltip
+const tooltip  = document.getElementById('tooltip');
+const ttTitle  = document.getElementById('tt-title');
+const ttBody   = document.getElementById('tt-body');
+
+network.on('hoverNode', ({ node }) => {
+    const info = TOOLTIPS[node];
+    if (!info) return;
+    ttTitle.textContent = info.title;
+    ttBody.textContent  = info.body;
+    tooltip.style.display = 'block';
+});
+network.on('blurNode', () => { tooltip.style.display = 'none'; });
+network.on('mousemove', ({ event: { srcEvent: ev } }) => {
+    tooltip.style.left = (ev.clientX + 18) + 'px';
+    tooltip.style.top  = Math.max(8, ev.clientY - 60) + 'px';
+});
+</script>
+</body>
+</html>
