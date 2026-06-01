@@ -34,13 +34,13 @@ from engine.eval_engine import (
 def make_trace(agent="research", step_type="tool_call", tool_name="get_stock_data",
                outcome="success", error=None, latency_ms=500,
                tokens_in=100, tokens_out=50, created_at="2026-05-28T06:34:00Z",
-               session_id="sess-001"):
+               session_id="sess-001", entity_id=None):
     return {
         "id": "trace-001", "session_id": session_id,
         "agent": agent, "step_type": step_type, "tool_name": tool_name,
         "outcome": outcome, "error": error, "latency_ms": latency_ms,
         "tokens_input": tokens_in, "tokens_output": tokens_out,
-        "created_at": created_at,
+        "created_at": created_at, "entity_id": entity_id,
     }
 
 def make_session(cost=0.10, trades=1, reason=None, started_at="2026-05-28T06:00:00Z",
@@ -551,18 +551,19 @@ class TestCostPerTrade:
 
 
 class TestResearchConversion:
-    def _make_research_llm_trace(self):
-        return make_trace(agent="research", step_type="llm_call", outcome="success")
+    def _make_ticker_trace(self, ticker):
+        # Research agent makes tool_calls per ticker; outcome=None means success
+        return make_trace(agent="research", step_type="tool_call",
+                          outcome=None, entity_id=ticker)
 
     def test_pass_with_trade(self):
-        traces = [self._make_research_llm_trace()]
+        traces = [self._make_ticker_trace("AAPL")]
         r = eval_research_conversion(traces, make_session(trades=1))
         assert r.passed
-        assert r.detail["research_runs"] == 1
+        assert r.detail["tickers_researched"] == 1
 
     def test_fail_no_trade_from_research(self):
-        traces = [self._make_research_llm_trace(), self._make_research_llm_trace(),
-                  self._make_research_llm_trace(), self._make_research_llm_trace()]
+        traces = [self._make_ticker_trace(t) for t in ["AAPL", "MSFT", "NVDA", "TSLA"]]
         r = eval_research_conversion(traces, make_session(trades=0))
         assert not r.passed
         assert r.detail["conversion_rate"] == 0.0
@@ -573,9 +574,16 @@ class TestResearchConversion:
         assert "no successful research" in r.detail["reason"]
 
     def test_score_clipped_at_1(self):
-        traces = [self._make_research_llm_trace()]
+        traces = [self._make_ticker_trace("AAPL")]
         r = eval_research_conversion(traces, make_session(trades=5))
         assert r.score == 1.0
+
+    def test_deduplicates_tickers(self):
+        # Multiple tool calls for same ticker count as one researched stock
+        traces = [self._make_ticker_trace("AAPL"), self._make_ticker_trace("AAPL"),
+                  self._make_ticker_trace("MSFT")]
+        r = eval_research_conversion(traces, make_session(trades=1))
+        assert r.detail["tickers_researched"] == 2
 
     def test_eval_name_and_agent(self):
         r = eval_research_conversion([], make_session())

@@ -65,7 +65,9 @@ def eval_market_data_completeness(traces: list[dict], session: dict) -> EvalResu
     if not market:
         return EvalResult("data_completeness", "market", 0.0, False, 0.7,
                           {"reason": "no market agent traces found"})
-    success = [t for t in market if (t.get("outcome") or "") == "success"]
+    # tool_call traces: outcome=None means executed without error; outcome="error" means failed
+    success = [t for t in market if t.get("outcome") != "error"
+               and t.get("step_type") != "error"]
     score   = len(success) / len(market)
     return EvalResult("data_completeness", "market", round(score, 2), score >= 0.7, 0.7,
                       {"total": len(market), "success": len(success)})
@@ -110,16 +112,19 @@ def eval_research_completion(traces: list[dict], session: dict) -> EvalResult:
     if not research:
         return EvalResult("completion", "research", 0.0, False, 0.7,
                           {"reason": "no research agent traces"})
+    # llm_call traces use outcome="success"; agent_message/decision use terminal reason strings
     llm_ok = any(
-        (t.get("step_type") or "") in ("decision", "llm_call")
-        and (t.get("outcome") or "") == "success"
+        (t.get("step_type") or "") == "llm_call" and (t.get("outcome") or "") == "success"
+        or (t.get("step_type") or "") in ("agent_message", "decision")
+        and (t.get("outcome") or "") not in ("", "error")
         for t in research
     )
     if not llm_ok:
         return EvalResult("completion", "research", 0.0, False, 0.7,
-                          {"reason": "no successful llm_call or decision trace"})
+                          {"reason": "no successful llm_call or agent_message trace"})
     tool_calls = [t for t in research if (t.get("step_type") or "") == "tool_call"]
-    tool_ok    = any((t.get("outcome") or "") == "success" for t in tool_calls)
+    # tool_call: outcome=None means success, outcome="error" means failed
+    tool_ok    = any(t.get("outcome") != "error" for t in tool_calls)
     if tool_calls and not tool_ok:
         # LLM ran but every tool call failed — agent couldn't fetch data
         return EvalResult("completion", "research", 0.3, False, 0.7,
@@ -149,7 +154,8 @@ def eval_research_tool_success_rate(traces: list[dict], session: dict) -> EvalRe
     if not tools:
         return EvalResult("tool_success_rate", "research", 1.0, True, 0.8,
                           {"reason": "no tool calls made"})
-    success = sum(1 for t in tools if (t.get("outcome") or "") == "success")
+    # tool_call: outcome=None means success, outcome="error" means failed
+    success = sum(1 for t in tools if t.get("outcome") != "error")
     rate    = success / len(tools)
     return EvalResult("tool_success_rate", "research", round(rate, 2),
                       rate >= TOOL_SUCCESS_MIN_RATE, TOOL_SUCCESS_MIN_RATE,
@@ -194,7 +200,9 @@ def eval_risk_assessment_complete(traces: list[dict], session: dict) -> EvalResu
     if not risk:
         return EvalResult("assessment_complete", "risk", 0.0, False, 1.0,
                           {"reason": "no risk agent traces"})
-    success = [t for t in risk if (t.get("outcome") or "") == "success"]
+    # risk tool_calls use outcome=None (success) or outcome="error"; agent_message uses "completed"
+    success = [t for t in risk if t.get("outcome") != "error"
+               and t.get("step_type") != "error"]
     score   = 1.0 if success else 0.0
     return EvalResult("assessment_complete", "risk", score, bool(success), 1.0,
                       {"total": len(risk), "success": len(success)})
@@ -372,29 +380,32 @@ def eval_cost_per_trade(traces: list[dict], session: dict) -> EvalResult:
 
 def eval_research_conversion(traces: list[dict], session: dict) -> EvalResult:
     """
-    Trades executed / successful research LLM completions.
-    Each successful research LLM call = one stock analyzed.
-    Threshold: 30% of analyzed stocks should produce a trade.
+    Trades executed / distinct tickers researched.
+    Research agent makes tool calls per ticker (not one LLM call per ticker),
+    so distinct entity_id values on research tool_call traces are the right proxy.
+    Threshold: 30% of researched tickers should produce a trade.
     """
-    research_llm = [
+    research_tools = [
         t for t in traces
         if (t.get("agent") or "").lower() == "research"
-        and (t.get("step_type") or "") in ("decision", "llm_call")
-        and (t.get("outcome") or "") == "success"
+        and (t.get("step_type") or "") == "tool_call"
+        and t.get("outcome") != "error"
     ]
+    tickers = {(t.get("entity_id") or "").strip() for t in research_tools
+               if (t.get("entity_id") or "").strip()}
     trades = int(session.get("trades_executed") or 0)
-    n_analyzed = len(research_llm)
+    n_analyzed = len(tickers)
     if n_analyzed == 0:
         return EvalResult("research_conversion", "business", 0.0, False,
                           RESEARCH_CONVERSION_MIN,
-                          {"trades": trades, "research_runs": 0,
-                           "reason": "no successful research LLM traces"})
+                          {"trades": trades, "tickers_researched": 0,
+                           "reason": "no successful research tool calls with entity_id"})
     rate  = trades / n_analyzed
     score = min(1.0, rate / RESEARCH_CONVERSION_MIN)
     return EvalResult("research_conversion", "business", round(score, 2),
                       rate >= RESEARCH_CONVERSION_MIN, RESEARCH_CONVERSION_MIN,
-                      {"trades": trades, "research_runs": n_analyzed,
-                       "conversion_rate": round(rate, 3)})
+                      {"trades": trades, "tickers_researched": n_analyzed,
+                       "tickers": sorted(tickers), "conversion_rate": round(rate, 3)})
 
 
 def eval_proposal_acceptance(traces: list[dict], session: dict) -> EvalResult:
