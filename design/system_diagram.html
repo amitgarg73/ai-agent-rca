@@ -71,7 +71,7 @@
 
         /* ── Architecture ── */
         #arch-panel { flex-direction: column; }
-        #arch-network { flex: 1; background: #0b1120; }
+        #arch-network { flex: 1; min-height: 0; height: 100%; background: #0b1120; }
 
         .legend {
             position: absolute;
@@ -351,8 +351,12 @@ document.querySelectorAll('.tab').forEach(tab => {
         document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
         tab.classList.add('active');
         document.getElementById(name + '-panel').classList.add('active');
-        if (name === 'arch' && window.network) {
-            setTimeout(() => network.fit({ animation: { duration: 400, easingFunction: 'easeInOutQuad' } }), 50);
+        if (name === 'arch') {
+            setTimeout(() => {
+                if (!window.network) { initNetwork(); return; }
+                window.network.setSize('100%', '100%');
+                window.network.fit({ animation: { duration: 400, easingFunction: 'easeInOutQuad' } });
+            }, 60);
         }
     });
 });
@@ -546,44 +550,64 @@ const edges = new vis.DataSet([
 ]);
 
 const container = document.getElementById('arch-network');
-window.network = new vis.Network(container, { nodes, edges }, {
-    physics: { enabled: false },
-    interaction: { hover: true, tooltipDelay: 80, zoomView: true, dragView: true, dragNodes: false },
-    nodes: { borderWidthSelected: 2.5 },
-    edges: { selectionWidth: 2 },
-});
+window.network  = null;
 
-// Fit on first draw
-network.once('afterDrawing', () => {
-    network.fit({ animation: { duration: 600, easingFunction: 'easeInOutQuad' } });
-});
+const tooltip = document.getElementById('tooltip');
+const ttTitle = document.getElementById('tt-title');
+const ttBody  = document.getElementById('tt-body');
 
-// Buttons
-document.getElementById('btn-fit').addEventListener('click', () => {
-    network.fit({ animation: { duration: 400, easingFunction: 'easeInOutQuad' } });
-});
-document.getElementById('btn-relayout').addEventListener('click', () => {
-    network.setOptions({ physics: { enabled: true } });
-    setTimeout(() => network.setOptions({ physics: { enabled: false } }), 2500);
-});
+function initNetwork() {
+    if (window.network) return;
 
-// Tooltip
-const tooltip  = document.getElementById('tooltip');
-const ttTitle  = document.getElementById('tt-title');
-const ttBody   = document.getElementById('tt-body');
+    // Force the container to fill its parent before vis.js measures it
+    const panel = document.getElementById('arch-panel');
+    const panelH = panel.getBoundingClientRect().height;
+    if (panelH < 20) {
+        // Layout not ready; retry in 60ms
+        setTimeout(initNetwork, 60);
+        return;
+    }
+    container.style.height = panelH + 'px';
 
-network.on('hoverNode', ({ node }) => {
-    const info = TOOLTIPS[node];
-    if (!info) return;
-    ttTitle.textContent = info.title;
-    ttBody.textContent  = info.body;
-    tooltip.style.display = 'block';
-});
-network.on('blurNode', () => { tooltip.style.display = 'none'; });
-network.on('mousemove', ({ event: { srcEvent: ev } }) => {
-    tooltip.style.left = (ev.clientX + 18) + 'px';
-    tooltip.style.top  = Math.max(8, ev.clientY - 60) + 'px';
-});
+    window.network = new vis.Network(container, { nodes, edges }, {
+        physics: { enabled: false },
+        interaction: { hover: true, tooltipDelay: 80, zoomView: true, dragView: true, dragNodes: false },
+        nodes: { borderWidthSelected: 2.5 },
+        edges: { selectionWidth: 2 },
+    });
+
+    window.network.once('afterDrawing', () => {
+        window.network.fit({ animation: { duration: 600, easingFunction: 'easeInOutQuad' } });
+    });
+
+    document.getElementById('btn-fit').addEventListener('click', () => {
+        window.network.fit({ animation: { duration: 400, easingFunction: 'easeInOutQuad' } });
+    });
+    document.getElementById('btn-relayout').addEventListener('click', () => {
+        window.network.setOptions({ physics: { enabled: true } });
+        setTimeout(() => window.network.setOptions({ physics: { enabled: false } }), 2500);
+    });
+
+    window.network.on('hoverNode', ({ node }) => {
+        const info = TOOLTIPS[node];
+        if (!info) return;
+        ttTitle.textContent = info.title;
+        ttBody.textContent  = info.body;
+        tooltip.style.display = 'block';
+    });
+    window.network.on('blurNode', () => { tooltip.style.display = 'none'; });
+    window.network.on('mousemove', ({ event: { srcEvent: ev } }) => {
+        tooltip.style.left = (ev.clientX + 18) + 'px';
+        tooltip.style.top  = Math.max(8, ev.clientY - 60) + 'px';
+    });
+}
+
+// Defer until full page load so CSS flex heights are resolved
+if (document.readyState === 'complete') {
+    setTimeout(initNetwork, 80);
+} else {
+    window.addEventListener('load', () => setTimeout(initNetwork, 80));
+}
 </script>
 </body>
 </html>
