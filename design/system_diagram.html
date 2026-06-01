@@ -247,7 +247,8 @@
     "noteBorderColor":      "#334155",
     "noteTextColor":        "#94a3b8",
     "activationBkgColor":   "#1e3a5f",
-    "activationBorderColor":"#3b82f6"
+    "activationBorderColor":"#3b82f6",
+    "fontSize":             "18px"
   }
 }}%%
 sequenceDiagram
@@ -365,7 +366,13 @@ document.querySelectorAll('.tab').forEach(tab => {
 });
 
 // ── Mermaid ──────────────────────────────────────────────────────
-mermaid.initialize({ startOnLoad: true, theme: 'dark', securityLevel: 'loose' });
+mermaid.initialize({
+    startOnLoad: true,
+    theme: 'dark',
+    securityLevel: 'loose',
+    fontSize: 18,
+    sequence: { actorFontSize: 18, messageFontSize: 17, noteFontSize: 16 }
+});
 
 // ── Node tooltips ─────────────────────────────────────────────────
 const TOOLTIPS = {
