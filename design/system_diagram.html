@@ -145,10 +145,7 @@
             color: #475569;
             margin-bottom: 18px;
         }
-        .mermaid {
-            zoom: 1.9;
-            transform-origin: top left;
-        }
+        .mermaid svg { display: block; }
 
         /* ── Tooltip ── */
         .tooltip {
@@ -249,8 +246,7 @@
     "noteBorderColor":      "#334155",
     "noteTextColor":        "#94a3b8",
     "activationBkgColor":   "#1e3a5f",
-    "activationBorderColor":"#3b82f6",
-    "fontSize":             "26px"
+    "activationBorderColor":"#3b82f6"
   }
 }}%%
 sequenceDiagram
@@ -372,8 +368,16 @@ mermaid.initialize({
     startOnLoad: true,
     theme: 'dark',
     securityLevel: 'loose',
-    fontSize: 26,
-    sequence: { actorFontSize: 26, messageFontSize: 24, noteFontSize: 22, width: 220 }
+    sequence: {
+        useMaxWidth: false,
+        actorFontSize: 20,
+        messageFontSize: 18,
+        noteFontSize: 16,
+        width: 220,
+        height: 65,
+        boxMargin: 12,
+        mirrorActors: false
+    }
 });
 
 // ── Node tooltips ─────────────────────────────────────────────────
