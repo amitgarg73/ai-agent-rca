@@ -378,7 +378,7 @@ def compute_cb_savings(sid: str, row: dict, evals_df, traces_df) -> float:
     """Cost of agents that ran AFTER the first failing agent — what a CB would have prevented."""
     pipeline = ["market", "research", "risk", "orchestrator"]
 
-    # cost per normalized agent from cost_breakdown
+    # per-agent costs from cost_breakdown
     bd = row.get("cost_breakdown") or {}
     agent_costs: dict[str, float] = {}
     if isinstance(bd, dict):
@@ -386,6 +386,11 @@ def compute_cb_savings(sid: str, row: dict, evals_df, traces_df) -> float:
             if isinstance(v, dict):
                 norm = "research" if str(k).startswith("research_") else k
                 agent_costs[norm] = agent_costs.get(norm, 0) + float(v.get("cost_usd", 0))
+
+    # total session cost (for proportional fallback when cost_breakdown missing)
+    total_cost = float(row.get("total_cost_usd") or 0)
+    if total_cost == 0 and agent_costs:
+        total_cost = sum(agent_costs.values())
 
     # which agents ran
     agents_ran: set[str] = set()
@@ -416,12 +421,18 @@ def compute_cb_savings(sid: str, row: dict, evals_df, traces_df) -> float:
     if first_fail_idx is None:
         return 0.0
 
-    # savings = cost of agents AFTER the failing agent that actually ran
-    return sum(
-        agent_costs.get(ag, 0)
-        for ag in pipeline[first_fail_idx + 1:]
-        if ag in agents_ran
-    )
+    agents_after = [ag for ag in pipeline[first_fail_idx + 1:] if ag in agents_ran]
+    if not agents_after:
+        return 0.0
+
+    # precise savings from cost_breakdown
+    savings = sum(agent_costs.get(ag, 0) for ag in agents_after)
+
+    # proportional fallback when cost_breakdown is unavailable
+    if savings == 0 and not agent_costs and total_cost > 0:
+        savings = round(len(agents_after) / max(len(agents_ran), 1) * total_cost, 4)
+
+    return savings
 
 
 def pipeline_strip(sid: str, traces_df, evals_df) -> str:
@@ -1497,12 +1508,12 @@ if page == "Overview":
         _ov_rs["started_at"] = pd.to_datetime(_ov_rs["started_at"], errors="coerce", utc=True)
         _ov_rs = _ov_rs.sort_values("started_at", ascending=False).head(10)
 
-        _ov_cols = st.columns([3, 2, 6, 2, 2])
+        _ov_cols = st.columns([3, 2, 5, 3, 2])
         for _c, _l in zip(_ov_cols, [
             "Date",
             "Cost" + tip_badge("Total LLM API spend for this session across all agents. Drawn from cost_breakdown if the session ended early."),
             "Pipeline",
-            "CB Savings" + tip_badge("Cost that a circuit breaker would have saved by stopping the pipeline right after the first failing agent. Market cost is always incurred. Zero means the failing agent was last to run so no downstream cost was avoidable."),
+            "Cost Savings with Circuit Breakers" + tip_badge("LLM spend that a circuit breaker would have prevented by stopping the pipeline right after the first failing agent. The failing agent's cost is already incurred. Zero means no downstream agents ran, so the pipeline stopped naturally."),
             ""]):
             _c.markdown(
                 f'<span style="font-size:0.72rem;font-weight:600;color:#64748b;'
@@ -1532,13 +1543,13 @@ if page == "Overview":
                         if isinstance(v, dict)
                     )
 
-            # CB Savings = cost of agents that ran AFTER the first failing agent
+            # CB savings = cost of agents that ran AFTER the first failing agent (prevented by a circuit breaker)
             _ov_wasted = (
                 compute_cb_savings(_ov_sid, _ov_row.to_dict(), _ov_ae, traces_all)
                 if not _ov_sincs.empty else 0.0
             )
 
-            _c1, _c2, _c3, _c4, _c5 = st.columns([3, 2, 6, 2, 2])
+            _c1, _c2, _c3, _c4, _c5 = st.columns([3, 2, 5, 3, 2])
             with _c1:
                 st.markdown(f'<span style="font-size:0.83rem">{_ov_dt}</span>',
                             unsafe_allow_html=True)
