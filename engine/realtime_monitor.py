@@ -62,6 +62,7 @@ def evaluate_session(session: dict, db=None, dry_run: bool = False) -> dict:
         from sdk.db import load_session_traces, load_recent_session_costs
         from engine.eval_engine import run_all_evals
         from engine.pattern_detector import run_all_detectors, compute_shadow_cb_fires
+        from engine.quality_judge import judge_session
 
         traces = []
         recent_costs: list[float] = []
@@ -70,20 +71,22 @@ def evaluate_session(session: dict, db=None, dry_run: bool = False) -> dict:
             traces       = load_session_traces(db, sid)
             recent_costs = load_recent_session_costs(db, limit=30)
 
-        evals    = run_all_evals(session, traces, recent_costs)
-        incidents = run_all_detectors(session, traces, evals, recent_costs)
-        cb_fires  = compute_shadow_cb_fires(evals)
+        evals         = run_all_evals(session, traces, recent_costs)
+        quality_evals = judge_session(session, traces)
+        incidents     = run_all_detectors(session, traces, evals, recent_costs)
+        cb_fires      = compute_shadow_cb_fires(evals)
 
         result["evals"]            = len(evals)
+        result["quality_evals"]    = len(quality_evals)
         result["incidents"]        = len(incidents)
         result["shadow_cb_fires"]  = len(cb_fires)
 
         if not dry_run and db:
-            # Write evals
-            eval_rows = [e.to_db_row(sid) for e in evals]
-            if eval_rows:
+            # Write operational + quality evals together
+            all_eval_rows = [e.to_db_row(sid) for e in evals + quality_evals]
+            if all_eval_rows:
                 db.table("c_evals").upsert(
-                    eval_rows,
+                    all_eval_rows,
                     on_conflict="session_id,agent,eval_name"
                 ).execute()
 
@@ -118,8 +121,9 @@ def evaluate_session(session: dict, db=None, dry_run: bool = False) -> dict:
                 db.table("c_incidents").insert(row).execute()
 
         log.info(
-            "session=%s evals=%d incidents=%d shadow_cb=%d%s",
-            sid[:8], result["evals"], result["incidents"], result["shadow_cb_fires"],
+            "session=%s evals=%d quality=%d incidents=%d shadow_cb=%d%s",
+            sid[:8], result["evals"], result["quality_evals"],
+            result["incidents"], result["shadow_cb_fires"],
             " [DRY RUN]" if dry_run else "",
         )
 
