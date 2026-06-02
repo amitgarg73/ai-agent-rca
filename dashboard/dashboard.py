@@ -1517,7 +1517,8 @@ if page == "Overview":
             ""]):
             _c.markdown(
                 f'<span style="font-size:0.72rem;font-weight:600;color:#64748b;'
-                f'text-transform:uppercase;letter-spacing:0.06em">{_l}</span>',
+                f'text-transform:uppercase;letter-spacing:0.06em;'
+                f'white-space:normal;word-break:break-word;display:inline-block">{_l}</span>',
                 unsafe_allow_html=True,
             )
         st.markdown(
