@@ -2088,51 +2088,59 @@ if page == "Ledger":
             ]
 
             if not _qual_dev.empty:
-                _qhdr, _qhelp = st.columns([6, 1])
-                _qhdr.markdown("**Quality Scores**")
-                with _qhelp.popover("?", use_container_width=True):
-                    st.markdown(
-                        "**How quality scores are calculated**\n\n"
-                        "Each agent is scored across multiple dimensions using trace patterns "
-                        "as proxies — since raw LLM output text is not stored in traces yet, "
-                        "the scorer infers quality from what the agent *did* rather than what it *said*.\n\n"
-                        "**Research** (5 dimensions)\n"
-                        "- *Data grounding* — distinct tool types used successfully (3+ = high)\n"
-                        "- *Thesis coherence* — whether a decision/agent_message trace was produced\n"
-                        "- *Actionability* — whether the risk agent started after research\n"
-                        "- *Catalyst specificity* — whether news or earnings tools were called\n"
-                        "- *Risk acknowledgment* — total token count as a depth proxy\n\n"
-                        "**Risk** (5 dimensions)\n"
-                        "- *Research consistency* — whether research ran before risk\n"
-                        "- *Parameter completeness* — whether a decision trace was produced\n"
-                        "- *Volatility accounting* — whether an ATR or volatility tool was called\n"
-                        "- *Stop loss quality* — default neutral (requires output text)\n"
-                        "- *Position sizing rationale* — number of successful tool calls\n\n"
-                        "**Orchestrator** (4 dimensions)\n"
-                        "- *Decision consistency* — trades placed with full pipeline = high; "
-                        "no trade with valid exit reason = moderate\n"
-                        "- *Resolution completeness* — terminal reason quality\n"
-                        "- *Reasoning transparency* — whether a decision trace is present\n"
-                        "- *Upstream integration* — whether research and risk both ran\n\n"
-                        "**Session** (2 dimensions)\n"
-                        "- *Pipeline coherence* — all 3 downstream agents ran (or none)\n"
-                        "- *Reasoning chain* — no agent stage had only error traces\n\n"
-                        "**Threshold:** 0.60 — green means the agent met the quality bar, "
-                        "red means it didn't. Scores will improve once raw LLM output text "
-                        "is stored in traces, enabling semantic scoring via Haiku."
-                    )
+                st.markdown("**Quality Scores**")
+                _QUAL_HELP = {
+                    "research_quality": (
+                        "Composite of 5 dimensions (threshold 0.60):\n\n"
+                        "- Data grounding — distinct tool types used successfully (3+ = 1.0, 1 = 0.33)\n"
+                        "- Thesis coherence — decision or agent_message trace produced\n"
+                        "- Actionability — risk agent started after research completed\n"
+                        "- Catalyst specificity — news or earnings tool was called\n"
+                        "- Risk acknowledgment — total token count as an analysis depth proxy\n\n"
+                        "Scores are structural proxies inferred from trace patterns. "
+                        "Semantic scoring via LLM judge activates once raw output text is stored in traces."
+                    ),
+                    "risk_quality": (
+                        "Composite of 5 dimensions (threshold 0.60):\n\n"
+                        "- Research consistency — research agent ran before risk\n"
+                        "- Parameter completeness — decision or agent_message trace produced\n"
+                        "- Volatility accounting — ATR or volatility tool was called\n"
+                        "- Stop loss quality — neutral proxy (requires output text to score)\n"
+                        "- Position sizing rationale — number of successful tool calls\n\n"
+                        "Scores are structural proxies inferred from trace patterns. "
+                        "Semantic scoring via LLM judge activates once raw output text is stored in traces."
+                    ),
+                    "orchestrator_quality": (
+                        "Composite of 4 dimensions (threshold 0.60):\n\n"
+                        "- Decision consistency — trades placed with full pipeline = 1.0; "
+                        "no trade with valid exit reason = 0.85; trades without pipeline = 0.40\n"
+                        "- Resolution completeness — terminal reason quality "
+                        "(good exits: eod_complete, no_opportunity, risk_rejected, etc.)\n"
+                        "- Reasoning transparency — decision trace present\n"
+                        "- Upstream integration — both research and risk ran before orchestrator\n\n"
+                        "Scores are structural proxies inferred from trace patterns. "
+                        "Semantic scoring via LLM judge activates once raw output text is stored in traces."
+                    ),
+                    "session_quality": (
+                        "Composite of 2 dimensions (threshold 0.60):\n\n"
+                        "- Pipeline coherence — all 3 downstream agents ran (1.0), "
+                        "none ran / market-only (0.80), partial pipeline (0.30)\n"
+                        "- Reasoning chain — penalised for any agent stage where every trace was an error\n\n"
+                        "Scores are structural proxies inferred from trace patterns. "
+                        "Semantic scoring via LLM judge activates once raw output text is stored in traces."
+                    ),
+                }
                 _qc = st.columns(len(_qual_dev))
                 for _qi, (_, _qev) in enumerate(_qual_dev.iterrows()):
                     _qs     = float(_qev.get("score") or 0)
-                    _qlabel = str(_qev["agent"]).replace("_quality", "").title()
-                    _qcolor = "#10b981" if _qs >= 0.60 else "#ef4444"
-                    _qc[_qi].markdown(
-                        f'<div style="text-align:center;padding:6px 4px;'
-                        f'border:1px solid {_qcolor}33;border-radius:6px;margin:2px">'
-                        f'<div style="font-size:1.1rem;font-weight:700;color:{_qcolor}">{_qs:.2f}</div>'
-                        f'<div style="font-size:0.75rem;color:#64748b">{_qlabel}</div>'
-                        f'</div>',
-                        unsafe_allow_html=True,
+                    _agent  = str(_qev["agent"])
+                    _qlabel = _agent.replace("_quality", "").title()
+                    _qc[_qi].metric(
+                        label=_qlabel,
+                        value=f"{_qs:.2f}",
+                        delta="passed" if _qs >= 0.60 else "below threshold",
+                        delta_color="normal" if _qs >= 0.60 else "inverse",
+                        help=_QUAL_HELP.get(_agent, ""),
                     )
 
             if not _op_dev.empty:
