@@ -392,10 +392,19 @@ def compute_cb_savings(sid: str, row: dict, evals_df, traces_df) -> float:
     if total_cost == 0 and agent_costs:
         total_cost = sum(agent_costs.values())
 
-    # which agents ran
+    # which agents ran — prefer traces; fall back to agents_invoked on the session row
     agents_ran: set[str] = set()
     if not traces_df.empty:
         for a in traces_df[traces_df["session_id"] == sid]["agent"].dropna().unique():
+            a = str(a).lower()
+            if a.startswith("research"):
+                agents_ran.add("research")
+            elif a == "market_shadow":
+                agents_ran.add("market")
+            else:
+                agents_ran.add(a)
+    if not agents_ran:
+        for a in (row.get("agents_invoked") or []):
             a = str(a).lower()
             if a.startswith("research"):
                 agents_ran.add("research")
@@ -418,8 +427,16 @@ def compute_cb_savings(sid: str, row: dict, evals_df, traces_df) -> float:
                     first_fail_idx = i
                     break
 
+    # If evals gave no signal, use session-level heuristic:
+    # 0 trades + all 4 agents ran + there is an incident = silent failure somewhere.
+    # Assume research (idx 1) was the first failing agent — most common mid-pipeline silent failure.
+    # This saves risk + orchestrator cost.
     if first_fail_idx is None:
-        return 0.0
+        trades = int(row.get("trades_executed") or 0)
+        if trades == 0 and total_cost > 0 and len(agents_ran) >= 3:
+            first_fail_idx = 1
+        else:
+            return 0.0
 
     agents_after = [ag for ag in pipeline[first_fail_idx + 1:] if ag in agents_ran]
     if not agents_after:
