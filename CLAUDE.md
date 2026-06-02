@@ -39,27 +39,30 @@ Tables used: `c_sessions`, `c_traces`, `c_positions` (existing), `c_evals`, `c_i
 
 ```
 engine/
-  eval_engine.py      # 17 evals: 3 registries (PER_AGENT, SESSION, BUSINESS)
-  pattern_detector.py # 6 operational patterns; quality patterns in Phase Q3
-  rca_engine.py       # call stack builder + fix suggestion writer
-  quality_judge.py    # [Phase Q1] LLM-as-judge, Haiku, per-agent quality scoring
-  anomaly_detector.py # [Phase D1] Isolation Forest, unknown pattern detection
+  eval_engine.py        # 17 evals: 3 registries (PER_AGENT, SESSION, BUSINESS)
+  pattern_detector.py   # 10 operational patterns + shadow CB compute_shadow_cb_fires()
+  rca_engine.py         # call stack builder + fix suggestion writer
+  realtime_monitor.py   # Supabase Realtime + polling fallback; auto-runs evals post-session
+  anomaly_detector.py   # Isolation Forest; score/detect unknown anomalies; needs --fit on 20+ sessions
+  quality_judge.py      # [Phase Q1] LLM-as-judge, Haiku, per-agent quality scoring
+sdk/
+  tool_tracer.py        # @trace_tool decorator; ToolSpan; nested LLM cost tracking; writes c_tool_spans
 simulator/
-  failure_sim.py      # inject synthetic traces for 6 named failure patterns
+  failure_sim.py        # inject synthetic traces for all 10 named failure patterns
 dashboard/
-  dashboard.py        # 6-page Streamlit app, password protected
+  dashboard.py          # 6-page Streamlit app, password protected
   .streamlit/
-    secrets.toml      # NOT committed
+    secrets.toml        # NOT committed
 design/
-  product-design.md   # single source of truth — all phases, rubrics, arch
+  product-design.md     # single source of truth — all phases, rubrics, arch
   AI_Agent_RCA_Prototype_Design.docx  # Word version (external sharing)
 scripts/
-  backfill_evals.py   # re-run operational evals on historical sessions
-  backfill_quality.py # [Phase Q1] run quality judge on historical sessions
+  backfill_evals.py     # re-run operational evals on historical sessions
+  backfill_quality.py   # [Phase Q1] run quality judge on historical sessions
 tests/
-  test_evals.py       # 84 tests for all 17 evals
-  test_detector.py    # pattern detection rules
-  test_simulator.py   # synthetic trace injection
+  test_evals.py         # tests for all 17 evals
+  test_detector.py      # 166 tests: 10 patterns + shadow CBs
+  test_simulator.py     # synthetic trace injection
 ```
 
 ## Implementation Status
@@ -67,12 +70,17 @@ tests/
 | Phase | Description | Status |
 |---|---|---|
 | 1-3 | Data foundation, RCA engine, dashboard (6 pages) | DONE |
+| 4b-patterns | 4 new patterns from community research (Hyperactive Polling, Tool Fabrication, Handoff Schema Break, Error Misinterpretation) | DONE 2026-06-01 |
+| 4b-shadow-cb | Shadow CBs: compute_shadow_cb_fires() + realtime monitor persistence | DONE 2026-06-01 |
+| 4b-realtime | Realtime monitor: Supabase websocket + polling fallback | DONE 2026-06-01 |
+| 4b-tool-tracer | Tool tracer SDK: @trace_tool, ToolSpan, c_tool_spans | DONE 2026-06-01 |
+| D1 | Isolation Forest: built; needs `--fit` on 20+ real sessions | BUILT, NEEDS DATA |
 | Q1 | LLM quality judge + backfill | NOT STARTED |
 | Q2 | Quality dashboard integration | NOT STARTED |
 | Q3 | Quality patterns (Grounding Failure, Coherence Break, etc.) | NOT STARTED |
 | Q4 | Shadow quality circuit breakers | NOT STARTED |
-| 4a-4c | In-process operational CBs + realtime subscription | NOT STARTED |
-| D1 | Isolation Forest anomaly detection (needs 20+ sessions) | NOT STARTED |
+| 4a | In-process operational CBs in trading-agent-c | NOT STARTED |
+| 4c | Real circuit breakers (flip shadow flag) | BLOCKED: Strategy C testing |
 | D2 | Sequence pattern mining (needs 50+ sessions) | NOT STARTED |
 
 ## Key Design Decisions
@@ -102,8 +110,13 @@ tests/
 ## CLI
 
 ```bash
-streamlit run dashboard/dashboard.py          # local dev
-python3 scripts/backfill_evals.py             # re-run operational evals
-python3 scripts/backfill_evals.py --dry-run   # preview only
-python3 -m pytest tests/ -v                   # all tests (84 passing)
+streamlit run dashboard/dashboard.py                      # local dev
+python3 scripts/backfill_evals.py                         # re-run operational evals
+python3 scripts/backfill_evals.py --dry-run               # preview only
+python3 -m pytest tests/ -v                               # all tests (166 passing)
+python3 -m engine.realtime_monitor                        # realtime mode (websocket)
+python3 -m engine.realtime_monitor --poll                 # polling mode (30s interval)
+python3 -m engine.realtime_monitor --dry-run              # evaluate without DB writes
+python3 -m engine.anomaly_detector --fit                  # train Isolation Forest on current sessions
+python3 -m engine.anomaly_detector --fit --score          # train then score all sessions
 ```

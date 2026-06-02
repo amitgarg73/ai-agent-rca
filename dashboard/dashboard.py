@@ -354,12 +354,17 @@ def goto_rca(incident_dict: dict, session_id: str) -> None:
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 PATTERN_DESCRIPTIONS = {
-    "Tool Timeout Loop":    "The same tool failed 3+ times in a row. Agent is retrying a broken tool instead of moving on.",
-    "Context Spiral":       "Research agent burned >40K tokens but produced 0 trades. Token usage not justified by output.",
-    "Pipeline Break":       "Research ran but orchestrator never started. Likely an uncaught exception in the handoff between agents.",
-    "Cost Anomaly":         "Session cost was 2+ standard deviations above the recent average. Unexpectedly expensive run.",
-    "Silent Exit":          "Session ended with 0 trades and no terminal reason recorded. Agent stopped without explanation.",
-    "Empty Result Loop":    "Same tool called 3+ times successfully but session still produced nothing. Stuck in a results loop.",
+    "Tool Timeout Loop":        "The same tool failed 3+ times in a row. Agent is retrying a broken tool instead of moving on.",
+    "Context Spiral":           "Research agent burned >40K tokens but produced 0 trades. Token usage not justified by output.",
+    "Pipeline Break":           "Research ran but orchestrator never started. Likely an uncaught exception in the handoff between agents.",
+    "Cost Anomaly":             "Session cost was 2+ standard deviations above the recent average. Unexpectedly expensive run.",
+    "Silent Exit":              "Session ended with 0 trades and no terminal reason recorded. Agent stopped without explanation.",
+    "Empty Result Loop":        "Same tool called 3+ times successfully but session still produced nothing. Stuck in a results loop.",
+    "Hyperactive Polling Loop": "The same tool was called 6+ times successfully in a row. Agent is over-fetching instead of using cached results.",
+    "Tool Call Fabrication":    "2+ tool calls completed in under 50ms — too fast to have made a real API call. Agent may be hallucinating tool results.",
+    "Handoff Schema Break":     "Research completed but the Risk agent's first step errored. The handoff payload is malformed or missing expected fields.",
+    "Error Misinterpretation":  "HTTP error codes returned by tools (429, 500, etc.) but the agent continued as if they were successes.",
+    "Unknown Anomaly":          "Statistical outlier vs. baseline sessions. No named pattern matches — review traces manually.",
 }
 
 AGENT_DESCRIPTIONS = {
@@ -2617,15 +2622,17 @@ elif page == "Incidents Feed":
 
     # Filters
     st.divider()
-    fc1, fc2, fc3 = st.columns(3)
+    fc1, fc2, fc3, fc4 = st.columns([2, 3, 2, 1.5])
     sev_filter     = fc1.multiselect("Severity",
                                       ["critical","warning","info"],
-                                      default=["critical","warning","info"])
+                                      default=["critical","warning"])
     pattern_filter = fc2.multiselect("Pattern",
                                       sorted(incidents["pattern_name"].unique().tolist()),
                                       default=incidents["pattern_name"].unique().tolist())
     sim_filter     = fc3.radio("Show", ["All","Real only","Simulated only"],
                                 horizontal=True)
+    show_shadow_cb = fc4.checkbox("Shadow CBs", value=False,
+                                   help="Show Shadow CB entries (info-severity signals where a circuit breaker would have fired)")
 
     filtered = incidents.copy()
     if sev_filter:
@@ -2636,6 +2643,8 @@ elif page == "Incidents Feed":
         filtered = filtered[~filtered.get("is_simulated", False)]
     elif sim_filter == "Simulated only":
         filtered = filtered[filtered.get("is_simulated", filtered["is_simulated"].fillna(False))]
+    if not show_shadow_cb:
+        filtered = filtered[~filtered["pattern_name"].str.startswith("Shadow CB:")]
 
     # Summary KPIs
     kc1, kc2, kc3, kc4 = st.columns(4)
