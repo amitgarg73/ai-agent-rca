@@ -277,7 +277,7 @@ def _run_fit(db):
     return detector
 
 
-def _run_score(db, detector: IsolationForestDetector | None = None):
+def _run_score(db, detector: IsolationForestDetector | None = None, persist: bool = True):
     if detector is None:
         detector = IsolationForestDetector()
     if not detector.is_ready:
@@ -287,41 +287,65 @@ def _run_score(db, detector: IsolationForestDetector | None = None):
     sessions_r = db.table("c_sessions").select("*").order("started_at", desc=True).execute()
     sessions   = sessions_r.data or []
     evals_r    = db.table("c_evals").select("*").execute()
-    evals_by   = {}
+    evals_by: dict[str, list] = {}
     for e in (evals_r.data or []):
         evals_by.setdefault(e["session_id"], []).append(e)
+
+    # Clear existing Unknown Anomaly incidents so re-runs stay idempotent
+    if persist:
+        db.table("c_incidents").delete().eq("pattern_name", "Unknown Anomaly").execute()
 
     print(f"\n{'Session':<38} {'Score':>6} {'Flag'}")
     print("-" * 55)
     flagged = 0
     for s in sessions:
-        sid   = s["id"]
-        score = detector.score(s, evals=evals_by.get(sid, []))
-        flag  = "ANOMALY" if score >= ANOMALY_THRESHOLD else ""
-        if flag:
+        sid      = s["id"]
+        incident = detector.detect(s, evals=evals_by.get(sid, []))
+        score    = detector.score(s, evals=evals_by.get(sid, []))
+        flag     = "ANOMALY" if incident else ""
+        if incident:
             flagged += 1
+            if persist:
+                try:
+                    db.table("c_incidents").insert(incident.to_db_row()).execute()
+                except Exception as exc:
+                    print(f"  [warn] could not write incident for {sid[:8]}: {exc}")
         print(f"{sid:<38} {score:>6.3f} {flag}")
 
     print(f"\n{flagged}/{len(sessions)} sessions flagged as anomalous "
           f"(threshold={ANOMALY_THRESHOLD})")
+    if persist and flagged:
+        print(f"{flagged} Unknown Anomaly incidents written to c_incidents.")
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     parser = argparse.ArgumentParser()
-    parser.add_argument("--fit",   action="store_true", help="Train model on current sessions")
-    parser.add_argument("--score", action="store_true", help="Score all sessions")
+    parser.add_argument("--fit",      action="store_true", help="Train model on current sessions")
+    parser.add_argument("--score",    action="store_true", help="Score all sessions")
+    parser.add_argument("--dry-run",  action="store_true", help="Print scores but do not write incidents")
     args = parser.parse_args()
 
     if not args.fit and not args.score:
         parser.print_help()
         raise SystemExit(0)
 
-    from sdk.db import get_db
-    db = get_db()
+    # Load credentials from secrets.toml so env vars aren't required
+    import sys as _sys
+    _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    _sys.path.insert(0, _root)
+    try:
+        import tomllib as _tl
+    except ImportError:
+        import tomli as _tl  # type: ignore[no-redef]
+    _secrets_path = os.path.join(_root, "dashboard", ".streamlit", "secrets.toml")
+    with open(_secrets_path, "rb") as _f:
+        _sec = _tl.load(_f)
+    from supabase import create_client as _cc
+    db = _cc(_sec["SUPABASE_URL"], _sec["SUPABASE_KEY"])
 
     detector = None
     if args.fit:
         detector = _run_fit(db)
     if args.score:
-        _run_score(db, detector)
+        _run_score(db, detector, persist=not args.dry_run)
