@@ -15,6 +15,10 @@ from engine.pattern_detector import (
     detect_cost_anomaly,
     detect_silent_exit,
     detect_empty_result_loop,
+    detect_hyperactive_polling,
+    detect_tool_fabrication,
+    detect_handoff_schema_break,
+    detect_error_misinterpretation,
     run_all_detectors,
     Incident,
 )
@@ -473,3 +477,338 @@ class TestSilentPropagationSimulator:
         savings = sum(agent_costs.get(ag, 0) for ag in agents_after)
         assert savings > 0, f"CB savings should be positive, got {savings}"
         assert abs(savings - 0.0262) < 0.001, f"Expected ~$0.0262, got ${savings:.4f}"
+
+
+# ── Hyperactive Polling Loop ──────────────────────────────────────────────────
+
+class TestHyperactivePolling:
+    def _polling_traces(self, count=6, tool="search_news", agent="research"):
+        return [
+            make_trace(agent=agent, step_type="tool_call", tool_name=tool,
+                       outcome="success", latency_ms=800,
+                       created_at=f"2026-05-28T06:{30+i:02d}:00Z")
+            for i in range(count)
+        ]
+
+    def test_fires_at_threshold(self):
+        traces = self._polling_traces(6)
+        inc = detect_hyperactive_polling(make_session(trades=0), traces, EMPTY_EVALS)
+        assert inc is not None
+        assert inc.pattern_name == "Hyperactive Polling Loop"
+        assert inc.severity == "warning"
+
+    def test_does_not_fire_below_threshold(self):
+        traces = self._polling_traces(5)
+        inc = detect_hyperactive_polling(make_session(trades=0), traces, EMPTY_EVALS)
+        assert inc is None
+
+    def test_fires_even_when_trades_produced(self):
+        traces = self._polling_traces(8)
+        inc = detect_hyperactive_polling(make_session(trades=1), traces, EMPTY_EVALS)
+        assert inc is not None  # distinct from empty_result_loop which requires trades=0
+
+    def test_does_not_fire_on_error_calls(self):
+        traces = [
+            make_trace(step_type="tool_call", tool_name="get_data",
+                       outcome="error", error="timeout",
+                       created_at=f"2026-05-28T06:{30+i:02d}:00Z")
+            for i in range(8)
+        ]
+        inc = detect_hyperactive_polling(make_session(), traces, EMPTY_EVALS)
+        assert inc is None  # errors are Tool Timeout Loop territory
+
+    def test_does_not_fire_on_different_tools(self):
+        tools = ["tool_a", "tool_b", "tool_c", "tool_d", "tool_e", "tool_f", "tool_g"]
+        traces = [
+            make_trace(step_type="tool_call", tool_name=t, outcome="success",
+                       created_at=f"2026-05-28T06:{30+i:02d}:00Z")
+            for i, t in enumerate(tools)
+        ]
+        inc = detect_hyperactive_polling(make_session(), traces, EMPTY_EVALS)
+        assert inc is None
+
+    def test_call_stack_contains_all_polls(self):
+        traces = self._polling_traces(8)
+        inc = detect_hyperactive_polling(make_session(trades=0), traces, EMPTY_EVALS)
+        assert inc is not None
+        assert len(inc.call_stack) == 8
+
+    def test_fix_suggestion_mentions_cap(self):
+        traces = self._polling_traces(6)
+        inc = detect_hyperactive_polling(make_session(), traces, EMPTY_EVALS)
+        assert inc is not None
+        assert "max" in inc.fix_suggestion.lower() or "cap" in inc.fix_suggestion.lower()
+
+    def test_empty_traces(self):
+        inc = detect_hyperactive_polling(make_session(), [], EMPTY_EVALS)
+        assert inc is None
+
+
+# ── Tool Call Fabrication ─────────────────────────────────────────────────────
+
+class TestToolCallFabrication:
+    def _fast_tool_trace(self, latency=15, tool="get_market_data", agent="research"):
+        return make_trace(agent=agent, step_type="tool_call", tool_name=tool,
+                          outcome="success", latency_ms=latency)
+
+    def test_fires_on_two_fast_calls(self):
+        traces = [self._fast_tool_trace(20), self._fast_tool_trace(30)]
+        inc = detect_tool_fabrication(make_session(), traces, EMPTY_EVALS)
+        assert inc is not None
+        assert inc.pattern_name == "Tool Call Fabrication"
+        assert inc.severity == "critical"
+
+    def test_does_not_fire_on_one_fast_call(self):
+        traces = [self._fast_tool_trace(20)]
+        inc = detect_tool_fabrication(make_session(), traces, EMPTY_EVALS)
+        assert inc is None
+
+    def test_does_not_fire_on_realistic_latency(self):
+        traces = [
+            make_trace(step_type="tool_call", outcome="success", latency_ms=350),
+            make_trace(step_type="tool_call", outcome="success", latency_ms=820),
+        ]
+        inc = detect_tool_fabrication(make_session(), traces, EMPTY_EVALS)
+        assert inc is None
+
+    def test_does_not_fire_on_zero_latency(self):
+        # latency=0 means not recorded — skip these
+        traces = [
+            make_trace(step_type="tool_call", outcome="success", latency_ms=0),
+            make_trace(step_type="tool_call", outcome="success", latency_ms=0),
+        ]
+        inc = detect_tool_fabrication(make_session(), traces, EMPTY_EVALS)
+        assert inc is None
+
+    def test_does_not_fire_on_error_traces(self):
+        traces = [
+            make_trace(step_type="tool_call", outcome="error", latency_ms=10),
+            make_trace(step_type="tool_call", outcome="error", latency_ms=15),
+        ]
+        inc = detect_tool_fabrication(make_session(), traces, EMPTY_EVALS)
+        assert inc is None
+
+    def test_root_cause_mentions_latency(self):
+        traces = [self._fast_tool_trace(10), self._fast_tool_trace(25)]
+        inc = detect_tool_fabrication(make_session(), traces, EMPTY_EVALS)
+        assert inc is not None
+        assert "ms" in inc.root_cause.lower() or "latency" in inc.root_cause.lower()
+
+    def test_fix_suggestion_mentions_validation(self):
+        traces = [self._fast_tool_trace(), self._fast_tool_trace()]
+        inc = detect_tool_fabrication(make_session(), traces, EMPTY_EVALS)
+        assert inc is not None
+        assert "validat" in inc.fix_suggestion.lower()
+
+    def test_empty_traces(self):
+        inc = detect_tool_fabrication(make_session(), [], EMPTY_EVALS)
+        assert inc is None
+
+
+# ── Handoff Schema Break ──────────────────────────────────────────────────────
+
+class TestHandoffSchemaBreak:
+    def _research_ok_traces(self):
+        return [
+            make_trace(agent="research", step_type="llm_call", outcome="success",
+                       created_at="2026-05-28T06:10:00Z"),
+            make_trace(agent="research", step_type="tool_call", tool_name="get_data",
+                       outcome="success", created_at="2026-05-28T06:11:00Z"),
+            make_trace(agent="research", step_type="agent_message", outcome="completed",
+                       created_at="2026-05-28T06:12:00Z"),
+        ]
+
+    def test_fires_when_risk_first_trace_errors(self):
+        traces = self._research_ok_traces() + [
+            make_trace(agent="risk", step_type="llm_call", outcome="error",
+                       error="KeyError: 'analysis' missing in research output",
+                       created_at="2026-05-28T06:13:00Z"),
+        ]
+        inc = detect_handoff_schema_break(make_session(trades=0), traces, EMPTY_EVALS)
+        assert inc is not None
+        assert inc.pattern_name == "Handoff Schema Break"
+        assert inc.severity == "critical"
+
+    def test_does_not_fire_when_risk_succeeds(self):
+        traces = self._research_ok_traces() + [
+            make_trace(agent="risk", step_type="llm_call", outcome="success",
+                       created_at="2026-05-28T06:13:00Z"),
+        ]
+        inc = detect_handoff_schema_break(make_session(trades=1), traces, EMPTY_EVALS)
+        assert inc is None
+
+    def test_does_not_fire_when_research_also_failed(self):
+        traces = [
+            make_trace(agent="research", step_type="llm_call", outcome="error",
+                       error="LLM timeout", created_at="2026-05-28T06:10:00Z"),
+            make_trace(agent="risk", step_type="llm_call", outcome="error",
+                       error="KeyError: missing field", created_at="2026-05-28T06:11:00Z"),
+        ]
+        inc = detect_handoff_schema_break(make_session(), traces, EMPTY_EVALS)
+        assert inc is None  # research itself failed — not a handoff issue
+
+    def test_does_not_fire_without_risk_traces(self):
+        traces = self._research_ok_traces()
+        inc = detect_handoff_schema_break(make_session(), traces, EMPTY_EVALS)
+        assert inc is None
+
+    def test_does_not_fire_without_research_traces(self):
+        traces = [
+            make_trace(agent="risk", step_type="llm_call", outcome="error",
+                       error="missing input", created_at="2026-05-28T06:10:00Z"),
+        ]
+        inc = detect_handoff_schema_break(make_session(), traces, EMPTY_EVALS)
+        assert inc is None
+
+    def test_error_field_triggers_as_well_as_outcome(self):
+        traces = self._research_ok_traces() + [
+            make_trace(agent="risk", step_type="llm_call", outcome=None,
+                       error="ValueError: unexpected None for field 'score'",
+                       created_at="2026-05-28T06:13:00Z"),
+        ]
+        inc = detect_handoff_schema_break(make_session(), traces, EMPTY_EVALS)
+        assert inc is not None
+
+    def test_call_stack_includes_last_research_and_first_risk(self):
+        traces = self._research_ok_traces() + [
+            make_trace(agent="risk", step_type="llm_call", outcome="error",
+                       error="schema mismatch", created_at="2026-05-28T06:13:00Z"),
+        ]
+        inc = detect_handoff_schema_break(make_session(), traces, EMPTY_EVALS)
+        assert inc is not None
+        agents_in_stack = [f["agent"] for f in inc.call_stack]
+        assert "research" in agents_in_stack
+        assert "risk" in agents_in_stack
+
+    def test_fix_mentions_schema(self):
+        traces = self._research_ok_traces() + [
+            make_trace(agent="risk", step_type="llm_call", outcome="error",
+                       error="schema error", created_at="2026-05-28T06:13:00Z"),
+        ]
+        inc = detect_handoff_schema_break(make_session(), traces, EMPTY_EVALS)
+        assert inc is not None
+        assert "schema" in inc.fix_suggestion.lower()
+
+
+# ── Error Misinterpretation ───────────────────────────────────────────────────
+
+class TestErrorMisinterpretation:
+    def _http_error_trace(self, code="429", agent="research", ts_min=30):
+        return make_trace(
+            agent=agent, step_type="tool_call", tool_name="get_prices",
+            outcome="error", error=f"HTTP {code}: Too Many Requests",
+            created_at=f"2026-05-28T06:{ts_min:02d}:00Z"
+        )
+
+    def _llm_after(self, agent="research", ts_min=31):
+        return make_trace(
+            agent=agent, step_type="llm_call", outcome="success",
+            created_at=f"2026-05-28T06:{ts_min:02d}:00Z"
+        )
+
+    def test_fires_on_two_mishandled_errors(self):
+        traces = [
+            self._http_error_trace("429", ts_min=30),
+            self._llm_after(ts_min=31),
+            self._http_error_trace("429", ts_min=32),
+            self._llm_after(ts_min=33),
+        ]
+        inc = detect_error_misinterpretation(make_session(trades=0), traces, EMPTY_EVALS)
+        assert inc is not None
+        assert inc.pattern_name == "Error Misinterpretation"
+        assert inc.severity == "warning"
+
+    def test_does_not_fire_on_one_event(self):
+        traces = [
+            self._http_error_trace("429", ts_min=30),
+            self._llm_after(ts_min=31),
+        ]
+        inc = detect_error_misinterpretation(make_session(trades=0), traces, EMPTY_EVALS)
+        assert inc is None
+
+    def test_does_not_fire_when_agent_stops_after_error(self):
+        traces = [
+            self._http_error_trace("429", ts_min=30),
+            # no subsequent llm_call from same agent
+            make_trace(agent="orchestrator", step_type="llm_call", outcome="success",
+                       created_at="2026-05-28T06:31:00Z"),
+            self._http_error_trace("503", ts_min=32),
+        ]
+        inc = detect_error_misinterpretation(make_session(), traces, EMPTY_EVALS)
+        assert inc is None
+
+    def test_fires_on_401(self):
+        traces = [
+            self._http_error_trace("401", ts_min=30),
+            self._llm_after(ts_min=31),
+            self._http_error_trace("401", ts_min=32),
+            self._llm_after(ts_min=33),
+        ]
+        inc = detect_error_misinterpretation(make_session(), traces, EMPTY_EVALS)
+        assert inc is not None
+        assert "401" in inc.root_cause
+
+    def test_does_not_fire_on_non_http_errors(self):
+        traces = [
+            make_trace(step_type="tool_call", outcome="error", error="ReadTimeout",
+                       created_at="2026-05-28T06:30:00Z"),
+            self._llm_after(ts_min=31),
+            make_trace(step_type="tool_call", outcome="error", error="ConnectionError",
+                       created_at="2026-05-28T06:32:00Z"),
+            self._llm_after(ts_min=33),
+        ]
+        inc = detect_error_misinterpretation(make_session(), traces, EMPTY_EVALS)
+        assert inc is None
+
+    def test_fix_mentions_error_codes(self):
+        traces = [
+            self._http_error_trace("429", ts_min=30), self._llm_after(ts_min=31),
+            self._http_error_trace("429", ts_min=32), self._llm_after(ts_min=33),
+        ]
+        inc = detect_error_misinterpretation(make_session(), traces, EMPTY_EVALS)
+        assert inc is not None
+        assert "429" in inc.fix_suggestion
+
+    def test_empty_traces(self):
+        inc = detect_error_misinterpretation(make_session(), [], EMPTY_EVALS)
+        assert inc is None
+
+
+# ── Shadow CB compute_shadow_cb_fires ─────────────────────────────────────────
+
+class TestShadowCBFires:
+    def test_fires_on_tool_success_rate_below_threshold(self):
+        from engine.pattern_detector import compute_shadow_cb_fires, CB_CONFIG
+        from engine.eval_engine import EvalResult
+        evals = [
+            EvalResult("tool_success_rate", "research", 0.50, False, 0.80, {}),
+        ]
+        fires = compute_shadow_cb_fires(evals)
+        assert len(fires) == 1
+        assert fires[0]["agent"] == "research"
+        assert fires[0]["eval_name"] == "tool_success_rate"
+
+    def test_does_not_fire_when_eval_passes(self):
+        from engine.pattern_detector import compute_shadow_cb_fires
+        from engine.eval_engine import EvalResult
+        evals = [EvalResult("tool_success_rate", "research", 0.95, True, 0.80, {})]
+        fires = compute_shadow_cb_fires(evals)
+        assert fires == []
+
+    def test_does_not_fire_for_agents_not_in_cb_config(self):
+        from engine.pattern_detector import compute_shadow_cb_fires
+        from engine.eval_engine import EvalResult
+        evals = [EvalResult("data_freshness", "market", 0.0, False, 0.5, {})]
+        fires = compute_shadow_cb_fires(evals)
+        assert fires == []
+
+    def test_multiple_cb_fires(self):
+        from engine.pattern_detector import compute_shadow_cb_fires
+        from engine.eval_engine import EvalResult
+        evals = [
+            EvalResult("tool_success_rate", "research", 0.50, False, 0.80, {}),
+            EvalResult("completion",        "research", 0.30, False, 0.70, {}),
+            EvalResult("assessment_complete","risk",    0.0,  False, 1.00, {}),
+        ]
+        fires = compute_shadow_cb_fires(evals)
+        assert len(fires) == 3

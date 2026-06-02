@@ -20,16 +20,24 @@ PATTERNS = [
     "cost_anomaly",
     "silent_exit",
     "silent_propagation",
+    "hyperactive_polling",
+    "tool_fabrication",
+    "handoff_schema_break",
+    "error_misinterpretation",
 ]
 
 SEVERITY = {
-    "tool_timeout_loop":   "critical",
-    "context_spiral":      "warning",
-    "pipeline_break":      "critical",
-    "empty_result_loop":   "warning",
-    "cost_anomaly":        "warning",
-    "silent_exit":         "info",
-    "silent_propagation":  "warning",
+    "tool_timeout_loop":     "critical",
+    "context_spiral":        "warning",
+    "pipeline_break":        "critical",
+    "empty_result_loop":     "warning",
+    "cost_anomaly":          "warning",
+    "silent_exit":           "info",
+    "silent_propagation":    "warning",
+    "hyperactive_polling":   "warning",
+    "tool_fabrication":      "critical",
+    "handoff_schema_break":  "critical",
+    "error_misinterpretation": "warning",
 }
 
 
@@ -214,6 +222,94 @@ def _build_silent_propagation(session_id: str) -> list[dict]:
     return traces
 
 
+def _build_hyperactive_polling(session_id: str) -> list[dict]:
+    """
+    Research agent calls search_news 8 times successfully — agent is polling
+    obsessively without reaching a decision threshold.
+    """
+    traces = []
+    traces.append(_trace(session_id, "market", "llm_call", None,
+                         "success", None, 920, 310, 130, offset_s=-480, sequence=1))
+    traces.append(_trace(session_id, "research", "llm_call", None,
+                         "success", None, 1100, 420, 180, offset_s=-460, sequence=2))
+    for i in range(8):
+        traces.append(_trace(session_id, "research", "tool_call", "search_news",
+                             "success", None, 850, 0, 0,
+                             offset_s=-450 + i * 45, sequence=3 + i))
+    traces.append(_trace(session_id, "research", "llm_call", None,
+                         "success", None, 2100, 6400, 800, offset_s=-60, sequence=11))
+    return traces
+
+
+def _build_tool_fabrication(session_id: str) -> list[dict]:
+    """
+    Research agent produces tool_call traces with suspiciously low latency (15ms).
+    Real external API calls take 100ms+. These traces suggest fabricated responses.
+    """
+    traces = []
+    traces.append(_trace(session_id, "market", "llm_call", None,
+                         "success", None, 880, 300, 120, offset_s=-300, sequence=1))
+    traces.append(_trace(session_id, "research", "llm_call", None,
+                         "success", None, 1200, 450, 200, offset_s=-280, sequence=2))
+    traces.append(_trace(session_id, "research", "tool_call", "get_market_data",
+                         None, None, 15, 0, 0, offset_s=-260, sequence=3))
+    traces.append(_trace(session_id, "research", "tool_call", "get_earnings",
+                         None, None, 12, 0, 0, offset_s=-250, sequence=4))
+    traces.append(_trace(session_id, "research", "tool_call", "get_fundamentals",
+                         None, None, 18, 0, 0, offset_s=-240, sequence=5))
+    traces.append(_trace(session_id, "research", "llm_call", None,
+                         "success", None, 1800, 2200, 600, offset_s=-220, sequence=6))
+    return traces
+
+
+def _build_handoff_schema_break(session_id: str) -> list[dict]:
+    """
+    Research agent completes successfully. Risk agent errors immediately on its
+    first call — research output does not match the schema risk expects.
+    """
+    traces = []
+    traces.append(_trace(session_id, "market", "llm_call", None,
+                         "success", None, 900, 320, 140, offset_s=-300, sequence=1))
+    traces.append(_trace(session_id, "research", "llm_call", None,
+                         "success", None, 1400, 520, 220, offset_s=-280, sequence=2))
+    traces.append(_trace(session_id, "research", "tool_call", "get_stock_data",
+                         None, None, 1800, 0, 0, offset_s=-260, sequence=3))
+    traces.append(_trace(session_id, "research", "tool_call", "get_news",
+                         None, None, 1200, 0, 0, offset_s=-240, sequence=4))
+    traces.append(_trace(session_id, "research", "agent_message", None,
+                         "completed", None, 300, 0, 0, offset_s=-220, sequence=5))
+    traces.append(_trace(session_id, "risk", "llm_call", None,
+                         "error", "KeyError: 'analysis' missing from research output — "
+                                  "expected field not provided by upstream agent",
+                         200, 150, 0, offset_s=-200, sequence=6))
+    return traces
+
+
+def _build_error_misinterpretation(session_id: str) -> list[dict]:
+    """
+    Research agent receives HTTP 429 errors twice but continues processing
+    with LLM calls instead of aborting or applying correct backoff logic.
+    """
+    traces = []
+    traces.append(_trace(session_id, "market", "llm_call", None,
+                         "success", None, 870, 290, 120, offset_s=-400, sequence=1))
+    traces.append(_trace(session_id, "research", "llm_call", None,
+                         "success", None, 1100, 400, 160, offset_s=-380, sequence=2))
+    traces.append(_trace(session_id, "research", "tool_call", "get_prices",
+                         "error", "HTTP 429: Too Many Requests — rate limit exceeded",
+                         8000, 0, 0, offset_s=-360, sequence=3))
+    traces.append(_trace(session_id, "research", "llm_call", None,
+                         "success", None, 1800, 1200, 400, offset_s=-340, sequence=4))
+    traces.append(_trace(session_id, "research", "tool_call", "get_prices",
+                         "error", "HTTP 429: Too Many Requests — rate limit exceeded",
+                         8000, 0, 0, offset_s=-310, sequence=5))
+    traces.append(_trace(session_id, "research", "llm_call", None,
+                         "success", None, 2200, 2100, 580, offset_s=-280, sequence=6))
+    traces.append(_trace(session_id, "orchestrator", "llm_call", None,
+                         "success", None, 1400, 800, 300, offset_s=-240, sequence=7))
+    return traces
+
+
 PATTERN_BUILDERS = {
     "tool_timeout_loop": (
         lambda sid: _build_tool_timeout_loop(sid),
@@ -249,6 +345,30 @@ PATTERN_BUILDERS = {
         lambda sid: _build_silent_exit(sid),
         lambda sid: _session(
             ["market", "research", "risk", "orchestrator"], 0.19, 2150, 950, 120_000, 0, None
+        ),
+    ),
+    "hyperactive_polling": (
+        lambda sid: _build_hyperactive_polling(sid),
+        lambda sid: _session(
+            ["market", "research"], 0.31, 8430, 1110, 480_000, 0, None
+        ),
+    ),
+    "tool_fabrication": (
+        lambda sid: _build_tool_fabrication(sid),
+        lambda sid: _session(
+            ["market", "research"], 0.08, 2950, 920, 300_000, 0, None
+        ),
+    ),
+    "handoff_schema_break": (
+        lambda sid: _build_handoff_schema_break(sid),
+        lambda sid: _session(
+            ["market", "research", "risk"], 0.15, 990, 480, 300_000, 0, None
+        ),
+    ),
+    "error_misinterpretation": (
+        lambda sid: _build_error_misinterpretation(sid),
+        lambda sid: _session(
+            ["market", "research", "orchestrator"], 0.22, 4790, 1560, 400_000, 0, None
         ),
     ),
     "silent_propagation": (
@@ -316,13 +436,17 @@ def list_patterns() -> list[dict]:
 
 def _pattern_description(pattern: str) -> str:
     descriptions = {
-        "tool_timeout_loop": "External API times out. Agent retries with no limit. $1.98 burned, 0 trades.",
-        "context_spiral":    "Research agent gathers endlessly, never decides. 40K+ tokens, 0 output.",
-        "pipeline_break":    "Research completes, risk agent errors. Orchestrator never runs.",
-        "empty_result_loop": "Tool returns thin results. Agent retries with variations. No outcome.",
-        "cost_anomaly":        "Session burns 10x normal cost — model selection or runaway token usage.",
-        "silent_exit":         "All agents run, session ends, 0 trades. No reason logged.",
-        "silent_propagation":  "Market fetches stale data — no exception. All 4 agents run on bad input. $0.0262 preventable spend. CB savings demo.",
+        "tool_timeout_loop":       "External API times out. Agent retries with no limit. $1.98 burned, 0 trades.",
+        "context_spiral":          "Research agent gathers endlessly, never decides. 40K+ tokens, 0 output.",
+        "pipeline_break":          "Research completes, risk agent errors. Orchestrator never runs.",
+        "empty_result_loop":       "Tool returns thin results. Agent retries with variations. No outcome.",
+        "cost_anomaly":            "Session burns 10x normal cost — model selection or runaway token usage.",
+        "silent_exit":             "All agents run, session ends, 0 trades. No reason logged.",
+        "silent_propagation":      "Market fetches stale data — no exception. All 4 agents run on bad input. $0.0262 preventable spend.",
+        "hyperactive_polling":     "Research calls search_news 8x successfully. No decision threshold. Polling loop burns 8+ tool call slots.",
+        "tool_fabrication":        "Tool calls complete in 12-18ms. Real API calls take 100ms+. Agent fabricated responses.",
+        "handoff_schema_break":    "Research succeeds. Risk errors immediately — output schema mismatch at handoff boundary.",
+        "error_misinterpretation": "Two HTTP 429 errors received. Agent continues with LLM calls instead of backing off.",
     }
     return descriptions.get(pattern, "")
 

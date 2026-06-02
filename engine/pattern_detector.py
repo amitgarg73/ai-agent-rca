@@ -22,9 +22,20 @@ def _real_error(v) -> str | None:
     s = str(v).strip()
     return s if s else None
 
-TOOL_RETRY_THRESHOLD   = 3
-CONTEXT_SPIRAL_TOKENS  = 40_000
-COST_ANOMALY_SIGMA_INC = COST_ANOMALY_SIGMA
+TOOL_RETRY_THRESHOLD      = 3
+CONTEXT_SPIRAL_TOKENS     = 40_000
+COST_ANOMALY_SIGMA_INC    = COST_ANOMALY_SIGMA
+HYPERACTIVE_POLL_THRESHOLD = 6       # same tool called 6+ times successfully = polling loop
+FABRICATION_LATENCY_MS    = 50       # tool_call faster than 50ms is suspicious
+FABRICATION_MIN_COUNT     = 2        # need at least 2 suspect traces to fire
+_HTTP_ERROR_CODES         = {"400", "401", "403", "429", "500", "502", "503"}
+
+# Shadow circuit breaker config — which evals trigger a CB in shadow mode
+# Format: { agent: [(eval_name, fail_threshold), ...] }
+CB_CONFIG: dict[str, list[tuple[str, float]]] = {
+    "research": [("tool_success_rate", 0.80), ("completion", 0.70)],
+    "risk":     [("assessment_complete", 1.0)],
+}
 
 
 @dataclass
@@ -335,6 +346,226 @@ def detect_empty_result_loop(
     return None
 
 
+def detect_hyperactive_polling(
+    session: dict, traces: list[dict], evals: list[EvalResult]
+) -> Incident | None:
+    """
+    Fires when the same tool is called 6+ times successfully in one session.
+    Distinct from Tool Timeout Loop (errors) and Empty Result Loop (3+ + 0 trades).
+    Signature of: agent polling obsessively without making a decision.
+    """
+    tool_success: dict[str, list[dict]] = {}
+    for t in sorted(traces, key=lambda x: x.get("created_at", "")):
+        if (t.get("step_type") or "") == "tool_call" and t.get("outcome") != "error":
+            name = t.get("tool_name") or "unknown"
+            tool_success.setdefault(name, []).append(t)
+
+    for tool_name, calls in tool_success.items():
+        if len(calls) >= HYPERACTIVE_POLL_THRESHOLD:
+            session_id = session.get("id", "")
+            agent = calls[0].get("agent", "unknown")
+            total_latency = sum(c.get("latency_ms") or 0 for c in calls)
+            return Incident(
+                session_id    = session_id,
+                pattern_name  = "Hyperactive Polling Loop",
+                severity      = "warning",
+                root_cause    = (
+                    f"{tool_name} called {len(calls)} times successfully by {agent} agent. "
+                    f"Agent is polling without reaching a decision threshold. "
+                    f"Total time in tool calls: {total_latency:,}ms."
+                ),
+                call_stack    = [_trace_to_stack_frame(t) for t in calls],
+                failed_evals  = _failed_eval_rows(evals),
+                cost_wasted   = float(session.get("total_cost_usd") or 0),
+                tokens_wasted = int((session.get("total_tokens_input") or 0) +
+                                    (session.get("total_tokens_output") or 0)),
+                fix_suggestion = (
+                    f"Add a max_iterations cap to {agent} agent's {tool_name} loop "
+                    f"(e.g. max_calls=3). Force a decision step once the cap is hit. "
+                    f"Consider caching results between calls to avoid redundant fetches."
+                ),
+            )
+    return None
+
+
+def detect_tool_fabrication(
+    session: dict, traces: list[dict], evals: list[EvalResult]
+) -> Incident | None:
+    """
+    Fires when 2+ tool_call traces complete in under 50ms.
+    Real external API calls take 100ms+. Sub-50ms suggests the agent fabricated the response.
+    """
+    suspects = [
+        t for t in traces
+        if (t.get("step_type") or "") == "tool_call"
+        and t.get("outcome") != "error"
+        and 0 < (t.get("latency_ms") or 0) < FABRICATION_LATENCY_MS
+    ]
+    if len(suspects) >= FABRICATION_MIN_COUNT:
+        session_id = session.get("id", "")
+        agents = list({t.get("agent", "unknown") for t in suspects})
+        tools  = list({t.get("tool_name", "unknown") for t in suspects})
+        return Incident(
+            session_id    = session_id,
+            pattern_name  = "Tool Call Fabrication",
+            severity      = "critical",
+            root_cause    = (
+                f"{len(suspects)} tool call(s) completed in under {FABRICATION_LATENCY_MS}ms "
+                f"with success status. External API calls take 100ms+. "
+                f"Affected agents: {agents}. Tools: {tools}."
+            ),
+            call_stack    = [_trace_to_stack_frame(t) for t in suspects],
+            failed_evals  = _failed_eval_rows(evals),
+            cost_wasted   = float(session.get("total_cost_usd") or 0),
+            tokens_wasted = 0,
+            fix_suggestion = (
+                "Verify that tool calls are making real external requests. "
+                "Add response validation: check that tool output is consistent with "
+                "what the actual API returns (schema, latency, value ranges). "
+                "Enable request logging in tool wrappers to confirm HTTP calls are made."
+            ),
+        )
+    return None
+
+
+def detect_handoff_schema_break(
+    session: dict, traces: list[dict], evals: list[EvalResult]
+) -> Incident | None:
+    """
+    Fires when research completes successfully but the risk agent's first trace is an error.
+    Signature of: research output not matching the schema risk agent expects at handoff.
+    """
+    sorted_traces = sorted(traces, key=lambda x: x.get("created_at", ""))
+
+    research_traces = [t for t in sorted_traces
+                       if (t.get("agent") or "").lower().startswith("research")]
+    risk_traces     = [t for t in sorted_traces
+                       if (t.get("agent") or "").lower() == "risk"]
+
+    if not research_traces or not risk_traces:
+        return None
+
+    research_ok = any(
+        (t.get("step_type") or "") in ("llm_call", "agent_message", "decision")
+        and t.get("outcome") != "error"
+        for t in research_traces
+    )
+    if not research_ok:
+        return None  # research itself failed — different pattern
+
+    first_risk = risk_traces[0]
+    risk_errored = (
+        first_risk.get("outcome") == "error"
+        or bool(_real_error(first_risk.get("error")))
+    )
+    if not risk_errored:
+        return None
+
+    session_id = session.get("id", "")
+    err_msg    = first_risk.get("error") or "unknown schema error"
+    return Incident(
+        session_id    = session_id,
+        pattern_name  = "Handoff Schema Break",
+        severity      = "critical",
+        root_cause    = (
+            f"Research agent completed successfully but risk agent errored on its "
+            f"first trace. Research output did not match risk agent's expected schema. "
+            f"Error at handoff: {str(err_msg)[:120]}"
+        ),
+        call_stack    = (
+            [_trace_to_stack_frame(t) for t in research_traces[-5:]]
+            + [_trace_to_stack_frame(first_risk)]
+        ),
+        failed_evals  = _failed_eval_rows(evals),
+        cost_wasted   = float(session.get("total_cost_usd") or 0),
+        tokens_wasted = int((session.get("total_tokens_input") or 0) +
+                            (session.get("total_tokens_output") or 0)),
+        fix_suggestion = (
+            "Add schema validation at the research -> risk handoff. "
+            "Define a typed contract (Pydantic model or TypedDict) for what research "
+            "must return before passing to risk. Fail fast with a clear error if the "
+            "contract is violated, rather than letting risk agent crash on bad input."
+        ),
+    )
+
+
+def detect_error_misinterpretation(
+    session: dict, traces: list[dict], evals: list[EvalResult]
+) -> Incident | None:
+    """
+    Fires when tool calls return HTTP error codes (400/401/429/503) but the same
+    agent continues with an LLM call rather than aborting or retrying correctly.
+    Signature of: agent ignoring or mishandling meaningful API error signals.
+    """
+    sorted_traces = sorted(traces, key=lambda x: x.get("created_at", ""))
+    mishandled: list[dict] = []
+
+    for i, t in enumerate(sorted_traces):
+        if (t.get("step_type") or "") != "tool_call":
+            continue
+        err = str(t.get("error") or "")
+        if not any(code in err for code in _HTTP_ERROR_CODES):
+            continue
+        # Check same agent continued with an LLM call after the error
+        subsequent = sorted_traces[i + 1:]
+        continued = any(
+            s.get("agent") == t.get("agent")
+            and (s.get("step_type") or "") == "llm_call"
+            for s in subsequent
+        )
+        if continued:
+            mishandled.append(t)
+
+    if len(mishandled) >= 2:
+        session_id   = session.get("id", "")
+        agents_hit   = list({t.get("agent", "unknown") for t in mishandled})
+        error_codes  = [str(t.get("error") or "")[:60] for t in mishandled]
+        return Incident(
+            session_id    = session_id,
+            pattern_name  = "Error Misinterpretation",
+            severity      = "warning",
+            root_cause    = (
+                f"{len(mishandled)} HTTP error(s) received but agent(s) {agents_hit} "
+                f"continued processing instead of aborting or retrying correctly. "
+                f"Errors: {error_codes[:3]}"
+            ),
+            call_stack    = [_trace_to_stack_frame(t) for t in mishandled],
+            failed_evals  = _failed_eval_rows(evals),
+            cost_wasted   = float(session.get("total_cost_usd") or 0),
+            tokens_wasted = int((session.get("total_tokens_input") or 0) +
+                                (session.get("total_tokens_output") or 0)),
+            fix_suggestion = (
+                "Add explicit HTTP error code handlers in tool wrappers: "
+                "429 = exponential backoff + retry; "
+                "401 = surface credential error to operator, do not continue; "
+                "400 = log malformed request and abort the tool call chain; "
+                "503 = circuit breaker open, fail fast."
+            ),
+        )
+    return None
+
+
+def compute_shadow_cb_fires(evals: list[EvalResult]) -> list[dict]:
+    """
+    Returns list of CB fire events based on CB_CONFIG thresholds.
+    Each entry: {agent, eval_name, score, threshold, would_save_note}.
+    Used for dashboard shadow CB markers — never aborts the pipeline.
+    """
+    fires = []
+    for e in evals:
+        if e.agent not in CB_CONFIG:
+            continue
+        for eval_name, threshold in CB_CONFIG[e.agent]:
+            if e.eval_name == eval_name and e.score < threshold:
+                fires.append({
+                    "agent":      e.agent,
+                    "eval_name":  e.eval_name,
+                    "score":      round(e.score, 3),
+                    "threshold":  threshold,
+                })
+    return fires
+
+
 # ── Main runner ───────────────────────────────────────────────────────────────
 
 DETECTORS = [
@@ -343,6 +574,10 @@ DETECTORS = [
     detect_pipeline_break,
     detect_empty_result_loop,
     detect_silent_exit,
+    detect_hyperactive_polling,
+    detect_tool_fabrication,
+    detect_handoff_schema_break,
+    detect_error_misinterpretation,
 ]
 
 
