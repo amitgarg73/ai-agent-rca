@@ -1053,14 +1053,14 @@ if page == "Overview":
                              horizontal=True, index=0,
                              label_visibility="collapsed", key="ov_range")
     _ov_days   = int(_ov_range[:-1])
-    _ov_now    = pd.Timestamp.now()
+    _ov_now    = pd.Timestamp.now(tz="UTC")
     _ov_cut    = _ov_now - pd.Timedelta(days=_ov_days)
     _ov_prev_c = _ov_cut  - pd.Timedelta(days=_ov_days)
 
     # ── Filter sessions + incidents to window ─────────────────────────────────
     _ov_s = sessions.copy() if not sessions.empty else sessions
     if not _ov_s.empty:
-        _ov_s["started_at"] = pd.to_datetime(_ov_s["started_at"], errors="coerce")
+        _ov_s["started_at"] = pd.to_datetime(_ov_s["started_at"], errors="coerce", utc=True)
         _ov_s_now  = _ov_s[_ov_s["started_at"] >= _ov_cut]
         _ov_s_prev = _ov_s[(_ov_s["started_at"] >= _ov_prev_c) & (_ov_s["started_at"] < _ov_cut)]
     else:
@@ -1068,7 +1068,7 @@ if page == "Overview":
 
     _ov_i = incidents.copy() if not incidents.empty else incidents
     if not _ov_i.empty and "created_at" in _ov_i.columns:
-        _ov_i["created_at"] = pd.to_datetime(_ov_i["created_at"], errors="coerce")
+        _ov_i["created_at"] = pd.to_datetime(_ov_i["created_at"], errors="coerce", utc=True)
         _ov_i_now  = _ov_i[_ov_i["created_at"] >= _ov_cut]
         _ov_i_prev = _ov_i[(_ov_i["created_at"] >= _ov_prev_c) & (_ov_i["created_at"] < _ov_cut)]
     else:
@@ -1223,7 +1223,7 @@ if page == "Overview":
     _ov_ae = load_all_evals()
     if not _ov_ae.empty and not sessions.empty:
         _ov_sa = sessions.copy()
-        _ov_sa["started_at"] = pd.to_datetime(_ov_sa["started_at"], errors="coerce")
+        _ov_sa["started_at"] = pd.to_datetime(_ov_sa["started_at"], errors="coerce", utc=True)
         _ov_ids_7d  = set(_ov_sa[_ov_sa["started_at"] >= (_ov_now - pd.Timedelta(days=7))]["id"])
         _ov_ids_30d = set(_ov_sa[_ov_sa["started_at"] >= (_ov_now - pd.Timedelta(days=30))]["id"])
 
@@ -1308,7 +1308,7 @@ if page == "Overview":
 
     if not sessions.empty:
         _ov_rs = sessions.copy()
-        _ov_rs["started_at"] = pd.to_datetime(_ov_rs["started_at"], errors="coerce")
+        _ov_rs["started_at"] = pd.to_datetime(_ov_rs["started_at"], errors="coerce", utc=True)
         _ov_rs = _ov_rs.sort_values("started_at", ascending=False).head(10)
 
         _ov_cols = st.columns([3, 2, 2, 4, 2])
