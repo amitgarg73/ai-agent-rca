@@ -3333,6 +3333,14 @@ elif page == "Failure Simulator":
                 "Session: $0.19, 0 trades, no terminal_reason",
                 "Orchestrator exited without logging a reason",
             ],
+            "Silent Propagation": [
+                "Market fetches stale data — all traces succeed, no exception thrown",
+                "data_freshness eval catches 15-min lag (threshold: 10 min) → Market fails",
+                "Research, Risk, Orchestrator all run on the bad input",
+                "Session: $0.0284 total · Market $0.0022 · Research $0.0148 · Risk $0.0063 · Orchestrator $0.0051",
+                "0 trades, no terminal_reason → Silent Exit pattern fires",
+                "CB savings = $0.0262 (Research + Risk + Orchestrator were preventable)",
+            ],
         }
         for item in examples.get(chosen_label, []):
             st.markdown(f"- {item}")

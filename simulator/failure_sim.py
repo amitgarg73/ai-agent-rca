@@ -19,15 +19,17 @@ PATTERNS = [
     "empty_result_loop",
     "cost_anomaly",
     "silent_exit",
+    "silent_propagation",
 ]
 
 SEVERITY = {
-    "tool_timeout_loop": "critical",
-    "context_spiral":    "warning",
-    "pipeline_break":    "critical",
-    "empty_result_loop": "warning",
-    "cost_anomaly":      "warning",
-    "silent_exit":       "info",
+    "tool_timeout_loop":   "critical",
+    "context_spiral":      "warning",
+    "pipeline_break":      "critical",
+    "empty_result_loop":   "warning",
+    "cost_anomaly":        "warning",
+    "silent_exit":         "info",
+    "silent_propagation":  "warning",
 }
 
 
@@ -170,6 +172,48 @@ def _build_silent_exit(session_id: str) -> list[dict]:
     return traces
 
 
+def _build_silent_propagation(session_id: str) -> list[dict]:
+    """
+    Market fetches stale data (no exception — all traces succeed operationally).
+    data_freshness eval fires because first market trace is 15 min after session start.
+    Research, Risk, and Orchestrator all run on the bad input anyway.
+    Session ends with 0 trades and no terminal reason → detect_silent_exit fires.
+    CB savings = research + risk + orchestrator cost ($0.0262).
+    """
+    traces = []
+    # Market — operationally succeeds but data is 15 min stale
+    # Session started 20 min ago (offset -1200); these traces are 5 min ago (offset -300)
+    # → freshness eval: lag = 15 min > 10 min threshold → FAILS
+    traces.append(_trace(session_id, "market", "llm_call", None,
+                         "success", None, 820, 310, 140, offset_s=-300, sequence=1))
+    traces.append(_trace(session_id, "market", "tool_call", "get_market_data",
+                         None, None, 1100, 0, 0, offset_s=-290, sequence=2))
+    traces.append(_trace(session_id, "market", "llm_call", None,
+                         "success", None, 640, 280, 110, offset_s=-280, sequence=3))
+
+    # Research — runs and succeeds on stale market data, never knowing it's bad
+    traces.append(_trace(session_id, "research", "llm_call", None,
+                         "success", None, 1400, 620, 280, offset_s=-260, sequence=4))
+    traces.append(_trace(session_id, "research", "tool_call", "get_fundamentals",
+                         None, None, 1800, 0, 0, offset_s=-240, sequence=5))
+    traces.append(_trace(session_id, "research", "tool_call", "get_earnings",
+                         None, None, 1600, 0, 0, offset_s=-220, sequence=6))
+    traces.append(_trace(session_id, "research", "llm_call", None,
+                         "success", None, 2200, 4800, 1100, offset_s=-200, sequence=7))
+
+    # Risk — runs normally, assesses positions based on stale research
+    traces.append(_trace(session_id, "risk", "llm_call", None,
+                         "success", None, 1100, 1800, 620, offset_s=-170, sequence=8))
+    traces.append(_trace(session_id, "risk", "agent_message", None,
+                         "completed", None, 400, 0, 0, offset_s=-155, sequence=9))
+
+    # Orchestrator — runs but produces 0 trades; no terminal_reason logged
+    traces.append(_trace(session_id, "orchestrator", "llm_call", None,
+                         "success", None, 1800, 2100, 780, offset_s=-130, sequence=10))
+
+    return traces
+
+
 PATTERN_BUILDERS = {
     "tool_timeout_loop": (
         lambda sid: _build_tool_timeout_loop(sid),
@@ -206,6 +250,24 @@ PATTERN_BUILDERS = {
         lambda sid: _session(
             ["market", "research", "risk", "orchestrator"], 0.19, 2150, 950, 120_000, 0, None
         ),
+    ),
+    "silent_propagation": (
+        lambda sid: _build_silent_propagation(sid),
+        lambda sid: {
+            **_session(
+                ["market", "research", "risk", "orchestrator"],
+                0.0284,          # total cost
+                10_010, 2_030,   # tokens in/out
+                1_200_000,       # latency 20 min — session started 20 min ago
+                0, None,         # 0 trades, no terminal_reason
+            ),
+            "cost_breakdown": {
+                "market":       {"cost_usd": 0.0022},
+                "research":     {"cost_usd": 0.0148},
+                "risk":         {"cost_usd": 0.0063},
+                "orchestrator": {"cost_usd": 0.0051},
+            },
+        },
     ),
 }
 
@@ -258,8 +320,9 @@ def _pattern_description(pattern: str) -> str:
         "context_spiral":    "Research agent gathers endlessly, never decides. 40K+ tokens, 0 output.",
         "pipeline_break":    "Research completes, risk agent errors. Orchestrator never runs.",
         "empty_result_loop": "Tool returns thin results. Agent retries with variations. No outcome.",
-        "cost_anomaly":      "Session burns 10x normal cost — model selection or runaway token usage.",
-        "silent_exit":       "All agents run, session ends, 0 trades. No reason logged.",
+        "cost_anomaly":        "Session burns 10x normal cost — model selection or runaway token usage.",
+        "silent_exit":         "All agents run, session ends, 0 trades. No reason logged.",
+        "silent_propagation":  "Market fetches stale data — no exception. All 4 agents run on bad input. $0.0262 preventable spend. CB savings demo.",
     }
     return descriptions.get(pattern, "")
 

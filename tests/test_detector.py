@@ -371,3 +371,105 @@ class TestRunAllDetectors:
         incs   = run_all_detectors(sess, traces, evals, [0.10]*10)
         patterns = [i.pattern_name for i in incs]
         assert len(patterns) >= 1  # at minimum silent exit
+
+
+# ── Silent Propagation simulator pattern ──────────────────────────────────────
+
+class TestSilentPropagationSimulator:
+    """
+    Validates that the silent_propagation simulator pattern produces traces and
+    a session that (a) trigger detect_silent_exit and (b) yield a positive CB
+    savings estimate from compute_cb_savings.
+    """
+
+    def _build(self):
+        from simulator.failure_sim import PATTERN_BUILDERS, _build_silent_propagation
+        import uuid
+        sid = str(uuid.uuid4())
+        traces  = _build_silent_propagation(sid)
+        _, sess_fn = PATTERN_BUILDERS["silent_propagation"]
+        session = sess_fn(sid)
+        session["id"] = sid
+        return sid, session, traces
+
+    def test_all_four_agents_present(self):
+        sid, session, traces = self._build()
+        agents = {(t.get("agent") or "").lower() for t in traces}
+        assert "market"       in agents
+        assert "research"     in agents
+        assert "risk"         in agents
+        assert "orchestrator" in agents
+
+    def test_no_tool_errors_in_traces(self):
+        sid, session, traces = self._build()
+        tool_errors = [
+            t for t in traces
+            if (t.get("step_type") or "") == "tool_call"
+            and t.get("outcome") == "error"
+        ]
+        assert tool_errors == [], "silent_propagation must have no tool_call errors"
+
+    def test_session_has_cost_breakdown(self):
+        sid, session, traces = self._build()
+        bd = session.get("cost_breakdown") or {}
+        assert isinstance(bd, dict)
+        for agent in ("market", "research", "risk", "orchestrator"):
+            assert agent in bd, f"cost_breakdown missing '{agent}'"
+            assert bd[agent].get("cost_usd", 0) > 0
+
+    def test_detect_silent_exit_fires(self):
+        sid, session, traces = self._build()
+        evals = run_all_evals(session, traces)
+        inc = detect_silent_exit(session, traces, evals)
+        assert inc is not None, "detect_silent_exit should fire for silent_propagation"
+        assert inc.pattern_name == "Silent Exit"
+
+    def test_market_freshness_eval_fails(self):
+        from engine.eval_engine import eval_market_data_freshness
+        sid, session, traces = self._build()
+        result = eval_market_data_freshness(traces, session)
+        assert not result.passed, (
+            f"data_freshness should fail (lag {result.detail.get('lag_minutes')} min > 10 min)"
+        )
+
+    def test_cb_savings_positive(self):
+        from engine.eval_engine import run_all_evals, EvalResult
+        import pandas as pd
+        sid, session, traces = self._build()
+        evals = run_all_evals(session, traces)
+
+        # build minimal DataFrames matching dashboard's compute_cb_savings signature
+        eval_rows = [e.to_db_row(sid) for e in evals]
+        evals_df  = pd.DataFrame(eval_rows)
+        traces_df = pd.DataFrame(traces)
+        traces_df["session_id"] = sid
+
+        # import compute_cb_savings via sys path trick
+        import sys, importlib, types
+        # The function lives in dashboard.py; re-implement inline to avoid Streamlit import
+        pipeline = ["market", "research", "risk", "orchestrator"]
+        bd = session.get("cost_breakdown") or {}
+        agent_costs = {k: v.get("cost_usd", 0) for k, v in bd.items() if isinstance(v, dict)}
+        total_cost  = float(session.get("total_cost_usd") or 0)
+
+        agents_ran = set()
+        for t in traces:
+            a = (t.get("agent") or "").lower()
+            if a.startswith("research"):
+                agents_ran.add("research")
+            else:
+                agents_ran.add(a)
+
+        first_fail_idx = None
+        for i, ag in enumerate(pipeline):
+            if ag in agents_ran:
+                ag_e = evals_df[(evals_df["agent"] == ag)]
+                if not ag_e.empty and float(ag_e["passed"].sum()) / len(ag_e) < 0.8:
+                    first_fail_idx = i
+                    break
+
+        assert first_fail_idx == 0, "market should be first failing agent"
+        agents_after = [ag for ag in pipeline[1:] if ag in agents_ran]
+        savings = sum(agent_costs.get(ag, 0) for ag in agents_after)
+        assert savings > 0, f"CB savings should be positive, got {savings}"
+        assert abs(savings - 0.0262) < 0.001, f"Expected ~$0.0262, got ${savings:.4f}"
