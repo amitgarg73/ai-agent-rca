@@ -2074,20 +2074,43 @@ if page == "Ledger":
 
         _dev = load_evals_for_session(_dsid)
         if not _dev.empty:
-            st.markdown("**Evals**")
-            _ec = st.columns(2)
-            for _i, (_, _ev) in enumerate(_dev.iterrows()):
-                with _ec[_i % 2]:
-                    _passed = bool(_ev.get("passed"))
-                    _score  = float(_ev.get("score") or 0)
-                    _icon   = "✓" if _passed else "✗"
-                    _color  = "#10b981" if _passed else "#ef4444"
-                    st.markdown(
-                        f'<div style="margin:4px 0">'
-                        f'<span style="color:{_color};font-weight:600">{_icon}</span> '
-                        f'<b>{_ev["agent"]}.{_ev["eval_name"]}</b> &nbsp; '
-                        f'<code>{_score:.2f}</code>'
-                        f'{score_bar(_score, _passed)}'
+            _op_dev   = _dev[~_dev["agent"].str.endswith("_quality", na=False)]
+            _qual_dev = _dev[
+                _dev["agent"].str.endswith("_quality", na=False) &
+                (_dev["eval_name"] == "composite_score")
+            ]
+
+            if not _op_dev.empty:
+                st.markdown("**Operational Evals**")
+                _ec = st.columns(2)
+                for _i, (_, _ev) in enumerate(_op_dev.iterrows()):
+                    with _ec[_i % 2]:
+                        _passed = bool(_ev.get("passed"))
+                        _score  = float(_ev.get("score") or 0)
+                        _icon   = "✓" if _passed else "✗"
+                        _color  = "#10b981" if _passed else "#ef4444"
+                        st.markdown(
+                            f'<div style="margin:4px 0">'
+                            f'<span style="color:{_color};font-weight:600">{_icon}</span> '
+                            f'<b>{_ev["agent"]}.{_ev["eval_name"]}</b> &nbsp; '
+                            f'<code>{_score:.2f}</code>'
+                            f'{score_bar(_score, _passed)}'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
+
+            if not _qual_dev.empty:
+                st.markdown("**Quality Scores**")
+                _qc = st.columns(len(_qual_dev))
+                for _qi, (_, _qev) in enumerate(_qual_dev.iterrows()):
+                    _qs     = float(_qev.get("score") or 0)
+                    _qlabel = str(_qev["agent"]).replace("_quality", "").title()
+                    _qcolor = "#10b981" if _qs >= 0.60 else "#ef4444"
+                    _qc[_qi].markdown(
+                        f'<div style="text-align:center;padding:6px 4px;'
+                        f'border:1px solid {_qcolor}33;border-radius:6px;margin:2px">'
+                        f'<div style="font-size:1.1rem;font-weight:700;color:{_qcolor}">{_qs:.2f}</div>'
+                        f'<div style="font-size:0.75rem;color:#64748b">{_qlabel}</div>'
                         f'</div>',
                         unsafe_allow_html=True,
                     )
@@ -2129,11 +2152,18 @@ elif page == "Quality Drift":
     if not evals_ts.empty:
         _recent_sids = s.iloc[-_n_recent:]["id"].tolist()
         _prev_sids   = s.iloc[-_n_recent - _n_prev : -_n_recent]["id"].tolist() if _n_prev else []
-        _op_recent   = evals_ts[evals_ts["session_id"].isin(_recent_sids)]["passed"].mean()
-        _op_prev     = evals_ts[evals_ts["session_id"].isin(_prev_sids)]["passed"].mean() if _prev_sids else None
+        _op_evals_ts = evals_ts[~evals_ts["agent"].str.endswith("_quality", na=False)]
+        _op_recent   = _op_evals_ts[_op_evals_ts["session_id"].isin(_recent_sids)]["passed"].mean()
+        _op_prev     = _op_evals_ts[_op_evals_ts["session_id"].isin(_prev_sids)]["passed"].mean() if _prev_sids else None
         _op_delta    = (_op_recent - _op_prev) if _op_prev is not None else None
+        _qual_raw    = evals_ts[
+            evals_ts["agent"].str.endswith("_quality", na=False) &
+            (evals_ts["eval_name"] == "composite_score") &
+            evals_ts["session_id"].isin(_recent_sids)
+        ]["score"]
+        _qual_recent = float(_qual_raw.mean()) if not _qual_raw.empty else None
     else:
-        _op_recent = _op_delta = None
+        _op_recent = _op_delta = _qual_recent = None
 
     if not biz_evals_df.empty:
         _biz_recent = biz_evals_df[biz_evals_df["session_id"].isin(s.iloc[-_n_recent:]["id"].tolist())]["passed"].mean()
@@ -2146,7 +2176,7 @@ elif page == "Quality Drift":
 
     _recent_inc_count = len(incidents[incidents["session_id"].isin(s.iloc[-_n_recent:]["id"])]) if not incidents.empty else 0
 
-    k1, k2, k3 = st.columns(3)
+    k1, k2, k3, k4 = st.columns(4)
     k1.markdown(kpi(
         "Operational Health (last 7)",
         f"{_op_recent*100:.0f}%" if _op_recent is not None else "—",
@@ -2160,13 +2190,19 @@ elif page == "Quality Drift":
          if _biz_delta is not None else ""),
     ), unsafe_allow_html=True)
     k3.markdown(kpi("Incidents (last 7 sessions)", str(_recent_inc_count)), unsafe_allow_html=True)
+    k4.markdown(kpi(
+        "Quality Score (last 7)",
+        f"{_qual_recent:.2f}" if _qual_recent is not None else "—",
+        "mean composite across all agents" if _qual_recent is not None else "run backfill_quality.py",
+    ), unsafe_allow_html=True)
 
     st.divider()
 
-    opt_a, opt_b, opt_c = st.tabs([
+    opt_a, opt_b, opt_c, opt_q = st.tabs([
         "Option A — Scorecard + Heatmap",
         "Option B — Operational | Business",
         "Option C — Timeline",
+        "Quality — Composite Trends",
     ])
 
     # ── OPTION A: Two scorecards + eval heatmap + business bars ──────────────
@@ -2572,6 +2608,147 @@ elif page == "Quality Drift":
             "Business score = mean pass rate across cost_per_trade, research_conversion, proposal_acceptance. "
             "A pipeline can score high on operational and low on business — it ran cleanly but produced nothing."
         )
+
+    # ── QUALITY TAB: Composite quality score trends ───────────────────────────
+    with opt_q:
+        st.caption(
+            "Composite quality score per agent — structural proxy scoring across 20 dimensions. "
+            "Below 0.60 = quality concern. Scores persist across sessions to show drift."
+        )
+
+        _qual_colors = {
+            "research_quality":     "#f59e0b",
+            "risk_quality":         "#10b981",
+            "orchestrator_quality": "#3b82f6",
+            "session_quality":      "#8b5cf6",
+        }
+
+        if not evals_ts.empty:
+            _qd_all = evals_ts[
+                evals_ts["agent"].str.endswith("_quality", na=False) &
+                (evals_ts["eval_name"] == "composite_score")
+            ].copy().sort_values("started_at")
+        else:
+            _qd_all = pd.DataFrame()
+
+        if not _qd_all.empty:
+            # ── Composite trend chart ─────────────────────────────────────────
+            st.markdown("**Composite Quality Score — all sessions**")
+            fig_qt = go.Figure()
+            for _qa, _qc in _qual_colors.items():
+                _qd = _qd_all[_qd_all["agent"] == _qa].copy()
+                if _qd.empty:
+                    continue
+                _qd["lbl"] = _qd["started_at"].dt.strftime("%m-%d %H:%M")
+                fig_qt.add_trace(go.Scatter(
+                    x=_qd["lbl"], y=_qd["score"],
+                    mode="lines+markers",
+                    name=_qa.replace("_quality", "").title(),
+                    line=dict(color=_qc, width=2),
+                    marker=dict(
+                        size=[9 if not p else 5 for p in _qd["passed"]],
+                        color=[("#ef4444" if not p else _qc) for p in _qd["passed"]],
+                        symbol=[("x" if not p else "circle") for p in _qd["passed"]],
+                    ),
+                    hovertemplate="%{x}<br>Score: %{y:.3f}<extra></extra>",
+                ))
+            fig_qt.add_hline(y=0.60, line_dash="dot", line_color="#94a3b8",
+                             annotation_text="threshold (0.60)",
+                             annotation_position="bottom right",
+                             annotation_font_size=9)
+            fig_qt.update_layout(
+                paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
+                font_color="#1e293b", height=300,
+                yaxis=dict(title="Composite score", range=[-0.05, 1.10]),
+                xaxis_tickangle=-35,
+                legend=dict(orientation="h", y=1.12),
+                margin=dict(t=40, b=60),
+            )
+            st.plotly_chart(fig_qt, use_container_width=True)
+            st.caption("X marker = failed threshold. Red dot = score below 0.60.")
+
+            # ── Latest session quality detail ─────────────────────────────────
+            st.divider()
+            st.markdown("**Latest session — quality dimension breakdown**")
+            _latest_sid = s.iloc[-1]["id"] if not s.empty else None
+            if _latest_sid:
+                _latest_qd = evals_ts[
+                    (evals_ts["session_id"] == _latest_sid) &
+                    evals_ts["agent"].str.endswith("_quality", na=False) &
+                    (evals_ts["eval_name"] != "composite_score")
+                ].copy()
+                if not _latest_qd.empty:
+                    for _qa in ["research_quality", "risk_quality",
+                                "orchestrator_quality", "session_quality"]:
+                        _dims = _latest_qd[_latest_qd["agent"] == _qa]
+                        if _dims.empty:
+                            continue
+                        _label = _qa.replace("_quality", "").title()
+                        _comp_row = evals_ts[
+                            (evals_ts["session_id"] == _latest_sid) &
+                            (evals_ts["agent"] == _qa) &
+                            (evals_ts["eval_name"] == "composite_score")
+                        ]
+                        _comp = float(_comp_row["score"].iloc[0]) if not _comp_row.empty else 0.0
+                        _comp_color = "#10b981" if _comp >= 0.60 else "#ef4444"
+                        st.markdown(
+                            f'<div style="margin:6px 0 2px">'
+                            f'<b style="color:{_comp_color}">{_label}</b>'
+                            f' &nbsp; composite: <code style="color:{_comp_color}">{_comp:.3f}</code>'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
+                        _dc = st.columns(len(_dims))
+                        for _di, (_, _drow) in enumerate(_dims.iterrows()):
+                            _ds = float(_drow.get("score") or 0)
+                            _dp = bool(_drow.get("passed"))
+                            _dc_color = "#10b981" if _dp else "#ef4444"
+                            _dc[_di].markdown(
+                                f'<div style="font-size:0.78rem;text-align:center;padding:4px">'
+                                f'<div style="color:{_dc_color};font-weight:600">{_ds:.2f}</div>'
+                                f'<div style="color:#64748b">{_drow["eval_name"].replace("_"," ")}</div>'
+                                f'</div>',
+                                unsafe_allow_html=True,
+                            )
+                else:
+                    st.info("No quality dimension data for the latest session.")
+
+            # ── Per-agent heatmap (last 15 sessions) ─────────────────────────
+            st.divider()
+            st.markdown("**Quality composite heatmap — last 15 sessions**")
+            _last15_ids = s.tail(15)["id"].tolist()
+            _qhm = evals_ts[
+                evals_ts["agent"].str.endswith("_quality", na=False) &
+                (evals_ts["eval_name"] == "composite_score") &
+                evals_ts["session_id"].isin(_last15_ids)
+            ].copy()
+            if not _qhm.empty:
+                _qhm["lbl"] = _qhm["started_at"].dt.strftime("%m-%d %H:%M")
+                _qhm["agent_label"] = _qhm["agent"].str.replace("_quality", "", regex=False).str.title()
+                _qhm_pivot = _qhm.pivot_table(
+                    index="agent_label", columns="lbl", values="score", aggfunc="first"
+                )
+                _col_order = [lb for lb in s.tail(15)["label"] if lb in _qhm_pivot.columns]
+                _qhm_pivot = _qhm_pivot[_col_order] if _col_order else _qhm_pivot
+                _z_q    = _qhm_pivot.values.astype(float)
+                _txt_q  = [[f"{v:.2f}" if not pd.isna(v) else "—" for v in row] for row in _z_q]
+                fig_qhm = go.Figure(go.Heatmap(
+                    z=_z_q, x=list(_qhm_pivot.columns), y=list(_qhm_pivot.index),
+                    text=_txt_q, texttemplate="%{text}",
+                    colorscale=[[0, "#fee2e2"], [0.6, "#fef9c3"], [1, "#dcfce7"]],
+                    zmin=0, zmax=1, showscale=True,
+                    colorbar=dict(title="Score", thickness=12, len=0.8),
+                ))
+                fig_qhm.update_layout(
+                    paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
+                    font_color="#1e293b", height=200,
+                    xaxis_tickangle=-35, xaxis=dict(side="top"),
+                    margin=dict(t=60, b=20, l=120, r=60),
+                )
+                st.plotly_chart(fig_qhm, use_container_width=True)
+                st.caption("Green = quality healthy (≥0.60). Yellow = borderline. Red = below threshold.")
+        else:
+            st.info("No quality evals yet. Run: `python3 scripts/backfill_quality.py`")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
