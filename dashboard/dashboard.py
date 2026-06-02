@@ -257,12 +257,12 @@ def _db():
     return create_client(url, key)
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=30)
 def load_sessions() -> pd.DataFrame:
     r = _db().table("c_sessions").select(
         "id,date,total_cost_usd,total_latency_ms,total_tokens_input,"
         "total_tokens_output,trades_proposed,trades_executed,agents_invoked,"
-        "terminal_reason,started_at,completed_at,cost_breakdown"
+        "terminal_reason,started_at,completed_at,cost_breakdown,is_simulated"
     ).order("started_at", desc=True).limit(200).execute()
     df = pd.DataFrame(r.data or [])
     if df.empty:
@@ -1216,13 +1216,19 @@ recent_costs = sessions["total_cost_usd"].tolist() if not sessions.empty else []
 # ══════════════════════════════════════════════════════════════════════════════
 if page == "Overview":
 
-    _ov_h1, _ov_h2 = st.columns([5, 1])
+    _ov_h1, _ov_h2, _ov_h3 = st.columns([5, 1, 1])
     with _ov_h1:
         st.markdown("## System Overview")
     with _ov_h2:
         _ov_range = st.radio("Period", ["7d", "14d", "30d"],
                              horizontal=True, index=0,
                              label_visibility="collapsed", key="ov_range")
+    with _ov_h3:
+        if st.button("↺ Refresh", use_container_width=True):
+            load_sessions.clear()
+            load_traces.clear()
+            load_all_evals.clear()
+            st.rerun()
     _ov_days   = int(_ov_range[:-1])
     _ov_now    = pd.Timestamp.now(tz="UTC")
     _ov_cut    = _ov_now - pd.Timedelta(days=_ov_days)
@@ -1564,14 +1570,18 @@ if page == "Overview":
                 '<span style="font-size:0.83rem;color:#94a3b8">—</span>'
             )
             _pipe_cell = pipeline_strip(_ov_sid, traces_all, _ov_ae)
-            _has_inc = "●" if not _ov_sincs.empty else ""
-            _inc_color = "#ef4444" if not _ov_sincs.empty else "transparent"
+            _is_sim = bool(_ov_row.get("is_simulated", False))
+            _sim_badge = (
+                ' <span style="font-size:0.62rem;background:#dbeafe;color:#1d4ed8;'
+                'border-radius:3px;padding:1px 4px;font-weight:600">SIM</span>'
+                if _is_sim else ""
+            )
 
             _row_html_parts.append(
                 f'<div style="display:grid;grid-template-columns:3fr 2fr 5fr 4fr;'
                 f'align-items:center;padding:5px 0;'
                 f'border-bottom:1px solid #f1f5f9">'
-                f'<span style="font-size:0.83rem">{_ov_dt}</span>'
+                f'<span style="font-size:0.83rem">{_ov_dt}{_sim_badge}</span>'
                 f'{_cost_cell}'
                 f'{_pipe_cell}'
                 f'{_savings_cell}'
@@ -3390,7 +3400,9 @@ elif page == "Failure Simulator":
         else:
             st.warning("No incident detected for this simulation. Check pattern detector thresholds.")
 
-        st.cache_data.clear()
+        load_sessions.clear()
+        load_traces.clear()
+        load_all_evals.clear()
 
     # History of simulated incidents
     if not incidents.empty:
