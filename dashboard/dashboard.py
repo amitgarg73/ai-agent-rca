@@ -326,10 +326,17 @@ def load_evals_for_session(session_id: str) -> pd.DataFrame:
 @st.cache_data(ttl=60)
 def load_all_evals() -> pd.DataFrame:
     try:
-        r = _db().table("c_evals").select(
-            "session_id,agent,eval_name,score,passed"
-        ).execute()
-        df = pd.DataFrame(r.data or [])
+        rows, page_size, offset = [], 1000, 0
+        while True:
+            batch = (_db().table("c_evals")
+                     .select("session_id,agent,eval_name,score,passed")
+                     .range(offset, offset + page_size - 1)
+                     .execute())
+            rows.extend(batch.data or [])
+            if len(batch.data or []) < page_size:
+                break
+            offset += page_size
+        df = pd.DataFrame(rows)
         if not df.empty:
             df["score"]  = pd.to_numeric(df["score"],  errors="coerce").fillna(0)
             df["passed"] = df["passed"].astype(bool)
