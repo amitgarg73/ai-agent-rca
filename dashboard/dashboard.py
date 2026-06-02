@@ -322,6 +322,15 @@ def goto_rca(incident_dict: dict, session_id: str) -> None:
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+PATTERN_DESCRIPTIONS = {
+    "Tool Timeout Loop":    "The same tool failed 3+ times in a row. Agent is retrying a broken tool instead of moving on.",
+    "Context Spiral":       "Research agent burned >40K tokens but produced 0 trades. Token usage not justified by output.",
+    "Pipeline Break":       "Research ran but orchestrator never started. Likely an uncaught exception in the handoff between agents.",
+    "Cost Anomaly":         "Session cost was 2+ standard deviations above the recent average. Unexpectedly expensive run.",
+    "Silent Exit":          "Session ended with 0 trades and no terminal reason recorded. Agent stopped without explanation.",
+    "Empty Result Loop":    "Same tool called 3+ times successfully but session still produced nothing. Stuck in a results loop.",
+}
+
 AGENT_COLORS = {
     "research":      "#f59e0b",
     "orchestrator":  "#3b82f6",
@@ -1129,7 +1138,12 @@ if page == "Overview":
         if st.button("View all →", key="ov_inc", use_container_width=True):
             goto_page("Incidents Feed")
     with _k5:
-        st.markdown(kpi("Top Pattern", _ov_top_pat or "—", "most frequent in period"),
+        _ov_pat_tip = PATTERN_DESCRIPTIONS.get(_ov_top_pat, "")
+        _ov_pat_val = (
+            f'<span title="{_ov_pat_tip}" style="cursor:help;border-bottom:1px dotted #94a3b8">'
+            f'{_ov_top_pat}</span>' if _ov_top_pat else "—"
+        )
+        st.markdown(kpi("Top Pattern", _ov_pat_val, "most frequent in period"),
                     unsafe_allow_html=True)
         if _ov_top_pat and st.button("Filter feed →", key="ov_pat", use_container_width=True):
             goto_page("Incidents Feed")
@@ -1199,12 +1213,21 @@ if page == "Overview":
                 else "#3b82f6"
                 for l in _ov_pat["label"]
             ]
+            _ov_pat["tip"] = _ov_pat["label"].map(
+                lambda l: PATTERN_DESCRIPTIONS.get(l, "")
+            )
             _ov_fig_pat = go.Figure(go.Bar(
                 x=_ov_pat["n"], y=_ov_pat["label"],
                 orientation="h",
                 marker_color=_ov_bar_cols,
                 text=_ov_pat["n"], textposition="outside",
-                hovertemplate="<b>%{y}</b><br>Count: %{x}<extra></extra>",
+                customdata=_ov_pat["tip"],
+                hovertemplate=(
+                    "<b>%{y}</b><br>"
+                    "Count: %{x}<br>"
+                    "<i style='color:#94a3b8'>%{customdata}</i>"
+                    "<extra></extra>"
+                ),
             ))
             _ov_fig_pat.update_layout(
                 paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
@@ -1329,11 +1352,18 @@ if page == "Overview":
             _ov_ni    = len(_ov_sincs)
             _ov_oc    = "#10b981" if _ov_ni == 0 else "#ef4444"
             _ov_ol    = "✓ clean" if _ov_ni == 0 else f"⚠ {_ov_ni} incident{'s' if _ov_ni > 1 else ''}"
-            _ov_pats  = (
-                ", ".join(_ov_sincs["pattern_name"]
-                          .str.replace("_", " ").str.title().tolist())
-                if _ov_ni > 0 else ""
-            )
+            if _ov_ni > 0:
+                _ov_pat_parts = []
+                for _pn in _ov_sincs["pattern_name"].tolist():
+                    _pn_label = _pn.replace("_", " ").title()
+                    _pn_tip   = PATTERN_DESCRIPTIONS.get(_pn_label, "")
+                    _ov_pat_parts.append(
+                        f'<span title="{_pn_tip}" style="cursor:help;'
+                        f'border-bottom:1px dotted #94a3b8">{_pn_label}</span>'
+                    )
+                _ov_pats = ", ".join(_ov_pat_parts)
+            else:
+                _ov_pats = ""
             _ov_dt = (
                 _ov_row["started_at"].strftime("%Y-%m-%d %H:%M")
                 if pd.notna(_ov_row["started_at"]) else "—"
