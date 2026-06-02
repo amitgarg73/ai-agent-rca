@@ -1967,8 +1967,20 @@ if page == "Ledger":
         inc_counts = incidents.groupby("session_id").size().reset_index(name="Incidents")
         display = display.merge(inc_counts, left_on="id", right_on="session_id", how="left")
         display["Incidents"] = display["Incidents"].fillna(0).astype(int)
+
+        def _pattern_summary(sid):
+            names = incidents[incidents["session_id"] == sid]["pattern_name"].tolist()
+            if not names:
+                return ""
+            if len(names) == 1:
+                return names[0]
+            first = names[0]
+            return f"{first} +{len(names)-1}" if len(first) > 20 else " · ".join(names[:2]) + (f" +{len(names)-2}" if len(names) > 2 else "")
+
+        display["Type"] = display["id"].apply(_pattern_summary)
     else:
         display["Incidents"] = 0
+        display["Type"] = ""
 
     display["Wasted"] = (display["trades_executed"] == 0) & (display["total_cost_usd"] > 0.01)
 
@@ -1982,7 +1994,7 @@ if page == "Ledger":
         display = display[display["Wasted"]]
 
     cols = ["started_at", "total_cost_usd", "Duration (s)", "trades_executed",
-            "Tokens", "Incidents", "terminal_reason"]
+            "Tokens", "Incidents", "Type", "terminal_reason"]
     rename = {
         "started_at":       "Session",
         "total_cost_usd":   "Cost ($)",
