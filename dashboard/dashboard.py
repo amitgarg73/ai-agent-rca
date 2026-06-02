@@ -1462,25 +1462,39 @@ if page == "Overview":
         )
 
         for _, _ov_row in _ov_rs.iterrows():
-            _ov_sid  = _ov_row["id"]
+            _ov_sid   = _ov_row["id"]
             _ov_sincs = _ov_i[_ov_i["session_id"] == _ov_sid] if not _ov_i.empty else pd.DataFrame()
-            _ov_dt   = (
+            _ov_dt    = (
                 _ov_row["started_at"].strftime("%Y-%m-%d %H:%M")
                 if pd.notna(_ov_row["started_at"]) else "—"
             )
-            _ov_wasted = (
-                float(_ov_sincs["cost_wasted"].sum())
-                if not _ov_sincs.empty and "cost_wasted" in _ov_sincs.columns
-                else 0.0
-            )
+
+            # Actual cost: prefer total_cost_usd, fall back to sum of cost_breakdown
+            _ov_cost = float(_ov_row.get("total_cost_usd") or 0)
+            if _ov_cost == 0:
+                _bd = _ov_row.get("cost_breakdown")
+                if isinstance(_bd, dict) and _bd:
+                    _ov_cost = sum(
+                        v.get("cost_usd", 0) for v in _bd.values()
+                        if isinstance(v, dict)
+                    )
+
+            # Wasted = session cost when incidents exist (each incident already
+            # stores full session cost so summing would double-count)
+            _ov_has_inc = not _ov_sincs.empty
+            _ov_wasted  = _ov_cost if _ov_has_inc else 0.0
+
             _c1, _c2, _c3, _c4, _c5 = st.columns([3, 2, 6, 2, 2])
             with _c1:
                 st.markdown(f'<span style="font-size:0.83rem">{_ov_dt}</span>',
                             unsafe_allow_html=True)
             with _c2:
+                _cost_html = (
+                    f'${_ov_cost:.3f}' if _ov_cost > 0 else
+                    '<span style="color:#94a3b8">—</span>'
+                )
                 st.markdown(
-                    f'<span style="font-size:0.83rem">'
-                    f'${float(_ov_row["total_cost_usd"]):.3f}</span>',
+                    f'<span style="font-size:0.83rem">{_cost_html}</span>',
                     unsafe_allow_html=True,
                 )
             with _c3:
