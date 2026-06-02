@@ -2797,23 +2797,64 @@ elif page == "Quality Drift":
             st.divider()
 
             # Dimension help text: explains how each score is calculated
+            # Plain-English descriptions — what this dimension actually means
             _DIM_HELP = {
-                "data_grounding":          "Distinct successful tools used ÷ 3. Full score (1.0) at 3+ different tool types. Errored calls don't count.",
-                "thesis_coherence":        "1.0 if a decision trace exists (agent produced structured output), 0.50 otherwise.",
-                "actionability":           "1.0 if the Risk agent ran any tools (research was evaluated downstream), 0.15 if Risk never ran.",
-                "catalyst_specificity":    "0.90 if a news or search tool was called, 0.45 otherwise. Checks whether research sought current catalysts.",
-                "risk_acknowledgment":     "Scales with total LLM tokens (input + output). Full score at 15,000+ tokens — a proxy for thoroughness.",
-                "research_consistency":    "0.90 if the Research agent ran before Risk, 0.30 otherwise. Risk assessments need upstream data.",
-                "parameter_completeness":  "0.90 if Risk produced a decision trace (structured output), 0.50 otherwise.",
-                "volatility_accounting":   "0.85 if ATR or a volatility tool was called, 0.45 otherwise. Checks that position sizing used market conditions.",
-                "stop_loss_quality":       "Fixed neutral 0.60 — needs raw LLM output text to score precisely (not yet in traces).",
-                "position_sizing_rationale":"Scales with distinct ok tool calls: 0.60 at 0 tools, 0.75 at 1, 1.0 at 2+.",
-                "decision_consistency":    "1.0 = trades executed with full pipeline (research + risk). 0.85 = no trade with clean exit reason. 0.40 = trades without research/risk evidence.",
-                "resolution_completeness": "1.0 for clean exits (eod_complete, no_opportunity, risk_rejected). 0.10 for error or unknown terminal reason.",
-                "reasoning_transparency":  "0.85 if a decision trace exists in orchestrator steps, 0.30 otherwise.",
-                "upstream_integration":    "0.85 if both Research and Risk agents ran, 0.50 if one ran, 0.20 if neither ran.",
-                "pipeline_coherence":      "1.0 = all 3 agents ran. 0.80 = market agent only (valid short session). 0.30 = partial pipeline (some agents missing).",
-                "reasoning_chain":         "1.0 − 0.40 × error-only stages. A 'stage' is an agent where every step errored — each such stage penalises 0.40.",
+                "data_grounding":           "Did research pull from multiple sources? Scores how many different tools ran without errors. Three or more distinct sources = full score.",
+                "thesis_coherence":         "Did research produce a clear conclusion? Checks whether the agent logged a structured output before passing work downstream.",
+                "actionability":            "Was research actually used? Checks whether the risk agent received and evaluated research output. Low score means the handoff may be broken.",
+                "catalyst_specificity":     "Did research look for a reason to act right now? Checks whether a news or earnings tool was called — not just historical data.",
+                "risk_acknowledgment":      "How much work did research do? Uses total token consumption as a rough proxy for depth of analysis.",
+                "research_consistency":     "Did risk have research to work with? Checks whether research completed before risk ran. Risk assessments without upstream data are unreliable.",
+                "parameter_completeness":   "Did risk reach a conclusion? Checks whether the risk agent produced a structured approve or reject output with parameters.",
+                "volatility_accounting":    "Did risk account for current market conditions? Checks whether a volatility or ATR tool was called before sizing the position.",
+                "stop_loss_quality":        "How well-calibrated is the stop loss? We can't score this yet — it requires reading the agent's output text, which isn't stored in traces.",
+                "position_sizing_rationale":"Was position size based on enough data? Scores how many successful data lookups risk completed before deciding on size.",
+                "decision_consistency":     "Did the final decision match the evidence? Checks whether a trade (or no-trade) was consistent with what research and risk produced.",
+                "resolution_completeness":  "Did the session end cleanly? Checks whether the pipeline reached a recognized outcome rather than an error or missing reason.",
+                "reasoning_transparency":   "Did the orchestrator explain its decision? Checks whether it logged its reasoning — not just the action it took.",
+                "upstream_integration":     "Did all stages contribute? Checks how many of the three key agents (research, risk, orchestrator) completed and fed into each other.",
+                "pipeline_coherence":       "Did the full pipeline run? Scores whether all agents completed. A partial pipeline means some stages were skipped or crashed.",
+                "reasoning_chain":          "Were there cascading failures? Checks whether any agent had only errors and no successful steps at all.",
+            }
+
+            # actionable = you can fix this by changing agent code
+            # gap        = we can't measure this yet (needs more instrumentation)
+            # note       = reflects what happened; not directly improvable
+            _DIM_STATUS = {
+                "data_grounding":           "actionable",
+                "thesis_coherence":         "actionable",
+                "actionability":            "actionable",
+                "catalyst_specificity":     "actionable",
+                "risk_acknowledgment":      "note",
+                "research_consistency":     "actionable",
+                "parameter_completeness":   "actionable",
+                "volatility_accounting":    "actionable",
+                "stop_loss_quality":        "gap",
+                "position_sizing_rationale":"actionable",
+                "decision_consistency":     "actionable",
+                "resolution_completeness":  "actionable",
+                "reasoning_transparency":   "actionable",
+                "upstream_integration":     "actionable",
+                "pipeline_coherence":       "actionable",
+                "reasoning_chain":          "actionable",
+            }
+
+            # Shown only when status=actionable and score is below threshold
+            _DIM_IMPROVE = {
+                "data_grounding":           "Use at least 3 different tool types in research (e.g., price data, news, ATR). Each distinct type adds ~0.33 to this score.",
+                "thesis_coherence":         "Ensure research logs a structured output or decision before completing. Agents that exit silently score 0.20.",
+                "actionability":            "Check that research output is passed to the risk agent. If research ran but this is low, the handoff between agents is broken.",
+                "catalyst_specificity":     "Add a news or earnings lookup to the research step. Without a current-events check, research relies on historical data only.",
+                "research_consistency":     "Research must complete before risk runs. Check pipeline ordering — risk shouldn't start if research errored out.",
+                "parameter_completeness":   "Risk agent should output a structured decision (approve or reject with size and stop parameters). Silent exits score 0.50.",
+                "volatility_accounting":    "Add an ATR or volatility check inside the risk agent. Position sizing without current volatility data is a known gap.",
+                "position_sizing_rationale":"Risk agent needs at least 2 successful data lookups before deciding position size. Add more calls or fix the ones that are failing.",
+                "decision_consistency":     "Full score requires a trade placed after both research and risk completed. Partial pipelines or unexplained no-trade sessions score lower.",
+                "resolution_completeness":  "Pipeline ended with an error or unknown reason. Check the Incidents Feed for this session to find what crashed before a clean exit.",
+                "reasoning_transparency":   "Orchestrator should log a decision trace with its reasoning. Agents that pass through silently score 0.20.",
+                "upstream_integration":     "Both research and risk need to complete for full score. Check which upstream stage did not run.",
+                "pipeline_coherence":       "All three agents (research, risk, orchestrator) should complete. A partial pipeline scores 0.30.",
+                "reasoning_chain":          "One or more agents had only error traces with no successful steps. Check the Incidents Feed to see which agent failed.",
             }
 
             _agent_colors = {
@@ -2906,13 +2947,29 @@ elif page == "Quality Drift":
                                 _score_color = "#f59e0b"
                             else:
                                 _score_color = "#ef4444"
-                            _pct = int(_ds * 100)
+                            _pct      = int(_ds * 100)
+                            _status   = _DIM_STATUS.get(_dname, "actionable")
                             _help_txt = _DIM_HELP.get(_dname, "")
+                            _improve  = _DIM_IMPROVE.get(_dname, "")
+                            _is_low   = _ds < 0.60
+
+                            if _status == "gap":
+                                _sbadge = ('<span style="font-size:0.60rem;color:#64748b;'
+                                           'background:#f1f5f9;border-radius:10px;padding:1px 6px">'
+                                           'measurement gap</span>')
+                            elif _status == "actionable" and _is_low:
+                                _sbadge = ('<span style="font-size:0.60rem;color:#92400e;'
+                                           'background:#fef3c7;border-radius:10px;padding:1px 6px">'
+                                           'fixable</span>')
+                            else:
+                                _sbadge = ""
+
                             _dc[_di].markdown(
                                 f'<div style="background:#ffffff;border:1px solid #e2e8f0;'
-                                f'border-radius:8px;padding:10px 8px 10px;text-align:center">'
+                                f'border-radius:8px;padding:10px 8px 8px;text-align:center">'
                                 f'<div style="font-size:1.25rem;font-weight:700;color:{_score_color}">{_ds:.2f}</div>'
-                                f'<div style="font-size:0.70rem;color:#475569;margin:4px 0 8px;line-height:1.3">{_dlabel}</div>'
+                                f'<div style="font-size:0.70rem;color:#475569;margin:3px 0 5px;line-height:1.3">{_dlabel}</div>'
+                                f'<div style="min-height:18px;margin-bottom:5px">{_sbadge}</div>'
                                 f'<div style="background:#f1f5f9;border-radius:4px;height:5px">'
                                 f'<div style="background:{_score_color};width:{_pct}%;height:100%;border-radius:4px"></div>'
                                 f'</div></div>',
@@ -2920,6 +2977,10 @@ elif page == "Quality Drift":
                             )
                             if _help_txt:
                                 _dc[_di].caption(_help_txt)
+                            if _status == "actionable" and _is_low and _improve:
+                                _dc[_di].caption(f"To improve: {_improve}")
+                            elif _status == "gap":
+                                _dc[_di].caption("Needs output text stored in traces to score accurately. Cannot be fixed through agent changes alone.")
                 else:
                     st.info("No quality dimension data for this session.")
 
