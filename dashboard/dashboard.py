@@ -331,6 +331,28 @@ PATTERN_DESCRIPTIONS = {
     "Empty Result Loop":    "Same tool called 3+ times successfully but session still produced nothing. Stuck in a results loop.",
 }
 
+AGENT_DESCRIPTIONS = {
+    "orchestrator": "Makes the final trade execution decision. Receives approved proposals from the Risk agent and decides which trades to place.",
+    "market":       "Fetches real-time price, volume, and market data for candidate tickers. First agent to run each session.",
+    "research":     "Runs deep analysis on individual tickers — earnings, news, technicals, sentiment. One sub-agent per ticker.",
+    "risk":         "Reviews research output, sizes positions, and approves or rejects each trade proposal before it reaches the orchestrator.",
+}
+
+OUTCOME_DESCRIPTIONS = {
+    "clean":    "No failure patterns detected this session. All critical evals passed.",
+    "incident": "One or more failure patterns fired. Some or all session cost may be wasted. Click View RCA for root cause and fix suggestion.",
+}
+
+def tip_badge(description: str) -> str:
+    """Inline ? badge with hover tooltip."""
+    safe = description.replace('"', "&quot;")
+    return (
+        f'<span title="{safe}" style="display:inline-flex;align-items:center;'
+        f'justify-content:center;width:14px;height:14px;border-radius:50%;'
+        f'background:#e2e8f0;color:#64748b;font-size:0.62rem;font-weight:700;'
+        f'cursor:help;margin-left:5px;vertical-align:middle;flex-shrink:0">?</span>'
+    )
+
 AGENT_COLORS = {
     "research":      "#f59e0b",
     "orchestrator":  "#3b82f6",
@@ -1293,10 +1315,11 @@ if page == "Overview":
                 _ov_tc = "#10b981" if _ov_td > 3 else "#ef4444" if _ov_td < -3 else "#64748b"
             else:
                 _ov_ts, _ov_tc = "—", "#94a3b8"
+            _ov_ag_tip = tip_badge(AGENT_DESCRIPTIONS.get(_ov_ag, ""))
             _ov_tbl += (
                 f'<tr style="border-bottom:1px solid #f1f5f9">'
                 f'<td style="padding:10px 12px;font-weight:600;color:#0f172a">'
-                f'{_ov_ag.title()}</td>'
+                f'{_ov_ag.title()}{_ov_ag_tip}</td>'
                 f'<td style="padding:10px 12px">{_ov_bar(_ov_p7)}</td>'
                 f'<td style="padding:10px 12px">{_ov_bar(_ov_p30)}</td>'
                 f'<td style="padding:10px 12px;color:{_ov_tc};font-size:0.82rem;font-weight:600">'
@@ -1351,7 +1374,8 @@ if page == "Overview":
             _ov_sincs = _ov_i[_ov_i["session_id"] == _ov_sid] if not _ov_i.empty else pd.DataFrame()
             _ov_ni    = len(_ov_sincs)
             _ov_oc    = "#10b981" if _ov_ni == 0 else "#ef4444"
-            _ov_ol    = "✓ clean" if _ov_ni == 0 else f"⚠ {_ov_ni} incident{'s' if _ov_ni > 1 else ''}"
+            _ov_ol_txt= "✓ clean" if _ov_ni == 0 else f"⚠ {_ov_ni} incident{'s' if _ov_ni > 1 else ''}"
+            _ov_ol    = _ov_ol_txt + tip_badge(OUTCOME_DESCRIPTIONS["clean" if _ov_ni == 0 else "incident"])
             if _ov_ni > 0:
                 _ov_pat_parts = []
                 for _pn in _ov_sincs["pattern_name"].tolist():
