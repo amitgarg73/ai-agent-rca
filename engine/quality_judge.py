@@ -48,7 +48,7 @@ _BAD_EXITS     = {"in_progress", "error"}
 
 # Tool name keywords for domain detection
 _NEWS_KEYWORDS      = {"news", "earn"}
-_VOL_KEYWORDS       = {"atr", "volatil", "vix", "beta"}
+_VOL_KEYWORDS       = {"atr", "volatil", "vix", "beta", "market_data"}
 
 
 # ── Trace helpers ─────────────────────────────────────────────────────────────
