@@ -170,53 +170,6 @@ div[data-testid="stPillsRoot"]  button[data-selected="true"] {
 
 # ── Auth gate ─────────────────────────────────────────────────────────────────
 
-def _login_page() -> None:
-    st.markdown("""
-    <style>
-    .login-wrap {
-        max-width: 380px; margin: 80px auto 0 auto;
-        background: #fff; border: 1px solid #e2e8f0;
-        border-radius: 12px; padding: 40px 36px;
-        box-shadow: 0 4px 24px rgba(0,0,0,0.07);
-    }
-    .login-brand {
-        font-size: 1.1rem; font-weight: 700; color: #0f172a;
-        margin-bottom: 4px;
-    }
-    .login-sub {
-        font-size: 0.8rem; color: #64748b; margin-bottom: 28px;
-    }
-    .login-error {
-        background: #fff5f5; border: 1px solid #fca5a5;
-        border-radius: 6px; padding: 8px 12px;
-        color: #991b1b; font-size: 0.82rem; margin-top: 8px;
-    }
-    </style>
-    """, unsafe_allow_html=True)
-
-    c_left, c_mid, c_right = st.columns([1, 2, 1])
-    with c_mid:
-        st.markdown(
-            '<div class="login-wrap">'
-            '<div class="login-brand">AI Agent RCA</div>'
-            '<div class="login-sub">Strategy C · Live</div>',
-            unsafe_allow_html=True,
-        )
-        pwd = st.text_input("Password", type="password", placeholder="Enter access password", label_visibility="collapsed")
-        if st.button("Sign in", use_container_width=True, type="primary"):
-            correct = st.secrets.get("APP_PASSWORD", "")
-            if pwd and pwd == correct:
-                st.session_state["authenticated"] = True
-                st.rerun()
-            else:
-                st.markdown('<div class="login-error">Incorrect password.</div>', unsafe_allow_html=True)
-        st.markdown('</div>', unsafe_allow_html=True)
-
-if not st.session_state.get("authenticated"):
-    _login_page()
-    st.stop()
-
-
 # ── DB ────────────────────────────────────────────────────────────────────────
 
 @st.cache_resource
