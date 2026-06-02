@@ -1448,9 +1448,12 @@ if page == "Overview":
         _ov_rs = _ov_rs.sort_values("started_at", ascending=False).head(10)
 
         _ov_cols = st.columns([3, 2, 6, 2, 2])
-        for _c, _l in zip(_ov_cols, ["Date", "Cost", "Pipeline",
-                                      "Wasted" + tip_badge("Cost that could have been saved if a circuit breaker had stopped the pipeline at the first detected failure."),
-                                      ""]):
+        for _c, _l in zip(_ov_cols, [
+            "Date",
+            "Cost" + tip_badge("Total LLM API spend for this session across all agents. Drawn from cost_breakdown if the session ended early."),
+            "Pipeline",
+            "Wasted" + tip_badge("Cost that could have been saved if a circuit breaker had stopped the pipeline at the first detected failure."),
+            ""]):
             _c.markdown(
                 f'<span style="font-size:0.72rem;font-weight:600;color:#64748b;'
                 f'text-transform:uppercase;letter-spacing:0.06em">{_l}</span>',
