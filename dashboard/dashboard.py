@@ -307,6 +307,11 @@ def load_all_evals() -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def goto_page(page_name: str) -> None:
+    st.session_state["_page"] = page_name
+    st.rerun()
+
+
 def goto_rca(incident_dict: dict, session_id: str) -> None:
     """Navigate to RCA View with the given incident pre-selected."""
     st.session_state["rca_incident"] = incident_dict
@@ -978,7 +983,7 @@ def _build_cost_donut(sess_row: dict, sess_traces: list):
 # ── Page resolution ───────────────────────────────────────────────────────────
 
 _NAV_PAGES = [
-    "Ledger", "Quality Drift",
+    "Overview", "Ledger", "Quality Drift",
     "Incidents Feed", "RCA View", "Failure Simulator", "Trace Inspector",
 ]
 
@@ -990,9 +995,9 @@ elif "sid" in st.query_params and "page" not in st.query_params:
     st.query_params["page"] = "RCA View"
     page = "RCA View"
 else:
-    page = st.query_params.get("page", "Ledger")
+    page = st.query_params.get("page", "Overview")
     if page not in _NAV_PAGES:
-        page = "Ledger"
+        page = "Overview"
 
 # ── Top navigation bar (st.pills — no JS, no iframe) ─────────────────────────
 
@@ -1033,6 +1038,337 @@ if not sessions.empty and not positions.empty:
     sessions["session_pnl"] = sessions.get("session_pnl", 0)
 
 recent_costs = sessions["total_cost_usd"].tolist() if not sessions.empty else []
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE: Overview
+# ══════════════════════════════════════════════════════════════════════════════
+if page == "Overview":
+
+    _ov_h1, _ov_h2 = st.columns([5, 1])
+    with _ov_h1:
+        st.markdown("## System Overview")
+    with _ov_h2:
+        _ov_range = st.radio("Period", ["7d", "14d", "30d"],
+                             horizontal=True, index=0,
+                             label_visibility="collapsed", key="ov_range")
+    _ov_days   = int(_ov_range[:-1])
+    _ov_now    = pd.Timestamp.now()
+    _ov_cut    = _ov_now - pd.Timedelta(days=_ov_days)
+    _ov_prev_c = _ov_cut  - pd.Timedelta(days=_ov_days)
+
+    # ── Filter sessions + incidents to window ─────────────────────────────────
+    _ov_s = sessions.copy() if not sessions.empty else sessions
+    if not _ov_s.empty:
+        _ov_s["started_at"] = pd.to_datetime(_ov_s["started_at"], errors="coerce")
+        _ov_s_now  = _ov_s[_ov_s["started_at"] >= _ov_cut]
+        _ov_s_prev = _ov_s[(_ov_s["started_at"] >= _ov_prev_c) & (_ov_s["started_at"] < _ov_cut)]
+    else:
+        _ov_s_now = _ov_s_prev = _ov_s
+
+    _ov_i = incidents.copy() if not incidents.empty else incidents
+    if not _ov_i.empty and "created_at" in _ov_i.columns:
+        _ov_i["created_at"] = pd.to_datetime(_ov_i["created_at"], errors="coerce")
+        _ov_i_now  = _ov_i[_ov_i["created_at"] >= _ov_cut]
+        _ov_i_prev = _ov_i[(_ov_i["created_at"] >= _ov_prev_c) & (_ov_i["created_at"] < _ov_cut)]
+    else:
+        _ov_i_now = _ov_i_prev = _ov_i
+
+    _ov_sids_inc  = set(_ov_i_now["session_id"].unique())  if not _ov_i_now.empty  else set()
+    _ov_sids_prv  = set(_ov_i_prev["session_id"].unique()) if not _ov_i_prev.empty else set()
+
+    _ov_n_sess    = len(_ov_s_now)
+    _ov_n_sess_p  = len(_ov_s_prev)
+    _ov_n_inc     = len(_ov_i_now)
+    _ov_n_inc_p   = len(_ov_i_prev)
+    _ov_n_clean   = int((~_ov_s_now["id"].isin(_ov_sids_inc)).sum())   if not _ov_s_now.empty  else 0
+    _ov_n_clean_p = int((~_ov_s_prev["id"].isin(_ov_sids_prv)).sum())  if not _ov_s_prev.empty else 0
+    _ov_sr        = _ov_n_clean   / _ov_n_sess   * 100 if _ov_n_sess   else 0
+    _ov_sr_p      = _ov_n_clean_p / _ov_n_sess_p * 100 if _ov_n_sess_p else 0
+    _ov_avg_cost  = float(_ov_s_now["total_cost_usd"].mean())  if not _ov_s_now.empty  else 0.0
+    _ov_avg_cost_p= float(_ov_s_prev["total_cost_usd"].mean()) if not _ov_s_prev.empty else 0.0
+
+    _ov_top_pat = ""
+    if not _ov_i_now.empty and "pattern_name" in _ov_i_now.columns:
+        _pc = _ov_i_now["pattern_name"].value_counts()
+        if len(_pc):
+            _ov_top_pat = _pc.index[0].replace("_", " ").title()
+
+    def _ov_dlt(curr, prev, higher_good=True):
+        if not prev or pd.isna(prev) or prev == 0:
+            return ""
+        d = curr - prev
+        if abs(d) < 0.001:
+            return '<span style="color:#94a3b8;font-size:0.72rem">→ flat</span>'
+        pct = abs(d / prev * 100)
+        arr = "▲" if d > 0 else "▼"
+        good = (d > 0) == higher_good
+        c = "#10b981" if good else "#ef4444"
+        return f'<span style="color:{c};font-size:0.72rem">{arr} {pct:.0f}% vs prev</span>'
+
+    # ── KPI tiles ─────────────────────────────────────────────────────────────
+    _k1, _k2, _k3, _k4, _k5 = st.columns(5)
+    with _k1:
+        st.markdown(kpi("Sessions", str(_ov_n_sess),
+                        _ov_dlt(_ov_n_sess, _ov_n_sess_p)), unsafe_allow_html=True)
+    with _k2:
+        st.markdown(kpi("Success Rate", f"{_ov_sr:.0f}%",
+                        _ov_dlt(_ov_sr, _ov_sr_p)), unsafe_allow_html=True)
+        if st.button("View incidents →", key="ov_sr", use_container_width=True):
+            goto_page("Incidents Feed")
+    with _k3:
+        st.markdown(kpi("Avg Cost / Session", f"${_ov_avg_cost:.3f}",
+                        _ov_dlt(_ov_avg_cost, _ov_avg_cost_p, higher_good=False)),
+                    unsafe_allow_html=True)
+        if st.button("View ledger →", key="ov_cost", use_container_width=True):
+            goto_page("Ledger")
+    with _k4:
+        st.markdown(kpi("Incidents", str(_ov_n_inc),
+                        _ov_dlt(_ov_n_inc, _ov_n_inc_p, higher_good=False)),
+                    unsafe_allow_html=True)
+        if st.button("View all →", key="ov_inc", use_container_width=True):
+            goto_page("Incidents Feed")
+    with _k5:
+        st.markdown(kpi("Top Pattern", _ov_top_pat or "—", "most frequent in period"),
+                    unsafe_allow_html=True)
+        if _ov_top_pat and st.button("Filter feed →", key="ov_pat", use_container_width=True):
+            goto_page("Incidents Feed")
+
+    st.markdown("<div style='margin:8px 0'></div>", unsafe_allow_html=True)
+
+    # ── Charts row ────────────────────────────────────────────────────────────
+    _ov_c1, _ov_c2 = st.columns(2)
+
+    with _ov_c1:
+        st.markdown("#### Outcome Rate")
+        if not _ov_s_now.empty:
+            _ov_sd = _ov_s_now.copy()
+            _ov_sd["_date"] = pd.to_datetime(_ov_sd["started_at"]).dt.date
+            _ov_sd["_inc"]  = _ov_sd["id"].isin(_ov_sids_inc)
+            _ov_grp = (
+                _ov_sd.groupby("_date")
+                .apply(lambda g: pd.Series({
+                    "Clean":    int((~g["_inc"]).sum()),
+                    "Incident": int(g["_inc"].sum()),
+                }))
+                .reset_index()
+                .sort_values("_date")
+            )
+            _ov_fig_out = go.Figure()
+            _ov_fig_out.add_trace(go.Bar(
+                x=_ov_grp["_date"].astype(str), y=_ov_grp["Clean"],
+                name="Clean", marker_color="#10b981",
+                hovertemplate="<b>%{x}</b><br>Clean: %{y}<extra></extra>",
+            ))
+            _ov_fig_out.add_trace(go.Bar(
+                x=_ov_grp["_date"].astype(str), y=_ov_grp["Incident"],
+                name="Incident", marker_color="#ef4444",
+                hovertemplate="<b>%{x}</b><br>Incident: %{y}<extra></extra>",
+            ))
+            _ov_fig_out.update_layout(
+                barmode="stack",
+                paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
+                height=240, margin=dict(t=10, b=45, l=0, r=10),
+                legend=dict(orientation="h", y=-0.3, x=0, font=dict(size=11)),
+                font=dict(color="#1e293b", size=11),
+                xaxis=dict(gridcolor="#e2e8f0", tickangle=-30),
+                yaxis=dict(gridcolor="#e2e8f0", title="Sessions"),
+            )
+            st.plotly_chart(_ov_fig_out, use_container_width=True,
+                            config={"displayModeBar": False})
+        else:
+            st.info("No sessions in this range.")
+
+    with _ov_c2:
+        st.markdown("#### Incidents by Pattern")
+        if not _ov_i_now.empty and "pattern_name" in _ov_i_now.columns:
+            _ov_pat = (
+                _ov_i_now["pattern_name"].value_counts()
+                .reset_index()
+                .rename(columns={"pattern_name": "pattern", "count": "n"})
+            )
+            _ov_pat["label"] = _ov_pat["pattern"].str.replace("_", " ").str.title()
+            _ov_pat = _ov_pat.sort_values("n")
+            _ov_sev_map = {}
+            if "severity" in _ov_i_now.columns:
+                _sev_lkp = _ov_i_now.groupby("pattern_name")["severity"].first().to_dict()
+                _ov_sev_map = {k.replace("_", " ").title(): v for k, v in _sev_lkp.items()}
+            _ov_bar_cols = [
+                "#ef4444" if _ov_sev_map.get(l) == "critical"
+                else "#f59e0b" if _ov_sev_map.get(l) == "warning"
+                else "#3b82f6"
+                for l in _ov_pat["label"]
+            ]
+            _ov_fig_pat = go.Figure(go.Bar(
+                x=_ov_pat["n"], y=_ov_pat["label"],
+                orientation="h",
+                marker_color=_ov_bar_cols,
+                text=_ov_pat["n"], textposition="outside",
+                hovertemplate="<b>%{y}</b><br>Count: %{x}<extra></extra>",
+            ))
+            _ov_fig_pat.update_layout(
+                paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
+                height=240, margin=dict(t=10, b=45, l=10, r=40),
+                font=dict(color="#1e293b", size=11),
+                xaxis=dict(gridcolor="#e2e8f0", title="Incidents", dtick=1),
+                yaxis=dict(gridcolor="rgba(0,0,0,0)"),
+            )
+            st.plotly_chart(_ov_fig_pat, use_container_width=True,
+                            config={"displayModeBar": False})
+        else:
+            st.info("No incidents in this range.")
+
+    # ── Agent Eval Health ─────────────────────────────────────────────────────
+    st.markdown("#### Agent Eval Health")
+    _ov_ae = load_all_evals()
+    if not _ov_ae.empty and not sessions.empty:
+        _ov_sa = sessions.copy()
+        _ov_sa["started_at"] = pd.to_datetime(_ov_sa["started_at"], errors="coerce")
+        _ov_ids_7d  = set(_ov_sa[_ov_sa["started_at"] >= (_ov_now - pd.Timedelta(days=7))]["id"])
+        _ov_ids_30d = set(_ov_sa[_ov_sa["started_at"] >= (_ov_now - pd.Timedelta(days=30))]["id"])
+
+        def _ov_pr(df_e, ids):
+            sub = df_e[df_e["session_id"].isin(ids)]
+            return (float(sub["passed"].sum()) / len(sub) * 100) if len(sub) > 0 else None
+
+        def _ov_bar(pct):
+            if pct is None:
+                return '<span style="color:#94a3b8">—</span>'
+            c = "#10b981" if pct >= 80 else "#f59e0b" if pct >= 60 else "#ef4444"
+            return (
+                f'<div style="display:flex;align-items:center;gap:8px">'
+                f'<div style="flex:1;background:#e2e8f0;border-radius:3px;height:7px;min-width:60px">'
+                f'<div style="width:{pct:.0f}%;background:{c};border-radius:3px;height:7px"></div>'
+                f'</div>'
+                f'<span style="font-size:0.82rem;min-width:34px;font-weight:600;color:{c}">'
+                f'{pct:.0f}%</span>'
+                f'</div>'
+            )
+
+        _ov_tbl = (
+            '<table style="width:100%;border-collapse:collapse;font-size:0.85rem">'
+            '<thead><tr style="border-bottom:2px solid #e2e8f0">'
+            '<th style="text-align:left;padding:8px 12px;color:#64748b;font-weight:600;width:20%">'
+            'Agent</th>'
+            '<th style="padding:8px 12px;color:#64748b;font-weight:600;width:35%">'
+            'Pass Rate (7d)</th>'
+            '<th style="padding:8px 12px;color:#64748b;font-weight:600;width:35%">'
+            'Pass Rate (30d)</th>'
+            '<th style="text-align:left;padding:8px 12px;color:#64748b;font-weight:600">'
+            'Trend</th>'
+            '</tr></thead><tbody>'
+        )
+        for _ov_ag in ["orchestrator", "market", "research", "risk"]:
+            _ov_sub = _ov_ae[_ov_ae["agent"] == _ov_ag]
+            _ov_p7  = _ov_pr(_ov_sub, _ov_ids_7d)
+            _ov_p30 = _ov_pr(_ov_sub, _ov_ids_30d)
+            if _ov_p7 is None and _ov_p30 is None:
+                continue
+            if _ov_p7 is not None and _ov_p30 is not None:
+                _ov_td = _ov_p7 - _ov_p30
+                _ov_ts = "▲ improving" if _ov_td > 3 else "▼ slipping" if _ov_td < -3 else "→ stable"
+                _ov_tc = "#10b981" if _ov_td > 3 else "#ef4444" if _ov_td < -3 else "#64748b"
+            else:
+                _ov_ts, _ov_tc = "—", "#94a3b8"
+            _ov_tbl += (
+                f'<tr style="border-bottom:1px solid #f1f5f9">'
+                f'<td style="padding:10px 12px;font-weight:600;color:#0f172a">'
+                f'{_ov_ag.title()}</td>'
+                f'<td style="padding:10px 12px">{_ov_bar(_ov_p7)}</td>'
+                f'<td style="padding:10px 12px">{_ov_bar(_ov_p30)}</td>'
+                f'<td style="padding:10px 12px;color:{_ov_tc};font-size:0.82rem;font-weight:600">'
+                f'{_ov_ts}</td>'
+                f'</tr>'
+            )
+        _ov_tbl += '</tbody></table>'
+        st.markdown(_ov_tbl, unsafe_allow_html=True)
+        if st.button("Explore eval trends  →  Quality Drift", key="ov_qd"):
+            goto_page("Quality Drift")
+    else:
+        st.info("No eval data available.")
+
+    st.markdown("<div style='margin:8px 0'></div>", unsafe_allow_html=True)
+
+    # ── Recent Sessions ───────────────────────────────────────────────────────
+    _ov_rs_h, _ov_rs_e = st.columns([4, 1])
+    with _ov_rs_h:
+        st.markdown("#### Recent Sessions")
+    with _ov_rs_e:
+        if not _ov_i.empty:
+            _ov_exp = _ov_i[["created_at", "session_id", "pattern_name",
+                              "severity", "cost_wasted"]].copy()
+            _ov_exp["created_at"] = _ov_exp["created_at"].dt.strftime("%Y-%m-%d %H:%M")
+            st.download_button(
+                "Export Incident Log",
+                data=_ov_exp.to_csv(index=False),
+                file_name="incident_log.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+
+    if not sessions.empty:
+        _ov_rs = sessions.copy()
+        _ov_rs["started_at"] = pd.to_datetime(_ov_rs["started_at"], errors="coerce")
+        _ov_rs = _ov_rs.sort_values("started_at", ascending=False).head(10)
+
+        _ov_cols = st.columns([3, 2, 2, 4, 2])
+        for _c, _l in zip(_ov_cols, ["Date", "Cost", "Outcome", "Patterns", ""]):
+            _c.markdown(
+                f'<span style="font-size:0.72rem;font-weight:600;color:#64748b;'
+                f'text-transform:uppercase;letter-spacing:0.06em">{_l}</span>',
+                unsafe_allow_html=True,
+            )
+        st.markdown(
+            '<hr style="margin:4px 0;border:0;border-top:2px solid #e2e8f0">',
+            unsafe_allow_html=True,
+        )
+
+        for _, _ov_row in _ov_rs.iterrows():
+            _ov_sid = _ov_row["id"]
+            _ov_sincs = _ov_i[_ov_i["session_id"] == _ov_sid] if not _ov_i.empty else pd.DataFrame()
+            _ov_ni    = len(_ov_sincs)
+            _ov_oc    = "#10b981" if _ov_ni == 0 else "#ef4444"
+            _ov_ol    = "✓ clean" if _ov_ni == 0 else f"⚠ {_ov_ni} incident{'s' if _ov_ni > 1 else ''}"
+            _ov_pats  = (
+                ", ".join(_ov_sincs["pattern_name"]
+                          .str.replace("_", " ").str.title().tolist())
+                if _ov_ni > 0 else ""
+            )
+            _ov_dt = (
+                _ov_row["started_at"].strftime("%Y-%m-%d %H:%M")
+                if pd.notna(_ov_row["started_at"]) else "—"
+            )
+            _c1, _c2, _c3, _c4, _c5 = st.columns([3, 2, 2, 4, 2])
+            with _c1:
+                st.markdown(f'<span style="font-size:0.83rem">{_ov_dt}</span>',
+                            unsafe_allow_html=True)
+            with _c2:
+                st.markdown(
+                    f'<span style="font-size:0.83rem">'
+                    f'${float(_ov_row["total_cost_usd"]):.3f}</span>',
+                    unsafe_allow_html=True,
+                )
+            with _c3:
+                st.markdown(
+                    f'<span style="font-size:0.83rem;color:{_ov_oc};font-weight:600">'
+                    f'{_ov_ol}</span>',
+                    unsafe_allow_html=True,
+                )
+            with _c4:
+                st.markdown(
+                    f'<span style="font-size:0.75rem;color:#64748b">{_ov_pats}</span>',
+                    unsafe_allow_html=True,
+                )
+            with _c5:
+                if st.button("View RCA", key=f"ov_rca_{_ov_sid[:8]}"):
+                    _ov_id = _ov_sincs.iloc[0].to_dict() if not _ov_sincs.empty else {}
+                    goto_rca(_ov_id, _ov_sid)
+            st.markdown(
+                '<hr style="margin:2px 0;border:0;border-top:1px solid #f1f5f9">',
+                unsafe_allow_html=True,
+            )
+    else:
+        st.info("No sessions found.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
