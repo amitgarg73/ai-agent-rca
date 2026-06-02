@@ -1447,8 +1447,10 @@ if page == "Overview":
         _ov_rs["started_at"] = pd.to_datetime(_ov_rs["started_at"], errors="coerce", utc=True)
         _ov_rs = _ov_rs.sort_values("started_at", ascending=False).head(10)
 
-        _ov_cols = st.columns([3, 2, 6, 2])
-        for _c, _l in zip(_ov_cols, ["Date", "Cost", "Pipeline", ""]):
+        _ov_cols = st.columns([3, 2, 6, 2, 2])
+        for _c, _l in zip(_ov_cols, ["Date", "Cost", "Pipeline",
+                                      "Wasted" + tip_badge("Cost that could have been saved if a circuit breaker had stopped the pipeline at the first detected failure."),
+                                      ""]):
             _c.markdown(
                 f'<span style="font-size:0.72rem;font-weight:600;color:#64748b;'
                 f'text-transform:uppercase;letter-spacing:0.06em">{_l}</span>',
@@ -1466,7 +1468,12 @@ if page == "Overview":
                 _ov_row["started_at"].strftime("%Y-%m-%d %H:%M")
                 if pd.notna(_ov_row["started_at"]) else "—"
             )
-            _c1, _c2, _c3, _c4 = st.columns([3, 2, 6, 2])
+            _ov_wasted = (
+                float(_ov_sincs["cost_wasted"].sum())
+                if not _ov_sincs.empty and "cost_wasted" in _ov_sincs.columns
+                else 0.0
+            )
+            _c1, _c2, _c3, _c4, _c5 = st.columns([3, 2, 6, 2, 2])
             with _c1:
                 st.markdown(f'<span style="font-size:0.83rem">{_ov_dt}</span>',
                             unsafe_allow_html=True)
@@ -1482,6 +1489,18 @@ if page == "Overview":
                     unsafe_allow_html=True,
                 )
             with _c4:
+                if _ov_wasted > 0:
+                    st.markdown(
+                        f'<span style="font-size:0.83rem;color:#ef4444;font-weight:600">'
+                        f'${_ov_wasted:.3f}</span>',
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    st.markdown(
+                        '<span style="font-size:0.83rem;color:#94a3b8">—</span>',
+                        unsafe_allow_html=True,
+                    )
+            with _c5:
                 if st.button("View RCA", key=f"ov_rca_{_ov_sid[:8]}"):
                     _ov_id = _ov_sincs.iloc[0].to_dict() if not _ov_sincs.empty else {}
                     goto_rca(_ov_id, _ov_sid)
