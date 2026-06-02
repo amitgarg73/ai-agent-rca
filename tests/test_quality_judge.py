@@ -165,11 +165,17 @@ class TestResearchQuality:
         act = next(r for r in results if r.eval_name == "actionability")
         assert act.score <= 0.25
 
-    def test_high_tokens_raises_risk_acknowledgment(self):
-        traces = [llm("research", tokens_in=10000, tokens_out=5500)]  # 15500 total
+    def test_atr_tool_raises_volatility_accounting(self):
+        traces = [tool("research", "get_atr"), tool("research", "get_stock_data")]
         results = _score_research(traces)
-        ra = next(r for r in results if r.eval_name == "risk_acknowledgment")
-        assert ra.score >= 0.80
+        va = next(r for r in results if r.eval_name == "volatility_accounting")
+        assert va.score >= 0.80
+
+    def test_no_vol_tool_lowers_volatility_accounting(self):
+        traces = [tool("research", "get_news")]
+        results = _score_research(traces)
+        va = next(r for r in results if r.eval_name == "volatility_accounting")
+        assert va.score <= 0.45
 
     def test_composite_computed_correctly(self):
         traces = [
@@ -222,18 +228,6 @@ class TestRiskQuality:
         results = _score_risk(traces)
         pc = next(r for r in results if r.eval_name == "parameter_completeness")
         assert pc.score >= 0.85
-
-    def test_atr_tool_raises_volatility_accounting(self):
-        traces = [llm("risk"), tool("risk", "get_atr")]
-        results = _score_risk(traces)
-        va = next(r for r in results if r.eval_name == "volatility_accounting")
-        assert va.score >= 0.80
-
-    def test_no_vol_tool_lowers_volatility_accounting(self):
-        traces = [llm("risk"), tool("risk", "check_position")]
-        results = _score_risk(traces)
-        va = next(r for r in results if r.eval_name == "volatility_accounting")
-        assert va.score <= 0.55
 
     def test_two_ok_tools_raises_position_sizing(self):
         traces = [tool("risk", "get_atr"), tool("risk", "get_stock_data")]

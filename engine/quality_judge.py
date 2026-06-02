@@ -116,18 +116,18 @@ def _score_research(traces: list[dict]) -> list[EvalResult]:
     cs = 0.85 if used_news else (0.50 if ok_tools else 0.20)
     cs_note = "news/earnings tool used" if used_news else "no news/earnings tool found"
 
-    # risk_acknowledgment: higher token count → more thorough analysis
-    total_tokens = sum((t.get("tokens_input") or 0) + (t.get("tokens_output") or 0) for t in res)
-    ra = 0.85 if total_tokens >= 15_000 else (0.60 if total_tokens >= 5_000 else 0.30)
-    ra_note = f"total_tokens={total_tokens}"
+    # volatility_accounting: ATR or volatility tool used in research (drives position sizing)
+    used_vol = any(_tool_has_keyword(t.get("tool_name", ""), _VOL_KEYWORDS) for t in ok_tools)
+    va = 0.85 if used_vol else (0.40 if ok_tools else 0.15)
+    va_note = "volatility/ATR tool used" if used_vol else "no ATR/volatility tool found in research"
 
     weights = [0.25, 0.25, 0.20, 0.15, 0.15]
-    raw     = [dg,   tc,   act,  cs,   ra]
+    raw     = [dg,   tc,   act,  cs,   va]
     composite = round(sum(w * s for w, s in zip(weights, raw)), 3)
 
     dim_names = ["data_grounding", "thesis_coherence", "actionability",
-                 "catalyst_specificity", "risk_acknowledgment"]
-    dim_notes = [dg_note, tc_note, act_note, cs_note, ra_note]
+                 "catalyst_specificity", "volatility_accounting"]
+    dim_notes = [dg_note, tc_note, act_note, cs_note, va_note]
     thresholds = [RESEARCH_GROUNDING_MIN, DIMENSION_PASS, DIMENSION_PASS,
                   DIMENSION_PASS, DIMENSION_PASS]
 
@@ -152,7 +152,7 @@ def _score_risk(traces: list[dict]) -> list[EvalResult]:
     source = "structural_proxy"
 
     if not risk:
-        dims = ["research_consistency", "parameter_completeness", "volatility_accounting",
+        dims = ["research_consistency", "parameter_completeness",
                 "stop_loss_quality", "position_sizing_rationale"]
         return [
             EvalResult(d, "risk_quality", 0.5, True, DIMENSION_PASS,
@@ -174,11 +174,6 @@ def _score_risk(traces: list[dict]) -> list[EvalResult]:
     pc = 0.90 if ok_dec else (0.50 if all_dec else 0.20)
     pc_note = "decision trace present" if ok_dec else "no decision trace"
 
-    # volatility_accounting: ATR or volatility tool used
-    used_vol = any(_tool_has_keyword(t.get("tool_name", ""), _VOL_KEYWORDS) for t in ok_tools)
-    va = 0.85 if used_vol else (0.50 if ok_tools else 0.30)
-    va_note = "volatility tool used" if used_vol else "no volatility tool found"
-
     # stop_loss_quality: structural proxy unavailable without output text
     slq = 0.60
     slq_note = "structural proxy: cannot determine stop quality without output text"
@@ -187,14 +182,14 @@ def _score_risk(traces: list[dict]) -> list[EvalResult]:
     psr = 0.80 if len(ok_tools) >= 2 else (0.50 if ok_tools else 0.30)
     psr_note = f"{len(ok_tools)} successful tool call(s)"
 
-    weights = [0.25, 0.25, 0.20, 0.20, 0.10]
-    raw     = [rc,   pc,   va,   slq,  psr]
+    weights = [0.30, 0.30, 0.25, 0.15]
+    raw     = [rc,   pc,   slq,  psr]
     composite = round(sum(w * s for w, s in zip(weights, raw)), 3)
 
-    dim_names = ["research_consistency", "parameter_completeness", "volatility_accounting",
+    dim_names = ["research_consistency", "parameter_completeness",
                  "stop_loss_quality", "position_sizing_rationale"]
-    dim_notes = [rc_note, pc_note, va_note, slq_note, psr_note]
-    thresholds = [RISK_CONSISTENCY_MIN, DIMENSION_PASS, DIMENSION_PASS,
+    dim_notes = [rc_note, pc_note, slq_note, psr_note]
+    thresholds = [RISK_CONSISTENCY_MIN, DIMENSION_PASS,
                   DIMENSION_PASS, DIMENSION_PASS]
 
     rows = [
