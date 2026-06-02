@@ -371,7 +371,16 @@ PATTERN_DESCRIPTIONS = {
     "Tool Call Fabrication":    "2+ tool calls completed in under 50ms — too fast to have made a real API call. Agent may be hallucinating tool results.",
     "Handoff Schema Break":     "Research completed but the Risk agent's first step errored. The handoff payload is malformed or missing expected fields.",
     "Error Misinterpretation":  "HTTP error codes returned by tools (429, 500, etc.) but the agent continued as if they were successes.",
-    "Unknown Anomaly":          "Statistical outlier vs. baseline sessions. No named pattern matches — review traces manually.",
+    "Unknown Anomaly":          (
+        "Statistical outlier detected by the Isolation Forest model trained on all sessions. "
+        "No named pattern matches.\n\n"
+        "**8 features scored:** total cost, tokens in, tokens out, latency (ms), "
+        "trades executed, agent count, operational eval pass rate, tool error rate. "
+        "A session is flagged when its feature vector is far from the baseline cluster "
+        "(anomaly score ≥ 0.65). Likely causes: unusually high cost or token usage, "
+        "abnormal latency, low eval pass rate vs. typical sessions, or a combination. "
+        "Review traces to identify which metric is out of range."
+    ),
 }
 
 AGENT_DESCRIPTIONS = {
@@ -3251,6 +3260,11 @@ Read the fix, then scroll down to the Agent Breakdown to verify your understandi
             f'</div>',
             unsafe_allow_html=True,
         )
+
+    _pat_desc = PATTERN_DESCRIPTIONS.get(inc_obj.pattern_name, "")
+    if _pat_desc:
+        with st.expander("How is this pattern detected?", expanded=False):
+            st.markdown(_pat_desc)
 
     st.divider()
 
