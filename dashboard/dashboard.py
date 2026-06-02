@@ -374,6 +374,56 @@ OUTCOME_DESCRIPTIONS = {
     "incident": "One or more failure patterns fired. Some or all session cost may be wasted. Click View RCA for root cause and fix suggestion.",
 }
 
+def compute_cb_savings(sid: str, row: dict, evals_df, traces_df) -> float:
+    """Cost of agents that ran AFTER the first failing agent — what a CB would have prevented."""
+    pipeline = ["market", "research", "risk", "orchestrator"]
+
+    # cost per normalized agent from cost_breakdown
+    bd = row.get("cost_breakdown") or {}
+    agent_costs: dict[str, float] = {}
+    if isinstance(bd, dict):
+        for k, v in bd.items():
+            if isinstance(v, dict):
+                norm = "research" if str(k).startswith("research_") else k
+                agent_costs[norm] = agent_costs.get(norm, 0) + float(v.get("cost_usd", 0))
+
+    # which agents ran
+    agents_ran: set[str] = set()
+    if not traces_df.empty:
+        for a in traces_df[traces_df["session_id"] == sid]["agent"].dropna().unique():
+            a = str(a).lower()
+            if a.startswith("research"):
+                agents_ran.add("research")
+            elif a == "market_shadow":
+                agents_ran.add("market")
+            else:
+                agents_ran.add(a)
+
+    # first failing agent: failed evals OR absent when a prior agent ran
+    first_fail_idx = None
+    for i, ag in enumerate(pipeline):
+        if ag not in agents_ran:
+            if i > 0 and any(pipeline[j] in agents_ran for j in range(i)):
+                first_fail_idx = i
+                break
+        else:
+            if not evals_df.empty:
+                ag_e = evals_df[(evals_df["session_id"] == sid) & (evals_df["agent"] == ag)]
+                if not ag_e.empty and float(ag_e["passed"].sum()) / len(ag_e) < 0.8:
+                    first_fail_idx = i
+                    break
+
+    if first_fail_idx is None:
+        return 0.0
+
+    # savings = cost of agents AFTER the failing agent that actually ran
+    return sum(
+        agent_costs.get(ag, 0)
+        for ag in pipeline[first_fail_idx + 1:]
+        if ag in agents_ran
+    )
+
+
 def pipeline_strip(sid: str, traces_df, evals_df) -> str:
     """Inline 4-node pipeline strip colored by agent eval health for one session."""
     _agents     = ["market", "research", "risk", "orchestrator"]
@@ -1452,7 +1502,7 @@ if page == "Overview":
             "Date",
             "Cost" + tip_badge("Total LLM API spend for this session across all agents. Drawn from cost_breakdown if the session ended early."),
             "Pipeline",
-            "Wasted" + tip_badge("Cost that could have been saved if a circuit breaker had stopped the pipeline at the first detected failure."),
+            "CB Savings" + tip_badge("Cost that a circuit breaker would have saved by stopping the pipeline right after the first failing agent. Market cost is always incurred. Zero means the failing agent was last to run so no downstream cost was avoidable."),
             ""]):
             _c.markdown(
                 f'<span style="font-size:0.72rem;font-weight:600;color:#64748b;'
@@ -1482,10 +1532,11 @@ if page == "Overview":
                         if isinstance(v, dict)
                     )
 
-            # Wasted = session cost when incidents exist (each incident already
-            # stores full session cost so summing would double-count)
-            _ov_has_inc = not _ov_sincs.empty
-            _ov_wasted  = _ov_cost if _ov_has_inc else 0.0
+            # CB Savings = cost of agents that ran AFTER the first failing agent
+            _ov_wasted = (
+                compute_cb_savings(_ov_sid, _ov_row.to_dict(), _ov_ae, traces_all)
+                if not _ov_sincs.empty else 0.0
+            )
 
             _c1, _c2, _c3, _c4, _c5 = st.columns([3, 2, 6, 2, 2])
             with _c1:
