@@ -1972,6 +1972,15 @@ if page == "Ledger":
 
     display["Wasted"] = (display["trades_executed"] == 0) & (display["total_cost_usd"] > 0.01)
 
+    # ── Grid filter row ───────────────────────────────────────────────────────
+    _gf1, _gf2, _gf_sp = st.columns([2, 2, 5])
+    _only_incidents = _gf1.checkbox("Incidents only", value=False, key="ledger_inc_filter")
+    _only_wasted    = _gf2.checkbox("0-trade sessions", value=False, key="ledger_waste_filter")
+    if _only_incidents:
+        display = display[display["Incidents"] > 0]
+    if _only_wasted:
+        display = display[display["Wasted"]]
+
     cols = ["started_at", "total_cost_usd", "Duration (s)", "trades_executed",
             "Tokens", "Incidents", "terminal_reason"]
     rename = {
@@ -1989,6 +1998,11 @@ if page == "Ledger":
         st.session_state.ledger_page = 0
     if "ledger_selected_id" not in st.session_state:
         st.session_state.ledger_selected_id = None
+    # Reset to page 0 when filters change
+    _filter_key = (_only_incidents, _only_wasted)
+    if st.session_state.get("_ledger_filter_key") != _filter_key:
+        st.session_state.ledger_page = 0
+        st.session_state["_ledger_filter_key"] = _filter_key
     _total_pages = max(1, (len(tbl) + _PAGE_SIZE - 1) // _PAGE_SIZE)
     st.session_state.ledger_page = min(st.session_state.ledger_page, _total_pages - 1)
     _p = st.session_state.ledger_page
