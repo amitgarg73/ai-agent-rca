@@ -2087,6 +2087,22 @@ if page == "Ledger":
                 (_dev["eval_name"] == "composite_score")
             ]
 
+            if not _qual_dev.empty:
+                st.markdown("**Quality Scores**")
+                _qc = st.columns(len(_qual_dev))
+                for _qi, (_, _qev) in enumerate(_qual_dev.iterrows()):
+                    _qs     = float(_qev.get("score") or 0)
+                    _qlabel = str(_qev["agent"]).replace("_quality", "").title()
+                    _qcolor = "#10b981" if _qs >= 0.60 else "#ef4444"
+                    _qc[_qi].markdown(
+                        f'<div style="text-align:center;padding:6px 4px;'
+                        f'border:1px solid {_qcolor}33;border-radius:6px;margin:2px">'
+                        f'<div style="font-size:1.1rem;font-weight:700;color:{_qcolor}">{_qs:.2f}</div>'
+                        f'<div style="font-size:0.75rem;color:#64748b">{_qlabel}</div>'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
+
             if not _op_dev.empty:
                 st.markdown("**Operational Evals**")
                 _ec = st.columns(2)
@@ -2105,22 +2121,6 @@ if page == "Ledger":
                             f'</div>',
                             unsafe_allow_html=True,
                         )
-
-            if not _qual_dev.empty:
-                st.markdown("**Quality Scores**")
-                _qc = st.columns(len(_qual_dev))
-                for _qi, (_, _qev) in enumerate(_qual_dev.iterrows()):
-                    _qs     = float(_qev.get("score") or 0)
-                    _qlabel = str(_qev["agent"]).replace("_quality", "").title()
-                    _qcolor = "#10b981" if _qs >= 0.60 else "#ef4444"
-                    _qc[_qi].markdown(
-                        f'<div style="text-align:center;padding:6px 4px;'
-                        f'border:1px solid {_qcolor}33;border-radius:6px;margin:2px">'
-                        f'<div style="font-size:1.1rem;font-weight:700;color:{_qcolor}">{_qs:.2f}</div>'
-                        f'<div style="font-size:0.75rem;color:#64748b">{_qlabel}</div>'
-                        f'</div>',
-                        unsafe_allow_html=True,
-                    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
