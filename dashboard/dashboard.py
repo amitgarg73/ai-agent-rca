@@ -205,6 +205,43 @@ div[data-testid="stPillsRoot"]  button[data-selected="true"] {
 }
 .tip-badge:hover::before,
 .tip-badge:hover::after { opacity: 1; }
+
+/* Pipeline node — colored dot with same hover tooltip as tip-badge */
+.pipe-node {
+    position: relative;
+    display: inline-flex;
+    align-items: center; justify-content: center;
+    width: 20px; height: 20px; border-radius: 50%;
+    font-size: 0.65rem; font-weight: 700;
+    cursor: help; flex-shrink: 0;
+}
+.pipe-node::before {
+    content: attr(data-tip);
+    position: absolute;
+    bottom: calc(100% + 8px);
+    left: 50%; transform: translateX(-50%);
+    background: #1e293b; color: #f8fafc;
+    padding: 8px 12px; border-radius: 6px;
+    font-size: 0.75rem; font-weight: 400;
+    line-height: 1.5; white-space: normal;
+    width: 210px; pointer-events: none;
+    opacity: 0; transition: opacity 0.15s ease;
+    z-index: 9999;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+}
+.pipe-node::after {
+    content: '';
+    position: absolute;
+    bottom: calc(100% + 2px); left: 50%;
+    transform: translateX(-50%);
+    border: 5px solid transparent;
+    border-top-color: #1e293b;
+    pointer-events: none;
+    opacity: 0; transition: opacity 0.15s ease;
+    z-index: 9999;
+}
+.pipe-node:hover::before,
+.pipe-node:hover::after { opacity: 1; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -336,6 +373,59 @@ OUTCOME_DESCRIPTIONS = {
     "clean":    "No failure patterns detected this session. All critical evals passed.",
     "incident": "One or more failure patterns fired. Some or all session cost may be wasted. Click View RCA for root cause and fix suggestion.",
 }
+
+def pipeline_strip(sid: str, traces_df, evals_df) -> str:
+    """Inline 4-node pipeline strip colored by agent eval health for one session."""
+    _agents     = ["market", "research", "risk", "orchestrator"]
+    _labels     = {"market": "MKT", "research": "RES", "risk": "RSK", "orchestrator": "ORC"}
+    _ran: set[str] = set()
+    if not traces_df.empty:
+        for a in traces_df[traces_df["session_id"] == sid]["agent"].dropna().unique():
+            a = a.lower()
+            if a.startswith("research"):
+                _ran.add("research")
+            elif a == "market_shadow":
+                _ran.add("market")
+            else:
+                _ran.add(a)
+
+    html = '<div style="display:flex;align-items:center;gap:3px">'
+    for i, ag in enumerate(_agents):
+        if ag not in _ran:
+            bg, fg = "#e2e8f0", "#94a3b8"
+            tip = f"{ag.title()}: did not run"
+            sym = "○"
+        else:
+            if not evals_df.empty:
+                _ae = evals_df[(evals_df["session_id"] == sid) & (evals_df["agent"] == ag)]
+            else:
+                _ae = pd.DataFrame()
+            if _ae.empty:
+                bg, fg = "#94a3b8", "#ffffff"
+                tip = f"{ag.title()}: ran — no eval data"
+                sym = "●"
+            else:
+                n_pass = int(_ae["passed"].sum())
+                n_tot  = len(_ae)
+                pr     = n_pass / n_tot * 100
+                bg     = "#10b981" if pr >= 80 else "#f59e0b" if pr >= 60 else "#ef4444"
+                fg     = "#ffffff"
+                tip    = f"{ag.title()}: {n_pass}/{n_tot} evals passed ({pr:.0f}%)"
+                sym    = "●"
+        safe_tip = tip.replace('"', "&quot;")
+        label    = _labels[ag]
+        html += (
+            f'<div style="display:flex;flex-direction:column;align-items:center;gap:1px">'
+            f'<span class="pipe-node" data-tip="{safe_tip}" '
+            f'style="background:{bg};color:{fg}">{sym}</span>'
+            f'<span style="font-size:0.58rem;color:#94a3b8;line-height:1.2">{label}</span>'
+            f'</div>'
+        )
+        if i < len(_agents) - 1:
+            html += '<span style="color:#cbd5e1;font-size:0.75rem;margin-bottom:10px">→</span>'
+    html += '</div>'
+    return html
+
 
 def tip_badge(description: str) -> str:
     """Inline ? badge with CSS hover tooltip."""
@@ -1357,8 +1447,8 @@ if page == "Overview":
         _ov_rs["started_at"] = pd.to_datetime(_ov_rs["started_at"], errors="coerce", utc=True)
         _ov_rs = _ov_rs.sort_values("started_at", ascending=False).head(10)
 
-        _ov_cols = st.columns([3, 2, 2, 4, 2])
-        for _c, _l in zip(_ov_cols, ["Date", "Cost", "Outcome", "Patterns", ""]):
+        _ov_cols = st.columns([3, 2, 6, 2])
+        for _c, _l in zip(_ov_cols, ["Date", "Cost", "Pipeline", ""]):
             _c.markdown(
                 f'<span style="font-size:0.72rem;font-weight:600;color:#64748b;'
                 f'text-transform:uppercase;letter-spacing:0.06em">{_l}</span>',
@@ -1370,28 +1460,13 @@ if page == "Overview":
         )
 
         for _, _ov_row in _ov_rs.iterrows():
-            _ov_sid = _ov_row["id"]
+            _ov_sid  = _ov_row["id"]
             _ov_sincs = _ov_i[_ov_i["session_id"] == _ov_sid] if not _ov_i.empty else pd.DataFrame()
-            _ov_ni    = len(_ov_sincs)
-            _ov_oc    = "#10b981" if _ov_ni == 0 else "#ef4444"
-            _ov_ol_txt= "✓ clean" if _ov_ni == 0 else f"⚠ {_ov_ni} incident{'s' if _ov_ni > 1 else ''}"
-            _ov_ol    = _ov_ol_txt + tip_badge(OUTCOME_DESCRIPTIONS["clean" if _ov_ni == 0 else "incident"])
-            if _ov_ni > 0:
-                _ov_pat_parts = []
-                for _pn in _ov_sincs["pattern_name"].tolist():
-                    _pn_label = _pn.replace("_", " ").title()
-                    _pn_tip   = PATTERN_DESCRIPTIONS.get(_pn_label, "")
-                    _ov_pat_parts.append(
-                        f'{_pn_label}{tip_badge(_pn_tip) if _pn_tip else ""}'
-                    )
-                _ov_pats = ", ".join(_ov_pat_parts)
-            else:
-                _ov_pats = ""
-            _ov_dt = (
+            _ov_dt   = (
                 _ov_row["started_at"].strftime("%Y-%m-%d %H:%M")
                 if pd.notna(_ov_row["started_at"]) else "—"
             )
-            _c1, _c2, _c3, _c4, _c5 = st.columns([3, 2, 2, 4, 2])
+            _c1, _c2, _c3, _c4 = st.columns([3, 2, 6, 2])
             with _c1:
                 st.markdown(f'<span style="font-size:0.83rem">{_ov_dt}</span>',
                             unsafe_allow_html=True)
@@ -1403,16 +1478,10 @@ if page == "Overview":
                 )
             with _c3:
                 st.markdown(
-                    f'<span style="font-size:0.83rem;color:{_ov_oc};font-weight:600">'
-                    f'{_ov_ol}</span>',
+                    pipeline_strip(_ov_sid, traces_all, _ov_ae),
                     unsafe_allow_html=True,
                 )
             with _c4:
-                st.markdown(
-                    f'<span style="font-size:0.75rem;color:#64748b">{_ov_pats}</span>',
-                    unsafe_allow_html=True,
-                )
-            with _c5:
                 if st.button("View RCA", key=f"ov_rca_{_ov_sid[:8]}"):
                     _ov_id = _ov_sincs.iloc[0].to_dict() if not _ov_sincs.empty else {}
                     goto_rca(_ov_id, _ov_sid)
