@@ -489,8 +489,13 @@ def compute_cb_savings(sid: str, row: dict, evals_df, traces_df) -> tuple:
         lines.append("(~estimate — exact data unavailable)")
     lines.append(f"Savings: ${savings:.4f}")
 
-    detail = " | ".join(lines)
-    return savings, detail
+    # short label for inline display (no hover needed)
+    fail_agent_name  = _labels.get(pipeline[first_fail_idx], pipeline[first_fail_idx].title())
+    saved_names      = "+".join(_labels.get(a, a.title()) for a in agents_after)
+    est_marker       = " (est.)" if (heuristic_used or proportional) else ""
+    short_label      = f"{fail_agent_name} fails{est_marker} · {saved_names} saved"
+
+    return savings, short_label
 
 
 def pipeline_strip(sid: str, traces_df, evals_df, session_agents=None) -> str:
@@ -1632,10 +1637,11 @@ if page == "Overview":
                 '<span style="font-size:0.83rem;color:#94a3b8">—</span>'
             )
             if _ov_wasted > 0:
-                _tip_html = tip_badge(_ov_savings_tip) if _ov_savings_tip else ""
                 _savings_cell = (
-                    f'<span style="font-size:0.83rem;color:#ef4444;font-weight:600">'
-                    f'${_ov_wasted:.3f}</span>{_tip_html}'
+                    f'<div style="display:flex;flex-direction:column;gap:1px">'
+                    f'<span style="font-size:0.83rem;color:#ef4444;font-weight:600">${_ov_wasted:.3f}</span>'
+                    f'<span style="font-size:0.68rem;color:#94a3b8;line-height:1.3">{_ov_savings_tip}</span>'
+                    f'</div>'
                 )
             else:
                 _savings_cell = '<span style="font-size:0.83rem;color:#94a3b8">—</span>'
