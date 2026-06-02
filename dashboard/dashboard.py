@@ -2125,6 +2125,26 @@ if page == "Ledger":
 elif page == "Quality Drift":
     st.markdown("## Quality Drift")
 
+    st.markdown(
+        '<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;'
+        'padding:16px 20px;margin-bottom:16px;font-size:0.9rem;color:#334155;line-height:1.6">'
+        '<b style="font-size:1rem;color:#0f172a">What this page shows</b><br><br>'
+        'This page tracks whether your AI pipeline is getting better or worse over time — '
+        'across three layers:<br><br>'
+        '<b>Operational</b> — did each agent complete its job? '
+        '(tool success rate, pipeline completion, eval pass rates)<br>'
+        '<b>Business</b> — did the pipeline produce results? '
+        '(cost per trade, research conversion rate, proposal acceptance rate)<br>'
+        '<b>Quality</b> — did each agent reason well? '
+        '(data grounding, thesis coherence, decision consistency — scored 0 to 1)<br><br>'
+        'Use the four tabs below to explore different views. '
+        'The <b>Quality tab</b> is new — it shows semantic quality scores per agent, '
+        'not just whether steps succeeded. A session can pass all operational checks '
+        'and still score low on quality if the research was vague or the decision was inconsistent.'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
     if sessions.empty:
         st.info("No sessions found.")
         st.stop()
@@ -2207,9 +2227,11 @@ elif page == "Quality Drift":
 
     # ── OPTION A: Two scorecards + eval heatmap + business bars ──────────────
     with opt_a:
-        st.caption(
-            "Each session as a column. Color = pass (green) or fail (red). "
-            "Business outcome bars below show whether pipeline activity translated to results."
+        st.info(
+            "**Scorecard view.** Each column is one session; each row is one eval. "
+            "Green = passed, red = failed. "
+            "Scan vertically to spot sessions where multiple evals failed at once. "
+            "Scan horizontally to spot evals that keep failing across sessions — those are your chronic issues."
         )
 
         if not evals_ts.empty:
@@ -2297,9 +2319,12 @@ elif page == "Quality Drift":
 
     # ── OPTION B: Sub-tabbed Operational / Business ───────────────────────────
     with opt_b:
-        st.caption(
-            "Two sub-tabs: one for how well the pipeline ran (operational), "
-            "one for whether it produced business value (outcomes)."
+        st.info(
+            "**Trend view.** Two sub-tabs: Operational tracks whether agents are running reliably "
+            "(pass rates, key eval scores, pipeline completion). "
+            "Business Outcomes tracks whether the pipeline is producing results "
+            "(cost per trade, how many researched stocks became trades, how many risk-approved proposals executed). "
+            "A declining trend in either sub-tab is worth investigating before it becomes an incident."
         )
         sub_op, sub_biz = st.tabs(["Operational", "Business Outcomes"])
 
@@ -2503,9 +2528,13 @@ elif page == "Quality Drift":
 
     # ── OPTION C: Timeline with health color + dual score bars ───────────────
     with opt_c:
-        st.caption(
-            "Each dot is one session. Color = combined health. "
-            "Hover for detail. Bars below show operational vs business score per session."
+        st.info(
+            "**Session health timeline.** Each dot is one session. "
+            "Green = healthy (combined score ≥75%), amber = watch (45–75%), red = below threshold. "
+            "Diamond shape means an incident was detected that session. "
+            "Hover any dot to see the breakdown. "
+            "The bar chart below compares operational vs business score side by side — "
+            "if operational is high but business is low, the pipeline ran but didn't produce trades."
         )
         s_c = s.copy()
 
@@ -2611,9 +2640,14 @@ elif page == "Quality Drift":
 
     # ── QUALITY TAB: Composite quality score trends ───────────────────────────
     with opt_q:
-        st.caption(
-            "Composite quality score per agent — structural proxy scoring across 20 dimensions. "
-            "Below 0.60 = quality concern. Scores persist across sessions to show drift."
+        st.info(
+            "**Quality scoring.** Operational evals check whether steps completed. "
+            "Quality scores check whether the reasoning was good. "
+            "Each agent is scored across multiple dimensions (e.g. Research: data grounding, thesis coherence, catalyst specificity) "
+            "and rolled into a composite score between 0 and 1. "
+            "Threshold is 0.60 — below that, the agent's output quality is a concern even if it didn't fail operationally. "
+            "Scores are inferred from trace patterns (tool diversity, decision traces, pipeline flow) "
+            "since raw LLM output text is not yet stored in traces."
         )
 
         _qual_colors = {
