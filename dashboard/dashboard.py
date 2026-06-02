@@ -164,6 +164,47 @@ div[data-testid="stPillsRoot"]  button[data-selected="true"] {
     font-style: italic; margin: 4px 0 10px 0;
     padding-left: 10px; border-left: 2px solid #cbd5e1;
 }
+
+/* Tooltip badge — ? icon with CSS hover tooltip */
+.tip-badge {
+    position: relative;
+    display: inline-flex;
+    align-items: center; justify-content: center;
+    width: 15px; height: 15px; border-radius: 50%;
+    background: #e2e8f0; color: #64748b;
+    font-size: 0.62rem; font-weight: 700;
+    cursor: help; margin-left: 5px;
+    vertical-align: middle; flex-shrink: 0;
+    text-decoration: none;
+}
+.tip-badge::before {
+    content: attr(data-tip);
+    position: absolute;
+    bottom: calc(100% + 8px);
+    left: 50%; transform: translateX(-50%);
+    background: #1e293b; color: #f8fafc;
+    padding: 8px 12px; border-radius: 6px;
+    font-size: 0.75rem; font-weight: 400;
+    line-height: 1.5; white-space: normal;
+    width: 230px; pointer-events: none;
+    opacity: 0; transition: opacity 0.15s ease;
+    z-index: 9999;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+    text-transform: none; letter-spacing: normal;
+}
+.tip-badge::after {
+    content: '';
+    position: absolute;
+    bottom: calc(100% + 2px); left: 50%;
+    transform: translateX(-50%);
+    border: 5px solid transparent;
+    border-top-color: #1e293b;
+    pointer-events: none;
+    opacity: 0; transition: opacity 0.15s ease;
+    z-index: 9999;
+}
+.tip-badge:hover::before,
+.tip-badge:hover::after { opacity: 1; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -297,14 +338,9 @@ OUTCOME_DESCRIPTIONS = {
 }
 
 def tip_badge(description: str) -> str:
-    """Inline ? badge with hover tooltip."""
-    safe = description.replace('"', "&quot;")
-    return (
-        f'<span title="{safe}" style="display:inline-flex;align-items:center;'
-        f'justify-content:center;width:14px;height:14px;border-radius:50%;'
-        f'background:#e2e8f0;color:#64748b;font-size:0.62rem;font-weight:700;'
-        f'cursor:help;margin-left:5px;vertical-align:middle;flex-shrink:0">?</span>'
-    )
+    """Inline ? badge with CSS hover tooltip."""
+    safe = description.replace('"', "&quot;").replace("'", "&#39;")
+    return f'<span class="tip-badge" data-tip="{safe}">?</span>'
 
 AGENT_COLORS = {
     "research":      "#f59e0b",
@@ -1091,34 +1127,45 @@ if page == "Overview":
         return f'<span style="color:{c};font-size:0.72rem">{arr} {pct:.0f}% vs prev</span>'
 
     # ── KPI tiles ─────────────────────────────────────────────────────────────
+    _kpi_tips = {
+        "Sessions":         "Total pipeline runs in the selected period. Each session is one full Market → Research → Risk → Orchestrator cycle.",
+        "Success Rate":     "% of sessions where no failure patterns were detected. A session is clean if no incidents fired.",
+        "Avg Cost/Session": "Average LLM API cost per pipeline run across all agents combined.",
+        "Incidents":        "Total failure pattern detections in the period. One session can trigger multiple incidents.",
+        "Top Pattern":      "The most frequently detected failure pattern in the selected period.",
+    }
     _k1, _k2, _k3, _k4, _k5 = st.columns(5)
     with _k1:
-        st.markdown(kpi("Sessions", str(_ov_n_sess),
+        st.markdown(kpi("Sessions" + tip_badge(_kpi_tips["Sessions"]),
+                        str(_ov_n_sess),
                         _ov_dlt(_ov_n_sess, _ov_n_sess_p)), unsafe_allow_html=True)
     with _k2:
-        st.markdown(kpi("Success Rate", f"{_ov_sr:.0f}%",
+        st.markdown(kpi("Success Rate" + tip_badge(_kpi_tips["Success Rate"]),
+                        f"{_ov_sr:.0f}%",
                         _ov_dlt(_ov_sr, _ov_sr_p)), unsafe_allow_html=True)
         if st.button("View incidents →", key="ov_sr", use_container_width=True):
             goto_page("Incidents Feed")
     with _k3:
-        st.markdown(kpi("Avg Cost / Session", f"${_ov_avg_cost:.3f}",
+        st.markdown(kpi("Avg Cost / Session" + tip_badge(_kpi_tips["Avg Cost/Session"]),
+                        f"${_ov_avg_cost:.3f}",
                         _ov_dlt(_ov_avg_cost, _ov_avg_cost_p, higher_good=False)),
                     unsafe_allow_html=True)
         if st.button("View ledger →", key="ov_cost", use_container_width=True):
             goto_page("Ledger")
     with _k4:
-        st.markdown(kpi("Incidents", str(_ov_n_inc),
+        st.markdown(kpi("Incidents" + tip_badge(_kpi_tips["Incidents"]),
+                        str(_ov_n_inc),
                         _ov_dlt(_ov_n_inc, _ov_n_inc_p, higher_good=False)),
                     unsafe_allow_html=True)
         if st.button("View all →", key="ov_inc", use_container_width=True):
             goto_page("Incidents Feed")
     with _k5:
-        _ov_pat_tip = PATTERN_DESCRIPTIONS.get(_ov_top_pat, "")
         _ov_pat_val = (
-            f'<span title="{_ov_pat_tip}" style="cursor:help;border-bottom:1px dotted #94a3b8">'
-            f'{_ov_top_pat}</span>' if _ov_top_pat else "—"
+            f'{_ov_top_pat}{tip_badge(PATTERN_DESCRIPTIONS.get(_ov_top_pat, ""))}'
+            if _ov_top_pat else "—"
         )
-        st.markdown(kpi("Top Pattern", _ov_pat_val, "most frequent in period"),
+        st.markdown(kpi("Top Pattern" + tip_badge(_kpi_tips["Top Pattern"]),
+                        _ov_pat_val, "most frequent in period"),
                     unsafe_allow_html=True)
         if _ov_top_pat and st.button("Filter feed →", key="ov_pat", use_container_width=True):
             goto_page("Incidents Feed")
@@ -1335,8 +1382,7 @@ if page == "Overview":
                     _pn_label = _pn.replace("_", " ").title()
                     _pn_tip   = PATTERN_DESCRIPTIONS.get(_pn_label, "")
                     _ov_pat_parts.append(
-                        f'<span title="{_pn_tip}" style="cursor:help;'
-                        f'border-bottom:1px dotted #94a3b8">{_pn_label}</span>'
+                        f'{_pn_label}{tip_badge(_pn_tip) if _pn_tip else ""}'
                     )
                 _ov_pats = ", ".join(_ov_pat_parts)
             else:
