@@ -1506,15 +1506,16 @@ if page == "Overview":
     if not sessions.empty:
         _ov_rs = sessions.copy()
         _ov_rs["started_at"] = pd.to_datetime(_ov_rs["started_at"], errors="coerce", utc=True)
-        _ov_rs = _ov_rs.sort_values("started_at", ascending=False).head(10)
+        _ov_rs = _ov_rs.sort_values("started_at", ascending=False).head(20)
 
-        _ov_cols = st.columns([3, 2, 5, 3, 2])
-        for _c, _l in zip(_ov_cols, [
+        # Column headers (outside scroll so they stay fixed)
+        _hdr_cols = st.columns([3, 2, 5, 4])
+        for _c, _l in zip(_hdr_cols, [
             "Date",
             "Cost" + tip_badge("Total LLM API spend for this session across all agents. Drawn from cost_breakdown if the session ended early."),
             "Pipeline",
             "Cost Savings with Circuit Breakers" + tip_badge("LLM spend that a circuit breaker would have prevented by stopping the pipeline right after the first failing agent. The failing agent's cost is already incurred. Zero means no downstream agents ran, so the pipeline stopped naturally."),
-            ""]):
+        ]):
             _c.markdown(
                 f'<span style="font-size:0.72rem;font-weight:600;color:#64748b;'
                 f'text-transform:uppercase;letter-spacing:0.06em;'
@@ -1526,6 +1527,8 @@ if page == "Overview":
             unsafe_allow_html=True,
         )
 
+        # Build all rows as one HTML block inside a scrollable container
+        _row_html_parts = []
         for _, _ov_row in _ov_rs.iterrows():
             _ov_sid   = _ov_row["id"]
             _ov_sincs = _ov_i[_ov_i["session_id"] == _ov_sid] if not _ov_i.empty else pd.DataFrame()
@@ -1534,7 +1537,6 @@ if page == "Overview":
                 if pd.notna(_ov_row["started_at"]) else "—"
             )
 
-            # Actual cost: prefer total_cost_usd, fall back to sum of cost_breakdown
             _ov_cost = float(_ov_row.get("total_cost_usd") or 0)
             if _ov_cost == 0:
                 _bd = _ov_row.get("cost_breakdown")
@@ -1544,50 +1546,45 @@ if page == "Overview":
                         if isinstance(v, dict)
                     )
 
-            # CB savings = cost of agents that ran AFTER the first failing agent (prevented by a circuit breaker)
+            # CB savings = cost of agents that ran AFTER the first failing agent
             _ov_wasted = (
                 compute_cb_savings(_ov_sid, _ov_row.to_dict(), _ov_ae, traces_all)
                 if not _ov_sincs.empty else 0.0
             )
 
-            _c1, _c2, _c3, _c4, _c5 = st.columns([3, 2, 5, 3, 2])
-            with _c1:
-                st.markdown(f'<span style="font-size:0.83rem">{_ov_dt}</span>',
-                            unsafe_allow_html=True)
-            with _c2:
-                _cost_html = (
-                    f'${_ov_cost:.3f}' if _ov_cost > 0 else
-                    '<span style="color:#94a3b8">—</span>'
-                )
-                st.markdown(
-                    f'<span style="font-size:0.83rem">{_cost_html}</span>',
-                    unsafe_allow_html=True,
-                )
-            with _c3:
-                st.markdown(
-                    pipeline_strip(_ov_sid, traces_all, _ov_ae),
-                    unsafe_allow_html=True,
-                )
-            with _c4:
-                if _ov_wasted > 0:
-                    st.markdown(
-                        f'<span style="font-size:0.83rem;color:#ef4444;font-weight:600">'
-                        f'${_ov_wasted:.3f}</span>',
-                        unsafe_allow_html=True,
-                    )
-                else:
-                    st.markdown(
-                        '<span style="font-size:0.83rem;color:#94a3b8">—</span>',
-                        unsafe_allow_html=True,
-                    )
-            with _c5:
-                if st.button("View RCA", key=f"ov_rca_{_ov_sid[:8]}"):
-                    _ov_id = _ov_sincs.iloc[0].to_dict() if not _ov_sincs.empty else {}
-                    goto_rca(_ov_id, _ov_sid)
-            st.markdown(
-                '<hr style="margin:2px 0;border:0;border-top:1px solid #f1f5f9">',
-                unsafe_allow_html=True,
+            _cost_cell = (
+                f'<span style="font-size:0.83rem">${_ov_cost:.3f}</span>'
+                if _ov_cost > 0 else
+                '<span style="font-size:0.83rem;color:#94a3b8">—</span>'
             )
+            _savings_cell = (
+                f'<span style="font-size:0.83rem;color:#ef4444;font-weight:600">'
+                f'${_ov_wasted:.3f}</span>'
+                if _ov_wasted > 0 else
+                '<span style="font-size:0.83rem;color:#94a3b8">—</span>'
+            )
+            _pipe_cell = pipeline_strip(_ov_sid, traces_all, _ov_ae)
+            _has_inc = "●" if not _ov_sincs.empty else ""
+            _inc_color = "#ef4444" if not _ov_sincs.empty else "transparent"
+
+            _row_html_parts.append(
+                f'<div style="display:grid;grid-template-columns:3fr 2fr 5fr 4fr;'
+                f'align-items:center;padding:5px 0;'
+                f'border-bottom:1px solid #f1f5f9">'
+                f'<span style="font-size:0.83rem">{_ov_dt}</span>'
+                f'{_cost_cell}'
+                f'{_pipe_cell}'
+                f'{_savings_cell}'
+                f'</div>'
+            )
+
+        st.markdown(
+            '<div style="max-height:380px;overflow-y:auto;'
+            'border:1px solid #e2e8f0;border-radius:8px;padding:4px 8px">'
+            + "".join(_row_html_parts)
+            + "</div>",
+            unsafe_allow_html=True,
+        )
     else:
         st.info("No sessions found.")
 
