@@ -374,9 +374,15 @@ OUTCOME_DESCRIPTIONS = {
     "incident": "One or more failure patterns fired. Some or all session cost may be wasted. Click View RCA for root cause and fix suggestion.",
 }
 
-def compute_cb_savings(sid: str, row: dict, evals_df, traces_df) -> float:
-    """Cost of agents that ran AFTER the first failing agent — what a CB would have prevented."""
+def compute_cb_savings(sid: str, row: dict, evals_df, traces_df) -> tuple:
+    """
+    Returns (savings_float, detail_str).
+    savings_float — cost a circuit breaker would have prevented.
+    detail_str    — human-readable breakdown for the tooltip.
+    """
     pipeline = ["market", "research", "risk", "orchestrator"]
+    _labels  = {"market": "Market", "research": "Research",
+                "risk": "Risk", "orchestrator": "Orch"}
 
     # per-agent costs from cost_breakdown
     bd = row.get("cost_breakdown") or {}
@@ -414,45 +420,80 @@ def compute_cb_savings(sid: str, row: dict, evals_df, traces_df) -> float:
                 agents_ran.add(a)
 
     # first failing agent: failed evals OR absent when a prior agent ran
-    first_fail_idx = None
+    first_fail_idx  = None
+    heuristic_used  = False
+    fail_reason_str = ""
     for i, ag in enumerate(pipeline):
         if ag not in agents_ran:
             if i > 0 and any(pipeline[j] in agents_ran for j in range(i)):
-                first_fail_idx = i
+                first_fail_idx  = i
+                fail_reason_str = f"{_labels[ag]} never ran after prior agent completed"
                 break
         else:
             if not evals_df.empty:
                 ag_e = evals_df[(evals_df["session_id"] == sid) & (evals_df["agent"] == ag)]
                 if not ag_e.empty and float(ag_e["passed"].sum()) / len(ag_e) < 0.8:
-                    first_fail_idx = i
+                    n_pass = int(ag_e["passed"].sum())
+                    n_tot  = len(ag_e)
+                    first_fail_idx  = i
+                    fail_reason_str = f"{_labels[ag]} {n_pass}/{n_tot} evals passed"
                     break
 
-    # If evals gave no signal, use session-level heuristic:
-    # 0 trades + all 4 agents ran + there is an incident = silent failure somewhere.
-    # Assume research (idx 1) was the first failing agent — most common mid-pipeline silent failure.
-    # This saves risk + orchestrator cost.
+    # If evals gave no signal: heuristic — 0 trades + 3+ agents + known incident
     if first_fail_idx is None:
         trades = int(row.get("trades_executed") or 0)
         if trades == 0 and total_cost > 0 and len(agents_ran) >= 3:
-            first_fail_idx = 1
+            first_fail_idx  = 1   # assume research (most common silent failure)
+            heuristic_used  = True
+            fail_reason_str = "Research (estimated — no eval data)"
         else:
-            return 0.0
+            return 0.0, ""
 
     agents_after = [ag for ag in pipeline[first_fail_idx + 1:] if ag in agents_ran]
     if not agents_after:
-        return 0.0
+        return 0.0, ""
 
     # precise savings from cost_breakdown
     savings = sum(agent_costs.get(ag, 0) for ag in agents_after)
 
     # proportional fallback when cost_breakdown is unavailable
+    proportional = False
     if savings == 0 and not agent_costs and total_cost > 0:
-        savings = round(len(agents_after) / max(len(agents_ran), 1) * total_cost, 4)
+        savings     = round(len(agents_after) / max(len(agents_ran), 1) * total_cost, 4)
+        proportional = True
 
-    return savings
+    if savings == 0:
+        return 0.0, ""
+
+    # Build tooltip breakdown
+    lines = [f"CB fires at: {fail_reason_str}"]
+    for ag in pipeline:
+        if ag not in agents_ran:
+            continue
+        lbl = _labels[ag]
+        if agent_costs:
+            cost_str = f"${agent_costs.get(ag, 0):.4f}"
+        elif proportional or heuristic_used:
+            pct = round(100 / max(len(agents_ran), 1))
+            cost_str = f"~{pct}% of ${total_cost:.4f}"
+        else:
+            cost_str = ""
+        idx = pipeline.index(ag)
+        if idx < first_fail_idx:
+            lines.append(f"{lbl} {cost_str}: incurred")
+        elif idx == first_fail_idx:
+            lines.append(f"{lbl} {cost_str}: incurred · CB fires")
+        else:
+            lines.append(f"{lbl} {cost_str}: preventable")
+    if heuristic_used or proportional:
+        lines.append("(~estimate — exact data unavailable)")
+    lines.append(f"Savings: ${savings:.4f}")
+
+    detail = " | ".join(lines)
+    return savings, detail
 
 
-def pipeline_strip(sid: str, traces_df, evals_df) -> str:
+def pipeline_strip(sid: str, traces_df, evals_df, session_agents=None) -> str:
     """Inline 4-node pipeline strip colored by agent eval health for one session."""
     _agents     = ["market", "research", "risk", "orchestrator"]
     _labels     = {"market": "MKT", "research": "RES", "risk": "RSK", "orchestrator": "ORC"}
@@ -460,6 +501,16 @@ def pipeline_strip(sid: str, traces_df, evals_df) -> str:
     if not traces_df.empty:
         for a in traces_df[traces_df["session_id"] == sid]["agent"].dropna().unique():
             a = a.lower()
+            if a.startswith("research"):
+                _ran.add("research")
+            elif a == "market_shadow":
+                _ran.add("market")
+            else:
+                _ran.add(a)
+    # fallback: use agents_invoked from session row when traces aren't cached yet
+    if not _ran and session_agents:
+        for a in session_agents:
+            a = str(a).lower()
             if a.startswith("research"):
                 _ran.add("research")
             elif a == "market_shadow":
@@ -1570,9 +1621,9 @@ if page == "Overview":
                     )
 
             # CB savings = cost of agents that ran AFTER the first failing agent
-            _ov_wasted = (
+            _ov_wasted, _ov_savings_tip = (
                 compute_cb_savings(_ov_sid, _ov_row.to_dict(), _ov_ae, traces_all)
-                if not _ov_sincs.empty else 0.0
+                if not _ov_sincs.empty else (0.0, "")
             )
 
             _cost_cell = (
@@ -1580,13 +1631,16 @@ if page == "Overview":
                 if _ov_cost > 0 else
                 '<span style="font-size:0.83rem;color:#94a3b8">—</span>'
             )
-            _savings_cell = (
-                f'<span style="font-size:0.83rem;color:#ef4444;font-weight:600">'
-                f'${_ov_wasted:.3f}</span>'
-                if _ov_wasted > 0 else
-                '<span style="font-size:0.83rem;color:#94a3b8">—</span>'
-            )
-            _pipe_cell = pipeline_strip(_ov_sid, traces_all, _ov_ae)
+            if _ov_wasted > 0:
+                _tip_html = tip_badge(_ov_savings_tip) if _ov_savings_tip else ""
+                _savings_cell = (
+                    f'<span style="font-size:0.83rem;color:#ef4444;font-weight:600">'
+                    f'${_ov_wasted:.3f}</span>{_tip_html}'
+                )
+            else:
+                _savings_cell = '<span style="font-size:0.83rem;color:#94a3b8">—</span>'
+            _ov_inv = _ov_row.get("agents_invoked") or []
+            _pipe_cell = pipeline_strip(_ov_sid, traces_all, _ov_ae, session_agents=_ov_inv)
             _is_sim = bool(_ov_row.get("is_simulated", False))
             _sim_badge = (
                 ' <span style="font-size:0.62rem;background:#dbeafe;color:#1d4ed8;'
