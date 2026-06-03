@@ -2,6 +2,7 @@ streamlit>=1.40
 streamlit-aggrid>=1.0
 supabase>=2.0
 pandas
+numpy
 plotly
 scikit-learn
 anthropic>=0.25
