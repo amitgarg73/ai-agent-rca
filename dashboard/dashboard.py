@@ -2808,6 +2808,26 @@ elif page == "Quality Drift":
                 }
 
             # ── Drift summary cards ────────────────────────────────────────────
+            _drift_hdr, _drift_help = st.columns([8, 1])
+            with _drift_hdr:
+                st.markdown("**Trend direction — last 5 sessions**")
+            with _drift_help:
+                with st.popover("?"):
+                    st.markdown("**How to read these cards**")
+                    st.markdown(
+                        "Each card shows one agent's current quality score and which direction it is moving.\n\n"
+                        "**Score (large number):** The composite quality score from the most recent session. "
+                        "0 = worst, 1 = best. Anything below **0.60** is a concern even if no operational incident fired.\n\n"
+                        "**Arrow and label:** Direction of the linear trend calculated across the last 5 sessions.\n"
+                        "- ▲ Improving — score is rising session over session\n"
+                        "- → Stable — score is flat within ±0.01\n"
+                        "- ▼ Declining — score is falling. A declining trend that crosses 0.60 is the early "
+                        "warning signal for Silent Degradation — the agent is getting worse before any operational "
+                        "error fires.\n\n"
+                        "**Δ change:** Difference between the oldest and newest of the last 5 sessions. "
+                        "A large negative number means quality dropped significantly in a short window.\n\n"
+                        "**Why 5 sessions?** Short enough to catch recent drift; long enough to filter one-session noise."
+                    )
             _dc = st.columns(4)
             for _di, _qa in enumerate(["research_quality", "risk_quality",
                                         "orchestrator_quality", "session_quality"]):
@@ -2997,6 +3017,31 @@ elif page == "Quality Drift":
 
             # ── System composite card ──────────────────────────────────────────
             _smn, _spct, _sdlt = _stats(_sys_comp["score"])
+            _chart_hdr_c, _chart_help_c = st.columns([8, 1])
+            with _chart_hdr_c:
+                st.markdown("**Quality trend over time**")
+            with _chart_help_c:
+                with st.popover("?"):
+                    st.markdown("**How to read these charts**")
+                    st.markdown(
+                        "Each chart shows how one agent's quality composite score has moved across sessions.\n\n"
+                        "**Solid line:** The actual composite score per session (0–1). "
+                        "It is the average of all quality dimensions for that agent in that session.\n\n"
+                        "**Dashed orange line:** Linear trend fitted across all sessions shown. "
+                        "A downward slope means quality is declining over time even if individual sessions look acceptable. "
+                        "This is the Silent Degradation signal.\n\n"
+                        "**Dotted grey line at 0.60:** The quality threshold. Sessions below this line "
+                        "passed operationally but the reasoning quality was below the acceptable floor.\n\n"
+                        "**Red dot on a session:** An incident was detected for that session. "
+                        "Hover to see which pattern fired. A cluster of red dots alongside a downward trend "
+                        "suggests the pipeline is under sustained stress.\n\n"
+                        "**Mean / Pass / Δ (below chart title):**\n"
+                        "- Mean = average score across all sessions shown\n"
+                        "- Pass = % of sessions that cleared the 0.60 threshold\n"
+                        "- Δ = change from first to last session (negative = quality dropped)\n\n"
+                        "**System composite** (top chart) is the mean of all four agent scores per session — "
+                        "a single number summarising overall pipeline quality."
+                    )
             st.markdown(
                 '<div style="background:#ffffff;border:1px solid #e2e8f0;'
                 'border-radius:12px;padding:16px 20px 4px;margin-bottom:12px">',
@@ -3231,7 +3276,28 @@ elif page == "Quality Drift":
 
             # ── Per-agent heatmap (last 15 sessions) ─────────────────────────
             st.divider()
-            st.markdown("**Quality composite heatmap — last 15 sessions**")
+            _hm_hdr, _hm_help = st.columns([8, 1])
+            with _hm_hdr:
+                st.markdown("**Quality composite heatmap — last 15 sessions**")
+            with _hm_help:
+                with st.popover("?"):
+                    st.markdown("**How to read the heatmap**")
+                    st.markdown(
+                        "Each cell shows one agent's composite quality score for one session.\n\n"
+                        "**Rows** = agents (Research, Risk, Orchestrator, Session)\n\n"
+                        "**Columns** = sessions, oldest on the left, most recent on the right\n\n"
+                        "**Color scale:**\n"
+                        "- Green (≥ 0.60) — quality is healthy for that agent in that session\n"
+                        "- Yellow (0.40–0.60) — borderline; worth watching\n"
+                        "- Red (< 0.40) — below threshold; the agent's reasoning quality was poor\n\n"
+                        "**What to look for:**\n"
+                        "- A row drifting from green to red (left to right) = that agent is quietly degrading — "
+                        "the Silent Degradation pattern\n"
+                        "- A column that is all red = that session had pipeline-wide quality failure\n"
+                        "- Red spreading diagonally across rows = Quality Cascade — one agent's drop "
+                        "pulled downstream agents down with it\n"
+                        "- Isolated red cells = single-session anomaly, likely noise"
+                    )
             _last15_ids = s.tail(15)["id"].tolist()
             _qhm = evals_ts[
                 evals_ts["agent"].str.endswith("_quality", na=False) &
