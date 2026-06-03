@@ -3486,17 +3486,28 @@ elif page == "Incidents Feed":
         st.session_state["_inc_page"] = cur_page + 1
         st.rerun()
 
-    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+    # CSS: collapse default padding so rows are tight single-line height
+    st.markdown("""
+<style>
+.inc-grid [data-testid="stColumns"] { gap: 0.5rem; align-items: center; }
+.inc-grid [data-testid="stColumn"]  > div { padding-top: 4px !important; padding-bottom: 4px !important; }
+.inc-grid .stMarkdown p             { margin: 0; line-height: 1.3; }
+.inc-grid .stButton > button        { padding: 2px 10px; font-size: 0.8rem; }
+</style>""", unsafe_allow_html=True)
+
+    st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
 
     # Incident rows in a bordered panel
     with st.container(border=True):
+        st.markdown('<div class="inc-grid">', unsafe_allow_html=True)
+
         # Column headers
         gh1, gh2, gh3, gh4, gh5 = st.columns([1.5, 2.5, 3.5, 1, 1])
         gh1.markdown("<small style='color:#94a3b8;font-weight:600'>SEVERITY</small>", unsafe_allow_html=True)
         gh2.markdown("<small style='color:#94a3b8;font-weight:600'>PATTERN</small>", unsafe_allow_html=True)
         gh3.markdown("<small style='color:#94a3b8;font-weight:600'>ROOT CAUSE</small>", unsafe_allow_html=True)
         gh4.markdown("<small style='color:#94a3b8;font-weight:600'>COST</small>", unsafe_allow_html=True)
-        st.divider()
+        st.markdown("<hr style='margin:4px 0;border-color:#e2e8f0'>", unsafe_allow_html=True)
 
         for _, inc in page_df.iterrows():
             sim  = bool(inc.get("is_simulated", False))
@@ -3504,15 +3515,14 @@ elif page == "Incidents Feed":
 
             hc1, hc2, hc3, hc4, hc5 = st.columns([1.5, 2.5, 3.5, 1, 1])
             hc1.markdown(badge(inc["severity"], sim), unsafe_allow_html=True)
-            hc2.markdown(f"**{inc['pattern_name']}**")
-            hc3.markdown(
-                f"<small style='color:#94a3b8'>{inc['root_cause'][:90]}...</small>",
-                unsafe_allow_html=True,
-            )
-            hc4.markdown(f"<small>{cost}</small>", unsafe_allow_html=True)
+            hc2.markdown(f"<span style='font-size:0.88rem;font-weight:600'>{inc['pattern_name']}</span>", unsafe_allow_html=True)
+            hc3.markdown(f"<span style='font-size:0.82rem;color:#94a3b8'>{inc['root_cause'][:95]}…</span>", unsafe_allow_html=True)
+            hc4.markdown(f"<span style='font-size:0.85rem'>{cost}</span>", unsafe_allow_html=True)
             if hc5.button("RCA →", key=f"go_{inc['id']}"):
                 goto_rca(inc.to_dict(), inc.get("session_id"))
-            st.divider()
+            st.markdown("<hr style='margin:0;border-color:#f1f5f9'>", unsafe_allow_html=True)
+
+        st.markdown('</div>', unsafe_allow_html=True)
 
 
 
