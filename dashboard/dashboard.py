@@ -1821,7 +1821,8 @@ if page == "Overview":
                             f'{"  \u2014  " + _irc if _irc else ""}</div>'
                         )
 
-                _strip_html = pipeline_strip(_ov_sel_sid, traces_all, _ov_ae)
+                _ov_agents_inv = _ov_sr.get("agents_invoked") or []
+                _strip_html = pipeline_strip(_ov_sel_sid, traces_all, _ov_ae, session_agents=_ov_agents_inv)
 
                 # Accent color mirrors the selected row's state
                 _has_inc_flag    = not _ov_sel_inc.empty
@@ -1855,7 +1856,7 @@ if page == "Overview":
             padding:12px 16px 20px 14px;background:#f8fafc;border-top:1px solid #e2e8f0;
             border-right:1px solid #e2e8f0;border-bottom:1px solid #e2e8f0;overflow:visible">
   <div style="font-size:0.7rem;color:#94a3b8;margin-bottom:8px;letter-spacing:0.03em">
-    PIPELINE DETAIL &nbsp;·&nbsp; {_ov_s_date_str}
+    PIPELINE DETAIL &nbsp;·&nbsp; {_ov_s_date_str}{"&nbsp;&nbsp;<span style='color:#ef4444'>Red row = incident flagged, not a pipeline failure</span>" if _has_inc_flag and _ov_s_exit in ("converged","eod_complete") else ""}
   </div>
   <div style="display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap;overflow:visible;padding-bottom:4px">
     {_strip_html}
