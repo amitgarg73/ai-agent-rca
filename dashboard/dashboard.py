@@ -1724,7 +1724,7 @@ if page == "Overview":
         _ov_gb.configure_grid_options(
             pagination=True,
             paginationPageSize=_ov_PAGE,
-            suppressPaginationPanel=False,
+            suppressPaginationPanel=len(_ov_tbl) <= _ov_PAGE,
             getRowStyle=JsCode("""
                 function(params) {
                     if (params.data._has_inc)    return {'background':'#fee2e2','color':'#7f1d1d'};
@@ -1739,7 +1739,7 @@ if page == "Overview":
             _ov_tbl,
             gridOptions=_ov_gb.build(),
             update_mode=GridUpdateMode.NO_UPDATE,
-            height=min(600, 56 + min(len(_ov_tbl), _ov_PAGE) * 34 + 60),
+            height=min(600, 56 + min(len(_ov_tbl), _ov_PAGE) * 34 + (0 if len(_ov_tbl) <= _ov_PAGE else 60)),
             use_container_width=True,
             allow_unsafe_jscode=True,
             fit_columns_on_grid_load=True,
@@ -3479,7 +3479,7 @@ elif page == "Incidents Feed":
     _inc_gb.configure_grid_options(
         pagination=True,
         paginationPageSize=_inc_PAGE,
-        suppressPaginationPanel=False,
+        suppressPaginationPanel=len(_inc_tbl) <= _inc_PAGE,
         getRowStyle=JsCode("""
             function(params) {
                 var s = (params.data._sev || '').toLowerCase();
@@ -3496,7 +3496,7 @@ elif page == "Incidents Feed":
         _inc_tbl,
         gridOptions=_inc_gb.build(),
         update_mode=GridUpdateMode.SELECTION_CHANGED,
-        height=min(600, 56 + min(len(_inc_tbl), _inc_PAGE) * 34 + 60),
+        height=min(600, 56 + min(len(_inc_tbl), _inc_PAGE) * 34 + (0 if len(_inc_tbl) <= _inc_PAGE else 60)),
         use_container_width=True,
         allow_unsafe_jscode=True,
         fit_columns_on_grid_load=True,
