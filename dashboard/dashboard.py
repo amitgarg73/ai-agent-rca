@@ -614,24 +614,22 @@ def pipeline_strip(sid: str, traces_df, evals_df, session_agents=None) -> str:
 
     def _eval_color(ag):
         # Check operational evals (agent=ag) and quality evals (agent=ag_quality)
+        # Only color if agent actually ran — no coloring from backfilled quality evals alone
+        if ag not in _ran:
+            return "#e2e8f0", "#94a3b8", f"{_labels.get(ag, ag)}: did not run", "○"
         _ae = pd.DataFrame()
         if not evals_df.empty:
             _ae = evals_df[
                 (evals_df["session_id"] == sid) &
                 (evals_df["agent"].isin([ag, ag + "_quality"]))
             ]
-        ran = ag in _ran
         if _ae.empty:
-            if not ran:
-                return "#e2e8f0", "#94a3b8", f"{_labels.get(ag, ag)}: did not run", "○"
             return "#94a3b8", "#ffffff", f"{_labels.get(ag, ag)}: ran — no eval data", "●"
         n_pass = int(_ae["passed"].sum())
         n_tot  = len(_ae)
         pr     = n_pass / n_tot * 100
         bg     = "#10b981" if pr >= 80 else "#f59e0b" if pr >= 60 else "#ef4444"
-        sym    = "●"
-        suffix = "" if ran else " (quality eval only — agent may not have run)"
-        return bg, "#ffffff", f"{_labels.get(ag, ag)}: {n_pass}/{n_tot} evals passed ({pr:.0f}%){suffix}", sym
+        return bg, "#ffffff", f"{_labels.get(ag, ag)}: {n_pass}/{n_tot} evals passed ({pr:.0f}%)", "●"
 
     def _node(bg, fg, tip, sym, label):
         safe = tip.replace('"', "&quot;")
@@ -1826,9 +1824,31 @@ if page == "Overview":
                 _strip_html = pipeline_strip(_ov_sel_sid, traces_all, _ov_ae)
 
                 # Accent color mirrors the selected row's state
-                _has_inc_flag   = not _ov_sel_inc.empty
+                _has_inc_flag    = not _ov_sel_inc.empty
                 _zero_trade_flag = _ov_s_trades == 0
                 _accent = "#ef4444" if _has_inc_flag else "#f59e0b" if _zero_trade_flag else "#3b82f6"
+
+                # Pipeline efficiency: early exit saved cost vs avg full run
+                _early_exits = {"no_viable_proposals", "all_rejected"}
+                _eff_html = ""
+                if _ov_s_exit in _early_exits and not sessions.empty:
+                    _full_runs = sessions[
+                        sessions["terminal_reason"].isin(["converged", "eod_complete"])
+                    ]["total_cost_usd"].dropna()
+                    if not _full_runs.empty:
+                        _avg_full = _full_runs.mean()
+                        _saved    = max(0.0, _avg_full - _ov_s_cost)
+                        if _saved > 0.0001:
+                            _eff_html = (
+                                f'<div style="display:inline-flex;align-items:center;gap:6px;'
+                                f'background:#f0fdf4;border:1px solid #86efac;border-radius:6px;'
+                                f'padding:5px 10px;margin-top:8px;font-size:0.78rem;color:#166534">'
+                                f'<strong>Pipeline efficiency</strong> &nbsp;'
+                                f'Stopped at Market — saved ~<strong>${_saved:.4f}</strong> vs avg full run '
+                                f'(${_avg_full:.4f}). Research, Risk, and Orchestrator did not run because '
+                                f'market conditions ruled out viable trades.'
+                                f'</div>'
+                            )
 
                 _detail_html = f"""
 <div style="margin-top:0;border-left:4px solid {_accent};border-radius:0 8px 8px 0;
@@ -1848,6 +1868,7 @@ if page == "Overview":
                   font-size:0.75rem;font-weight:600;letter-spacing:0.02em">{_ov_s_exit or "unknown"}</span>
     </div>
   </div>
+  {_eff_html}
   {_inc_html}
 </div>"""
                 st.markdown(_detail_html, unsafe_allow_html=True)
