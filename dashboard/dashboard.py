@@ -624,7 +624,8 @@ def pipeline_strip(sid: str, traces_df, evals_df, session_agents=None) -> str:
                 (evals_df["agent"].isin([ag, ag + "_quality"]))
             ]
         if _ae.empty:
-            return "#94a3b8", "#ffffff", f"{_labels.get(ag, ag)}: ran — no eval data", "●"
+            # Slate-blue: ran but no evals (market agent is never evaluated)
+            return "#475569", "#ffffff", f"{_labels.get(ag, ag)}: ran — not evaluated", "●"
         n_pass = int(_ae["passed"].sum())
         n_tot  = len(_ae)
         pr     = n_pass / n_tot * 100
@@ -1769,7 +1770,7 @@ if page == "Overview":
         )
         st.markdown(
             "<div style='font-size:0.8rem;color:#94a3b8;margin-top:4px'>"
-            "Red = incident \u00b7 Amber = 0 trades \u00b7 Showing last 50 sessions \u00b7 Click a row to see pipeline</div>",
+            "Red = incident \u00b7 Amber = 0 trades \u00b7 Showing last 50 sessions \u00b7 Click a row to see pipeline &nbsp;\u00b7&nbsp; Pipeline nodes: green = passed \u00b7 red = failed \u00b7 slate = ran, not evaluated \u00b7 hollow = did not run</div>",
             unsafe_allow_html=True,
         )
 
