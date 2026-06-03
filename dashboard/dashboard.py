@@ -2816,7 +2816,6 @@ elif page == "Quality Drift":
                     )
                     st.plotly_chart(fig_qhm, use_container_width=True)
                     st.caption("Green = quality healthy (≥0.60). Yellow = borderline. Red = below threshold.")
-            st.markdown("<div style='margin:6px 0'></div>", unsafe_allow_html=True)
 
         if not evals_ts.empty:
             _qd_all = evals_ts[
@@ -3124,9 +3123,6 @@ elif page == "Quality Drift":
                             use_container_width=True, key=f"qd_{_qa}",
                         )
                         st.markdown("</div>", unsafe_allow_html=True)
-
-            # ── Session quality dimension breakdown ────────────────────────────
-            st.divider()
 
             # Dimension help text: explains how each score is calculated
             # Plain-English descriptions — what this dimension actually means
