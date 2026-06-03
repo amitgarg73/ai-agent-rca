@@ -2216,27 +2216,18 @@ if page == "Ledger":
 # PAGE: Quality Drift
 # ══════════════════════════════════════════════════════════════════════════════
 elif page == "Quality Drift":
-    st.markdown("## Quality Drift")
-
-    st.markdown(
-        '<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;'
-        'padding:16px 20px;margin-bottom:16px;font-size:0.9rem;color:#334155;line-height:1.6">'
-        '<b style="font-size:1rem;color:#0f172a">What this page shows</b><br><br>'
-        'This page tracks whether your AI pipeline is getting better or worse over time — '
-        'across three layers:<br><br>'
-        '<b>Operational</b> — did each agent complete its job? '
-        '(tool success rate, pipeline completion, eval pass rates)<br>'
-        '<b>Business</b> — did the pipeline produce results? '
-        '(cost per trade, research conversion rate, proposal acceptance rate)<br>'
-        '<b>Quality</b> — did each agent reason well? '
-        '(data grounding, thesis coherence, decision consistency — scored 0 to 1)<br><br>'
-        'Use the four tabs below to explore different views. '
-        'The <b>Quality tab</b> is new — it shows semantic quality scores per agent, '
-        'not just whether steps succeeded. A session can pass all operational checks '
-        'and still score low on quality if the research was vague or the decision was inconsistent.'
-        '</div>',
-        unsafe_allow_html=True,
-    )
+    _qd_hdr, _qd_hlp = st.columns([11, 1])
+    _qd_hdr.markdown("## Quality Drift")
+    with _qd_hlp.popover("?"):
+        st.markdown(
+            "**What this page shows**\n\n"
+            "Tracks whether your AI pipeline is getting better or worse over time across three layers:\n\n"
+            "- **Operational** — did each agent complete its job? (tool success rate, pipeline completion, eval pass rates)\n"
+            "- **Business** — did the pipeline produce results? (cost per trade, research conversion, proposal acceptance)\n"
+            "- **Quality** — did each agent reason well? (data grounding, thesis coherence, decision consistency — scored 0 to 1)\n\n"
+            "A session can pass all operational checks and still score low on quality "
+            "if the research was vague or the decision was inconsistent."
+        )
 
     if sessions.empty:
         st.info("No sessions found.")
@@ -2733,15 +2724,15 @@ elif page == "Quality Drift":
 
     # ── QUALITY TAB: Composite quality score trends ───────────────────────────
     with opt_q:
-        st.info(
-            "**Quality scoring.** Operational evals check whether steps completed. "
-            "Quality scores check whether the reasoning was good. "
-            "Each agent is scored across multiple dimensions (e.g. Research: data grounding, thesis coherence, catalyst specificity) "
-            "and rolled into a composite score between 0 and 1. "
-            "Threshold is 0.60 — below that, the agent's output quality is a concern even if it didn't fail operationally. "
-            "Scores are inferred from trace patterns (tool diversity, decision traces, pipeline flow) "
-            "since raw LLM output text is not yet stored in traces."
-        )
+        with st.popover("? How quality is scored"):
+            st.markdown(
+                "Operational evals check whether steps *completed*. "
+                "Quality scores check whether the reasoning was *good*.\n\n"
+                "Each agent is scored across multiple dimensions and rolled into a composite score (0–1). "
+                "**Threshold is 0.60** — below that, output quality is a concern even if nothing failed operationally.\n\n"
+                "Scores are inferred from trace patterns (tool diversity, decision traces, pipeline flow). "
+                "Raw LLM output text is not yet stored in traces — full semantic scoring will activate once it is."
+            )
 
         _qual_colors = {
             "research_quality":     "#f59e0b",
@@ -2989,10 +2980,6 @@ elif page == "Quality Drift":
             st.markdown("</div>", unsafe_allow_html=True)
 
             # ── Contributing agent small multiples ─────────────────────────────
-            st.markdown(
-                '<div style="font-size:0.82rem;color:#64748b;margin:4px 0 8px">Contributing agents</div>',
-                unsafe_allow_html=True,
-            )
             _ag_cfg = [
                 ("research_quality",     "Research",     "#f59e0b", "rgba(245,158,11,0.07)"),
                 ("risk_quality",         "Risk",         "#10b981", "rgba(16,185,129,0.07)"),
@@ -3006,11 +2993,11 @@ elif page == "Quality Drift":
                 with _ag_cols[_ci]:
                     st.markdown(
                         f'<div style="background:#ffffff;border:1px solid #e2e8f0;'
-                        f'border-radius:12px;padding:14px 16px 4px">',
+                        f'border-radius:12px;padding:16px 20px 4px;margin-bottom:12px">',
                         unsafe_allow_html=True,
                     )
                     st.markdown(
-                        f'<span style="font-size:0.9rem;font-weight:700;color:{_qc}">'
+                        f'<span style="font-size:1.0rem;font-weight:700;color:{_qc}">'
                         f'● {_qlbl}</span>',
                         unsafe_allow_html=True,
                     )
@@ -3131,8 +3118,6 @@ elif page == "Quality Drift":
                     ].copy()
 
                     if not _picked_qd.empty:
-                        _all_issues: list = []
-
                         for _qa in ["research_quality", "risk_quality",
                                     "orchestrator_quality", "session_quality"]:
                             _dims = _picked_qd[_picked_qd["agent"] == _qa]
@@ -3199,52 +3184,15 @@ elif page == "Quality Drift":
                                     f'</div></div>',
                                     unsafe_allow_html=True,
                                 )
-
-                                if _is_low:
-                                    _all_issues.append({
-                                        "agent": _label, "dim": _dlabel,
-                                        "score": _ds, "status": _status,
-                                        "color": _ac, "what": _help_txt,
-                                        "fix": _improve,
-                                    })
-
-                        # ── Issues panel ──────────────────────────────────────
-                        st.markdown("<div style='margin-top:16px'></div>", unsafe_allow_html=True)
-                        if _all_issues:
-                            st.markdown("**What needs attention**")
-                            for _iss in _all_issues:
-                                _bclr = "#ef4444" if _iss["status"] == "actionable" else "#94a3b8"
-                                if _iss["status"] == "gap":
-                                    _fix_html = (
-                                        '<div style="font-size:0.82rem;color:#64748b;margin-top:4px">'
-                                        'Gap: cannot score without output text in traces. '
-                                        'No agent code change will fix this.'
-                                        '</div>'
-                                    )
-                                elif _iss["fix"]:
-                                    _fix_html = (
-                                        f'<div style="font-size:0.82rem;color:#0f172a;margin-top:4px">'
-                                        f'<b>Fix:</b> {_iss["fix"]}'
-                                        f'</div>'
-                                    )
-                                else:
-                                    _fix_html = ""
-                                st.markdown(
-                                    f'<div style="border-left:3px solid {_bclr};padding:10px 14px;'
-                                    f'margin:6px 0;background:#f8fafc;border-radius:0 6px 6px 0">'
-                                    f'<div style="font-size:0.88rem">'
-                                    f'<b style="color:{_iss["color"]}">{_iss["agent"]}</b>'
-                                    f' &mdash; {_iss["dim"]} '
-                                    f'<span style="color:{_bclr};font-weight:600">{_iss["score"]:.2f}</span>'
-                                    f'</div>'
-                                    f'<div style="font-size:0.82rem;color:#475569;margin-top:4px">'
-                                    f'{_iss["what"]}</div>'
-                                    f'{_fix_html}'
-                                    f'</div>',
-                                    unsafe_allow_html=True,
-                                )
-                        else:
-                            st.success("All dimensions passing for this session.")
+                                if _is_low and _help_txt:
+                                    _pop_label = "Gap ?" if _status == "gap" else "Fix ?"
+                                    with _dc[_di].popover(_pop_label):
+                                        st.markdown(f"**{_dlabel}** ({_ds:.2f})")
+                                        st.markdown(_help_txt)
+                                        if _status == "actionable" and _improve:
+                                            st.markdown(f"**Fix:** {_improve}")
+                                        elif _status == "gap":
+                                            st.markdown("**Gap:** Cannot score without output text in traces. No agent code change will fix this.")
                     else:
                         st.info("No quality dimension data for this session.")
 
