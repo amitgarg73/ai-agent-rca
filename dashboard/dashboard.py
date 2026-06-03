@@ -5869,58 +5869,68 @@ elif page == "Ledger v2":
     _saved_wf   = _sav["realized"]
     _agents_wf  = sorted(_agent_costs_wf, key=_agent_costs_wf.get, reverse=True)
 
+    _agent_c = {
+        "research": "#f59e0b", "risk": "#10b981", "orchestrator": "#3b82f6",
+        "market": "#8b5cf6", "market_shadow": "#6b7280",
+    }
+
     if _agents_wf:
-        _wf_labels  = ["Total"] + [a.title() for a in _agents_wf] + \
-                      ["Productive", "Wasted", "Saved (exits)"]
-        _wf_values  = (
-            [_total_wf]
-            + [-_agent_costs_wf[a] for a in _agents_wf]
-            + [_prod_wf, -_wasted_wf, _saved_wf]
-        )
-        _wf_measure = (
-            ["absolute"]
-            + ["relative"] * len(_agents_wf)
-            + ["absolute", "absolute", "absolute"]
-        )
-        _agent_c = {
-            "research": "#f59e0b", "risk": "#10b981", "orchestrator": "#3b82f6",
-            "market": "#8b5cf6", "market_shadow": "#6b7280",
-        }
-        _wf_colors = (
-            ["#94a3b8"]
-            + [_agent_c.get(a, "#94a3b8") for a in _agents_wf]
-            + [_V2_GREEN, _V2_RED, "#86efac"]
-        )
-        _wf_n_sessions = (
-            [len(_l2_curr)]
-            + [0] * len(_agents_wf)
-            + [int((_l2_curr["trades_executed"] > 0).sum()),
-               int((_l2_curr["trades_executed"] == 0).sum()),
-               _sav["realized_count"]]
-        )
-        _fig_wf = go.Figure(go.Waterfall(
-            orientation="h",
-            measure=_wf_measure,
-            x=_wf_values,
-            y=_wf_labels,
-            connector=dict(line=dict(color="#e2e8f0", width=1)),
-            marker=dict(color=_wf_colors),
-            text=[f"${abs(v):.4f}" for v in _wf_values],
-            textposition="outside",
-            customdata=_wf_n_sessions,
-            hovertemplate="<b>%{y}</b><br>$%{x:.4f}<br>%{customdata} sessions<extra></extra>",
-        ))
-        _fig_wf.update_layout(
-            height=max(320, 50 + len(_wf_labels) * 38),
-            paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
-            font=dict(color="#1e293b", size=11),
-            margin=dict(t=10, b=10, l=110, r=80),
-            xaxis=dict(gridcolor="#e2e8f0", tickformat="$.4f", title="Cost (USD)"),
-            yaxis=dict(autorange="reversed"),
-            showlegend=False,
-        )
-        st.plotly_chart(_fig_wf, use_container_width=True,
-                        config={"displayModeBar": False})
+        _wf_col_l, _wf_col_r = st.columns([3, 2])
+
+        with _wf_col_l:
+            st.caption("Cost by agent")
+            _ag_rev = list(reversed(_agents_wf))
+            _fig_agents = go.Figure(go.Bar(
+                orientation="h",
+                y=[a.title() for a in _ag_rev],
+                x=[_agent_costs_wf[a] for a in _ag_rev],
+                marker_color=[_agent_c.get(a, "#94a3b8") for a in _ag_rev],
+                text=[f"${_agent_costs_wf[a]:.4f}" for a in _ag_rev],
+                textposition="outside",
+                hovertemplate="<b>%{y}</b><br>$%{x:.4f}<extra></extra>",
+            ))
+            _fig_agents.update_layout(
+                height=max(200, 60 + len(_agents_wf) * 44),
+                paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
+                font=dict(color="#1e293b", size=11),
+                margin=dict(t=4, b=4, l=90, r=80),
+                xaxis=dict(gridcolor="#e2e8f0", tickformat="$.4f"),
+                showlegend=False,
+            )
+            st.plotly_chart(_fig_agents, use_container_width=True,
+                            config={"displayModeBar": False})
+
+        with _wf_col_r:
+            st.caption("Cost by outcome")
+            _out_labels = ["Productive", "Wasted", "Saved (exits)"]
+            _out_vals   = [_prod_wf, _wasted_wf, _saved_wf]
+            _out_colors = [_V2_GREEN, _V2_RED, "#86efac"]
+            _out_custom = [
+                int((_l2_curr["trades_executed"] > 0).sum()),
+                int((_l2_curr["trades_executed"] == 0).sum()),
+                _sav["realized_count"],
+            ]
+            _fig_out = go.Figure(go.Bar(
+                orientation="h",
+                y=_out_labels,
+                x=_out_vals,
+                marker_color=_out_colors,
+                text=[f"${v:.4f}" for v in _out_vals],
+                textposition="outside",
+                customdata=_out_custom,
+                hovertemplate="<b>%{y}</b><br>$%{x:.4f}<br>%{customdata} sessions<extra></extra>",
+            ))
+            _fig_out.update_layout(
+                height=200,
+                paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
+                font=dict(color="#1e293b", size=11),
+                margin=dict(t=4, b=4, l=80, r=80),
+                xaxis=dict(gridcolor="#e2e8f0", tickformat="$.4f",
+                           range=[0, max(_total_wf * 1.25, 0.0001)]),
+                showlegend=False,
+            )
+            st.plotly_chart(_fig_out, use_container_width=True,
+                            config={"displayModeBar": False})
 
         # ── Agent Detail Panel ────────────────────────────────────────────────
         st.caption("Click an agent pill to drill down.")
