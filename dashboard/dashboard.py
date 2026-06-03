@@ -3456,23 +3456,63 @@ elif page == "Incidents Feed":
 
     st.divider()
 
-    # Incident rows
-    for _, inc in filtered.sort_values("created_at", ascending=False).iterrows():
-        sim  = bool(inc.get("is_simulated", False))
-        ts   = inc["created_at"].strftime("%b %d %H:%M") if pd.notna(inc.get("created_at")) else ""
-        cost = f"${inc['cost_wasted']:.4f}" if inc["cost_wasted"] > 0 else "—"
-        tok  = f"{int(inc.get('tokens_wasted',0)):,}" if inc.get("tokens_wasted") else "—"
+    # Pagination state — reset to page 0 when filters change
+    _INC_PAGE_SIZE = 10
+    sorted_inc = filtered.sort_values("created_at", ascending=False).reset_index(drop=True)
+    total_inc  = len(sorted_inc)
+    n_pages    = max(1, (total_inc + _INC_PAGE_SIZE - 1) // _INC_PAGE_SIZE)
 
-        with st.container():
+    filter_sig = f"{sev_filter}|{pattern_filter}|{sim_filter}|{show_shadow_cb}"
+    if st.session_state.get("_inc_filter_sig") != filter_sig:
+        st.session_state["_inc_filter_sig"] = filter_sig
+        st.session_state["_inc_page"]       = 0
+    cur_page = max(0, min(st.session_state.get("_inc_page", 0), n_pages - 1))
+
+    page_start = cur_page * _INC_PAGE_SIZE
+    page_df    = sorted_inc.iloc[page_start : page_start + _INC_PAGE_SIZE]
+
+    # Pagination nav
+    pn1, pn2, pn3 = st.columns([1, 3, 1])
+    if pn1.button("← Prev", disabled=(cur_page == 0), use_container_width=True):
+        st.session_state["_inc_page"] = cur_page - 1
+        st.rerun()
+    pn2.markdown(
+        f"<div style='text-align:center;padding-top:6px;color:#64748b;font-size:0.88rem'>"
+        f"Showing {page_start + 1}–{min(page_start + _INC_PAGE_SIZE, total_inc)} of {total_inc} incidents"
+        f"&nbsp;&nbsp;·&nbsp;&nbsp;Page {cur_page + 1} of {n_pages}</div>",
+        unsafe_allow_html=True,
+    )
+    if pn3.button("Next →", disabled=(cur_page >= n_pages - 1), use_container_width=True):
+        st.session_state["_inc_page"] = cur_page + 1
+        st.rerun()
+
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+
+    # Incident rows in a bordered panel
+    with st.container(border=True):
+        # Column headers
+        gh1, gh2, gh3, gh4, gh5 = st.columns([1.5, 2.5, 3.5, 1, 1])
+        gh1.markdown("<small style='color:#94a3b8;font-weight:600'>SEVERITY</small>", unsafe_allow_html=True)
+        gh2.markdown("<small style='color:#94a3b8;font-weight:600'>PATTERN</small>", unsafe_allow_html=True)
+        gh3.markdown("<small style='color:#94a3b8;font-weight:600'>ROOT CAUSE</small>", unsafe_allow_html=True)
+        gh4.markdown("<small style='color:#94a3b8;font-weight:600'>COST</small>", unsafe_allow_html=True)
+        st.divider()
+
+        for _, inc in page_df.iterrows():
+            sim  = bool(inc.get("is_simulated", False))
+            cost = f"${inc['cost_wasted']:.4f}" if inc["cost_wasted"] > 0 else "—"
+
             hc1, hc2, hc3, hc4, hc5 = st.columns([1.5, 2.5, 3.5, 1, 1])
             hc1.markdown(badge(inc["severity"], sim), unsafe_allow_html=True)
             hc2.markdown(f"**{inc['pattern_name']}**")
-            hc3.markdown(f"<small style='color:#94a3b8'>{inc['root_cause'][:90]}...</small>",
-                         unsafe_allow_html=True)
+            hc3.markdown(
+                f"<small style='color:#94a3b8'>{inc['root_cause'][:90]}...</small>",
+                unsafe_allow_html=True,
+            )
             hc4.markdown(f"<small>{cost}</small>", unsafe_allow_html=True)
             if hc5.button("RCA →", key=f"go_{inc['id']}"):
                 goto_rca(inc.to_dict(), inc.get("session_id"))
-        st.divider()
+            st.divider()
 
 
 
