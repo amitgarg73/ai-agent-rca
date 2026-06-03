@@ -2897,7 +2897,8 @@ elif page == "Quality Drift":
                     annotation_position="bottom right",
                     annotation_font_size=8,
                 )
-                # Incident markers
+                # Incident markers — single trace for all incident sessions
+                _inc_x, _inc_y, _inc_hov = [], [], []
                 for _lbl, _score, _sid in zip(lbls, scores, sids):
                     _incs = _lookup.get(_sid)
                     if not _incs:
@@ -2907,20 +2908,21 @@ elif page == "Quality Drift":
                         xref="x", yref="paper",
                         line=dict(color="rgba(239,68,68,0.35)", width=1, dash="dot"),
                     )
-                    _hover_lines = "<br>".join(
-                        f"{i['pattern']} ({i['severity']})" for i in _incs
+                    _inc_x.append(_lbl)
+                    _inc_y.append(_score)
+                    _inc_hov.append(
+                        f"<b>{'Incidents' if len(_incs) > 1 else 'Incident'}</b><br>"
+                        + "<br>".join(f"{i['pattern']} ({i['severity']})" for i in _incs)
+                        + f"<br><span style='color:#94a3b8'>{_lbl} · {_sid[:8]}</span>"
                     )
+                if _inc_x:
                     fig.add_trace(go.Scatter(
-                        x=[_lbl], y=[_score], mode="markers",
+                        x=_inc_x, y=_inc_y, mode="markers",
                         name="incident", showlegend=False,
                         marker=dict(size=10, color="#ef4444",
                                     line=dict(color="#ffffff", width=1.5)),
-                        hovertemplate=(
-                            f"<b>{'Incidents' if len(_incs) > 1 else 'Incident'}</b><br>"
-                            f"{_hover_lines}<br>"
-                            f"<span style='color:#94a3b8'>{_lbl} · {_sid[:8]}</span>"
-                            "<extra></extra>"
-                        ),
+                        customdata=_inc_hov,
+                        hovertemplate="%{customdata}<extra></extra>",
                     ))
                 fig.update_layout(
                     paper_bgcolor="#ffffff", plot_bgcolor="#ffffff",
@@ -3103,113 +3105,148 @@ elif page == "Quality Drift":
                 "session_quality":       "#ddd6fe",
             }
 
-            # Session picker — default to latest
-            _sel_col, _sel_spacer = st.columns([3, 5])
-            _sess_options = []
-            if not s.empty:
-                for _, _sr in s.sort_values("started_at", ascending=False).iterrows():
-                    _dt = pd.to_datetime(_sr["started_at"]).strftime("%m-%d %H:%M") if pd.notnull(_sr.get("started_at")) else "?"
-                    _sess_options.append((_dt + f"  ·  {_sr['id'][:8]}", _sr["id"]))
-            _sel_labels = [o[0] for o in _sess_options]
-            _sel_ids    = [o[1] for o in _sess_options]
-            _sel_idx = _sel_col.selectbox(
-                "Session", options=range(len(_sel_labels)),
-                format_func=lambda i: _sel_labels[i],
-                index=0, key="qd_session_picker",
-                label_visibility="collapsed",
-            )
-            _picked_sid = _sel_ids[_sel_idx] if _sel_ids else None
+            with st.expander("Session quality breakdown", expanded=True):
+                # Session picker — default to latest
+                _sel_col, _sel_spacer = st.columns([3, 5])
+                _sess_options = []
+                if not s.empty:
+                    for _, _sr in s.sort_values("started_at", ascending=False).iterrows():
+                        _dt = pd.to_datetime(_sr["started_at"]).strftime("%m-%d %H:%M") if pd.notnull(_sr.get("started_at")) else "?"
+                        _sess_options.append((_dt + f"  ·  {_sr['id'][:8]}", _sr["id"]))
+                _sel_labels = [o[0] for o in _sess_options]
+                _sel_ids    = [o[1] for o in _sess_options]
+                _sel_idx = _sel_col.selectbox(
+                    "Session", options=range(len(_sel_labels)),
+                    format_func=lambda i: _sel_labels[i],
+                    index=0, key="qd_session_picker",
+                    label_visibility="collapsed",
+                )
+                _picked_sid = _sel_ids[_sel_idx] if _sel_ids else None
 
-            if _picked_sid:
-                _picked_qd = evals_ts[
-                    (evals_ts["session_id"] == _picked_sid) &
-                    evals_ts["agent"].str.endswith("_quality", na=False) &
-                    (evals_ts["eval_name"] != "composite_score")
-                ].copy()
+                if _picked_sid:
+                    _picked_qd = evals_ts[
+                        (evals_ts["session_id"] == _picked_sid) &
+                        evals_ts["agent"].str.endswith("_quality", na=False) &
+                        (evals_ts["eval_name"] != "composite_score")
+                    ].copy()
 
-                if not _picked_qd.empty:
-                    for _qa in ["research_quality", "risk_quality",
-                                "orchestrator_quality", "session_quality"]:
-                        _dims = _picked_qd[_picked_qd["agent"] == _qa]
-                        if _dims.empty:
-                            continue
-                        _label    = _qa.replace("_quality", "").title()
-                        _ac       = _agent_colors[_qa]
-                        _abg      = _agent_bg[_qa]
-                        _aborder  = _agent_border[_qa]
-                        _comp_row = evals_ts[
-                            (evals_ts["session_id"] == _picked_sid) &
-                            (evals_ts["agent"] == _qa) &
-                            (evals_ts["eval_name"] == "composite_score")
-                        ]
-                        _comp       = float(_comp_row["score"].iloc[0]) if not _comp_row.empty else 0.0
-                        _comp_pass  = _comp >= 0.60
-                        _badge_bg   = "#dcfce7" if _comp_pass else "#fee2e2"
-                        _badge_txt  = "#166534" if _comp_pass else "#991b1b"
-                        _pass_label = "passed" if _comp_pass else "below threshold"
+                    if not _picked_qd.empty:
+                        _all_issues: list = []
 
-                        # Agent section card
-                        st.markdown(
-                            f'<div style="background:{_abg};border:1px solid {_aborder};'
-                            f'border-radius:10px;padding:14px 16px 10px;margin-bottom:12px">'
-                            f'<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">'
-                            f'<span style="font-weight:700;font-size:1rem;color:{_ac}">{_label}</span>'
-                            f'<span style="background:{_badge_bg};color:{_badge_txt};border-radius:20px;'
-                            f'padding:2px 10px;font-size:0.78rem;font-weight:600">'
-                            f'composite&nbsp;{_comp:.2f} &mdash; {_pass_label}</span>'
-                            f'</div></div>',
-                            unsafe_allow_html=True,
-                        )
+                        for _qa in ["research_quality", "risk_quality",
+                                    "orchestrator_quality", "session_quality"]:
+                            _dims = _picked_qd[_picked_qd["agent"] == _qa]
+                            if _dims.empty:
+                                continue
+                            _label    = _qa.replace("_quality", "").title()
+                            _ac       = _agent_colors[_qa]
+                            _abg      = _agent_bg[_qa]
+                            _aborder  = _agent_border[_qa]
+                            _comp_row = evals_ts[
+                                (evals_ts["session_id"] == _picked_sid) &
+                                (evals_ts["agent"] == _qa) &
+                                (evals_ts["eval_name"] == "composite_score")
+                            ]
+                            _comp       = float(_comp_row["score"].iloc[0]) if not _comp_row.empty else 0.0
+                            _comp_pass  = _comp >= 0.60
+                            _badge_bg   = "#dcfce7" if _comp_pass else "#fee2e2"
+                            _badge_txt  = "#166534" if _comp_pass else "#991b1b"
+                            _pass_label = "passed" if _comp_pass else "below threshold"
 
-                        # Dimension cards inside the agent block
-                        _dc = st.columns(len(_dims))
-                        for _di, (_, _drow) in enumerate(_dims.iterrows()):
-                            _ds     = float(_drow.get("score") or 0)
-                            _dp     = bool(_drow.get("passed"))
-                            _dname  = str(_drow["eval_name"])
-                            _dlabel = _dname.replace("_", " ").title()
-                            if _ds >= 0.75:
-                                _score_color = "#10b981"
-                            elif _ds >= 0.60:
-                                _score_color = "#f59e0b"
-                            else:
-                                _score_color = "#ef4444"
-                            _pct      = int(_ds * 100)
-                            _status   = _DIM_STATUS.get(_dname, "actionable")
-                            _help_txt = _DIM_HELP.get(_dname, "")
-                            _improve  = _DIM_IMPROVE.get(_dname, "")
-                            _is_low   = _ds < 0.60
-
-                            if _status == "gap":
-                                _sbadge = ('<span style="font-size:0.60rem;color:#64748b;'
-                                           'background:#f1f5f9;border-radius:10px;padding:1px 6px">'
-                                           'measurement gap</span>')
-                            elif _status == "actionable" and _is_low:
-                                _sbadge = ('<span style="font-size:0.60rem;color:#92400e;'
-                                           'background:#fef3c7;border-radius:10px;padding:1px 6px">'
-                                           'fixable</span>')
-                            else:
-                                _sbadge = ""
-
-                            _dc[_di].markdown(
-                                f'<div style="background:#ffffff;border:1px solid #e2e8f0;'
-                                f'border-radius:8px;padding:10px 8px 8px;text-align:center">'
-                                f'<div style="font-size:1.25rem;font-weight:700;color:{_score_color}">{_ds:.2f}</div>'
-                                f'<div style="font-size:0.70rem;color:#475569;margin:3px 0 5px;line-height:1.3">{_dlabel}</div>'
-                                f'<div style="min-height:18px;margin-bottom:5px">{_sbadge}</div>'
-                                f'<div style="background:#f1f5f9;border-radius:4px;height:5px">'
-                                f'<div style="background:{_score_color};width:{_pct}%;height:100%;border-radius:4px"></div>'
+                            st.markdown(
+                                f'<div style="background:{_abg};border:1px solid {_aborder};'
+                                f'border-radius:10px;padding:14px 16px 10px;margin-bottom:12px">'
+                                f'<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">'
+                                f'<span style="font-weight:700;font-size:1rem;color:{_ac}">{_label}</span>'
+                                f'<span style="background:{_badge_bg};color:{_badge_txt};border-radius:20px;'
+                                f'padding:2px 10px;font-size:0.78rem;font-weight:600">'
+                                f'composite&nbsp;{_comp:.2f} &mdash; {_pass_label}</span>'
                                 f'</div></div>',
                                 unsafe_allow_html=True,
                             )
-                            if _help_txt:
-                                _dc[_di].caption(_help_txt)
-                            if _status == "actionable" and _is_low and _improve:
-                                _dc[_di].caption(f"To improve: {_improve}")
-                            elif _status == "gap":
-                                _dc[_di].caption("Needs output text stored in traces to score accurately. Cannot be fixed through agent changes alone.")
-                else:
-                    st.info("No quality dimension data for this session.")
+
+                            _dc = st.columns(len(_dims))
+                            for _di, (_, _drow) in enumerate(_dims.iterrows()):
+                                _ds     = float(_drow.get("score") or 0)
+                                _dname  = str(_drow["eval_name"])
+                                _dlabel = _dname.replace("_", " ").title()
+                                _score_color = "#10b981" if _ds >= 0.75 else ("#f59e0b" if _ds >= 0.60 else "#ef4444")
+                                _pct      = int(_ds * 100)
+                                _status   = _DIM_STATUS.get(_dname, "actionable")
+                                _help_txt = _DIM_HELP.get(_dname, "")
+                                _improve  = _DIM_IMPROVE.get(_dname, "")
+                                _is_low   = _ds < 0.60
+
+                                if _status == "gap":
+                                    _sbadge = ('<span style="font-size:0.60rem;color:#64748b;'
+                                               'background:#f1f5f9;border-radius:10px;padding:1px 6px">'
+                                               'measurement gap</span>')
+                                elif _status == "actionable" and _is_low:
+                                    _sbadge = ('<span style="font-size:0.60rem;color:#92400e;'
+                                               'background:#fef3c7;border-radius:10px;padding:1px 6px">'
+                                               'fixable</span>')
+                                else:
+                                    _sbadge = ""
+
+                                _dc[_di].markdown(
+                                    f'<div style="background:#ffffff;border:1px solid #e2e8f0;'
+                                    f'border-radius:8px;padding:10px 8px 8px;text-align:center">'
+                                    f'<div style="font-size:1.25rem;font-weight:700;color:{_score_color}">{_ds:.2f}</div>'
+                                    f'<div style="font-size:0.70rem;color:#475569;margin:3px 0 5px;line-height:1.3">{_dlabel}</div>'
+                                    f'<div style="min-height:18px;margin-bottom:5px">{_sbadge}</div>'
+                                    f'<div style="background:#f1f5f9;border-radius:4px;height:5px">'
+                                    f'<div style="background:{_score_color};width:{_pct}%;height:100%;border-radius:4px"></div>'
+                                    f'</div></div>',
+                                    unsafe_allow_html=True,
+                                )
+
+                                if _is_low:
+                                    _all_issues.append({
+                                        "agent": _label, "dim": _dlabel,
+                                        "score": _ds, "status": _status,
+                                        "color": _ac, "what": _help_txt,
+                                        "fix": _improve,
+                                    })
+
+                        # ── Issues panel ──────────────────────────────────────
+                        st.markdown("<div style='margin-top:16px'></div>", unsafe_allow_html=True)
+                        if _all_issues:
+                            st.markdown("**What needs attention**")
+                            for _iss in _all_issues:
+                                _bclr = "#ef4444" if _iss["status"] == "actionable" else "#94a3b8"
+                                if _iss["status"] == "gap":
+                                    _fix_html = (
+                                        '<div style="font-size:0.82rem;color:#64748b;margin-top:4px">'
+                                        'Gap: cannot score without output text in traces. '
+                                        'No agent code change will fix this.'
+                                        '</div>'
+                                    )
+                                elif _iss["fix"]:
+                                    _fix_html = (
+                                        f'<div style="font-size:0.82rem;color:#0f172a;margin-top:4px">'
+                                        f'<b>Fix:</b> {_iss["fix"]}'
+                                        f'</div>'
+                                    )
+                                else:
+                                    _fix_html = ""
+                                st.markdown(
+                                    f'<div style="border-left:3px solid {_bclr};padding:10px 14px;'
+                                    f'margin:6px 0;background:#f8fafc;border-radius:0 6px 6px 0">'
+                                    f'<div style="font-size:0.88rem">'
+                                    f'<b style="color:{_iss["color"]}">{_iss["agent"]}</b>'
+                                    f' &mdash; {_iss["dim"]} '
+                                    f'<span style="color:{_bclr};font-weight:600">{_iss["score"]:.2f}</span>'
+                                    f'</div>'
+                                    f'<div style="font-size:0.82rem;color:#475569;margin-top:4px">'
+                                    f'{_iss["what"]}</div>'
+                                    f'{_fix_html}'
+                                    f'</div>',
+                                    unsafe_allow_html=True,
+                                )
+                        else:
+                            st.success("All dimensions passing for this session.")
+                    else:
+                        st.info("No quality dimension data for this session.")
 
             # ── Per-agent heatmap (last 15 sessions) ─────────────────────────
             st.divider()
