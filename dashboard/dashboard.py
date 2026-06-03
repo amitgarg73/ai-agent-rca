@@ -1719,7 +1719,7 @@ if page == "Overview":
                 return {};
             }
         """))
-        _ov_PAGE = 15
+        _ov_PAGE = 10
         _ov_gb.configure_selection("single", use_checkbox=False)
         _ov_gb.configure_grid_options(
             pagination=True,
@@ -1735,10 +1735,10 @@ if page == "Overview":
             headerHeight=36,
             suppressHorizontalScroll=True,
         )
-        AgGrid(
+        _ov_resp = AgGrid(
             _ov_tbl,
             gridOptions=_ov_gb.build(),
-            update_mode=GridUpdateMode.NO_UPDATE,
+            update_mode=GridUpdateMode.SELECTION_CHANGED,
             height=min(600, 56 + min(len(_ov_tbl), _ov_PAGE) * 34 + (0 if len(_ov_tbl) <= _ov_PAGE else 60)),
             use_container_width=True,
             allow_unsafe_jscode=True,
@@ -1747,9 +1747,74 @@ if page == "Overview":
         )
         st.markdown(
             "<div style='font-size:0.8rem;color:#94a3b8;margin-top:4px'>"
-            "Red = incident \u00b7 Amber = 0 trades \u00b7 Showing last 50 sessions</div>",
+            "Red = incident \u00b7 Amber = 0 trades \u00b7 Showing last 50 sessions \u00b7 Click a row to see pipeline</div>",
             unsafe_allow_html=True,
         )
+
+        # \u2500\u2500 Pipeline strip detail panel \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+        _ov_sel = _ov_resp.selected_rows
+        if _ov_sel is not None and len(_ov_sel) > 0:
+            _ov_sel_sid = _ov_sel[0]["_id"]
+            _ov_full    = sessions[sessions["id"] == _ov_sel_sid]
+            _ov_sel_inc = _ov_i[_ov_i["session_id"] == _ov_sel_sid] if not _ov_i.empty else pd.DataFrame()
+
+            if not _ov_full.empty:
+                _ov_sr      = _ov_full.iloc[0]
+                _ov_s_cost  = float(_ov_sr.get("total_cost_usd") or 0)
+                if _ov_s_cost == 0:
+                    _bd = _ov_sr.get("cost_breakdown")
+                    if isinstance(_bd, dict):
+                        _ov_s_cost = sum(v.get("cost_usd", 0) for v in _bd.values() if isinstance(v, dict))
+                _ov_s_trades = int(_ov_sr.get("trades_executed") or 0)
+                _ov_s_dur   = int((_ov_sr.get("total_latency_ms") or 0) / 1000)
+                _ov_s_tok   = int((_ov_sr.get("total_tokens_input") or 0) + (_ov_sr.get("total_tokens_output") or 0))
+                _ov_s_exit  = str(_ov_sr.get("terminal_reason") or "")
+                _ov_s_date  = pd.to_datetime(_ov_sr.get("started_at"), errors="coerce", utc=True)
+                _ov_s_date_str = _ov_s_date.strftime("%Y-%m-%d %H:%M UTC") if pd.notna(_ov_s_date) else "-"
+
+                _exit_colors = {
+                    "converged":             ("#166534", "#dcfce7"),
+                    "eod_complete":          ("#334155", "#f1f5f9"),
+                    "superseded":            ("#334155", "#f1f5f9"),
+                    "no_viable_proposals":   ("#c2410c", "#fff7ed"),
+                    "all_rejected":          ("#c2410c", "#fff7ed"),
+                    "watchdog_timeout":      ("#991b1b", "#fee2e2"),
+                    "timeout":               ("#991b1b", "#fee2e2"),
+                }
+                _ec_fg, _ec_bg = _exit_colors.get(_ov_s_exit, ("#475569", "#f8fafc"))
+
+                _inc_html = ""
+                if not _ov_sel_inc.empty:
+                    for _, _inc_row in _ov_sel_inc.iterrows():
+                        _sev   = str(_inc_row.get("severity") or "").lower()
+                        _ibg   = "#fee2e2" if _sev == "critical" else "#fef9c3"
+                        _ifg   = "#7f1d1d" if _sev == "critical" else "#713f12"
+                        _ipat  = str(_inc_row.get("pattern_name") or "")
+                        _irc   = str(_inc_row.get("root_cause") or "")[:90]
+                        _inc_html += (
+                            f'<div style="background:{_ibg};color:{_ifg};border-radius:6px;'
+                            f'padding:6px 10px;font-size:0.78rem;margin-top:4px">'
+                            f'<strong>{_sev.upper()}</strong> \u00b7 {_ipat}'
+                            f'{"  \u2014  " + _irc if _irc else ""}</div>'
+                        )
+
+                _strip_html = pipeline_strip(_ov_sel_sid, traces_all, _ov_ae)
+                _detail_html = f"""
+<div style="border:1px solid #e2e8f0;border-radius:10px;padding:14px 18px;margin-top:10px;background:#fafafa">
+  <div style="display:flex;align-items:center;gap:18px;flex-wrap:wrap">
+    <div style="font-size:0.72rem;color:#94a3b8;margin-bottom:6px;width:100%">{_ov_s_date_str}</div>
+    {_strip_html}
+    <div style="display:flex;gap:14px;flex-wrap:wrap;margin-left:12px">
+      <span style="font-size:0.82rem"><strong>Cost</strong> ${_ov_s_cost:.4f}</span>
+      <span style="font-size:0.82rem"><strong>Trades</strong> {_ov_s_trades}</span>
+      <span style="font-size:0.82rem"><strong>Duration</strong> {_ov_s_dur}s</span>
+      <span style="font-size:0.82rem"><strong>Tokens</strong> {_ov_s_tok:,}</span>
+      <span style="background:{_ec_bg};color:{_ec_fg};border-radius:4px;padding:2px 8px;font-size:0.78rem;font-weight:600">{_ov_s_exit or "unknown"}</span>
+    </div>
+  </div>
+  {_inc_html}
+</div>"""
+                st.markdown(_detail_html, unsafe_allow_html=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3451,7 +3516,7 @@ elif page == "Incidents Feed":
     st.divider()
 
     # Build AgGrid table — all filtered rows, AgGrid handles pagination via rowHeight
-    _inc_PAGE = 15
+    _inc_PAGE = 10
     _inc_sorted = filtered.sort_values("created_at", ascending=False).reset_index(drop=True)
 
     _inc_tbl = pd.DataFrame({
