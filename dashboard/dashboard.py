@@ -3496,23 +3496,30 @@ elif page == "Quality Drift":
                     (evals_ts["eval_name"] == "composite_score")
                 ][["session_id", "agent", "score"]].copy()
 
-                _qd_pivot = (
-                    _qd_composites
-                    .pivot_table(index="session_id", columns="agent", values="score", aggfunc="first")
-                    .reset_index()
-                ) if not _qd_composites.empty else pd.DataFrame(columns=["session_id"])
+                if not _qd_composites.empty:
+                    _qd_pivot = (
+                        _qd_composites
+                        .pivot_table(index="session_id", columns="agent", values="score", aggfunc="first")
+                        .reset_index()
+                    )
+                    _qd_pivot.columns.name = None  # pivot_table sets name='agent'; clear it
+                    _qd_pivot = _qd_pivot.rename(columns={"session_id": "_qpiv_sid"})
+                else:
+                    _qd_pivot = pd.DataFrame(columns=["_qpiv_sid"])
 
-                _qd_sess = s.sort_values("started_at", ascending=False)[
-                    ["id", "started_at", "label", "terminal_reason",
-                     "total_cost_usd", "trades_executed",
-                     "total_latency_ms", "total_tokens_input", "total_tokens_output",
-                     "agents_invoked"]
-                ].copy()
-                _qd_merged = _qd_sess.merge(_qd_pivot, left_on="id", right_on="session_id", how="left")
+                _qd_cols = [c for c in ["id", "started_at", "label", "terminal_reason",
+                    "total_cost_usd", "trades_executed", "total_latency_ms",
+                    "total_tokens_input", "total_tokens_output", "agents_invoked"] if c in s.columns]
+                _qd_sess = s.sort_values("started_at", ascending=False)[_qd_cols].copy()
+                _qd_merged = _qd_sess.merge(_qd_pivot, left_on="id", right_on="_qpiv_sid", how="left")
+                _qd_merged = _qd_merged.drop(columns=["_qpiv_sid"], errors="ignore")
 
                 if not incidents.empty:
-                    _qd_inc_c = incidents.groupby("session_id").size().reset_index(name="_inc_count")
-                    _qd_merged = _qd_merged.merge(_qd_inc_c, left_on="id", right_on="session_id", how="left")
+                    _qd_inc_c = (incidents.groupby("session_id").size()
+                                 .reset_index(name="_inc_count")
+                                 .rename(columns={"session_id": "_qinc_sid"}))
+                    _qd_merged = _qd_merged.merge(_qd_inc_c, left_on="id", right_on="_qinc_sid", how="left")
+                    _qd_merged = _qd_merged.drop(columns=["_qinc_sid"], errors="ignore")
                     _qd_merged["_inc_count"] = _qd_merged["_inc_count"].fillna(0).astype(int)
                 else:
                     _qd_merged["_inc_count"] = 0
@@ -3583,7 +3590,7 @@ elif page == "Quality Drift":
                     _qd_tbl,
                     gridOptions=_qd_gb.build(),
                     update_mode=GridUpdateMode.SELECTION_CHANGED,
-                    height=min(560, 56 + min(len(_qd_tbl), _qd_PAGE) * 34 + (0 if len(_qd_tbl) <= _qd_PAGE else 60)),
+                    height=max(120, min(560, 56 + min(len(_qd_tbl), _qd_PAGE) * 34 + (0 if len(_qd_tbl) <= _qd_PAGE else 60))),
                     use_container_width=True,
                     allow_unsafe_jscode=True,
                     fit_columns_on_grid_load=True,
