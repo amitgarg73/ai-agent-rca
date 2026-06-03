@@ -1995,7 +1995,7 @@ if page == "Ledger":
 
         _wasted_costs     = _agent_cost_sum(wasted)
         _productive_costs = _agent_cost_sum(_productive)
-        _split_agents     = sorted(set(list(_wasted_costs.keys()) | set(_productive_costs.keys())))
+        _split_agents     = sorted(set(_wasted_costs.keys()) | set(_productive_costs.keys()))
 
         if _split_agents:
             _fig_split = go.Figure()
