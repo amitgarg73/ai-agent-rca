@@ -33,6 +33,34 @@ def load_recent_session_costs(db: Client, limit: int = 30) -> list[float]:
     return [float(row["total_cost_usd"] or 0) for row in (r.data or [])]
 
 
+def load_recent_sessions(db: Client, limit: int = 10) -> list[dict]:
+    """Return up to `limit` most recent sessions in chronological order (oldest first)."""
+    r = (
+        db.table("c_sessions")
+        .select("*")
+        .order("started_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return list(reversed(r.data or []))
+
+
+def load_evals_by_session(db: Client, session_ids: list[str]) -> dict[str, list]:
+    """Return all c_evals rows for the given session IDs, keyed by session_id."""
+    if not session_ids:
+        return {}
+    r = (
+        db.table("c_evals")
+        .select("*")
+        .in_("session_id", session_ids)
+        .execute()
+    )
+    result: dict[str, list] = {}
+    for e in (r.data or []):
+        result.setdefault(e["session_id"], []).append(e)
+    return result
+
+
 def write_eval(db: Client, row: dict) -> None:
     db.table("c_evals").insert(row).execute()
 

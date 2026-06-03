@@ -59,9 +59,11 @@ def evaluate_session(session: dict, db=None, dry_run: bool = False) -> dict:
     result = {"session_id": sid, "evals": 0, "incidents": 0, "shadow_cb_fires": 0,
               "error": None}
     try:
-        from sdk.db import load_session_traces, load_recent_session_costs
+        from sdk.db import (load_session_traces, load_recent_session_costs,
+                            load_recent_sessions, load_evals_by_session)
         from engine.eval_engine import run_all_evals
-        from engine.pattern_detector import run_all_detectors, compute_shadow_cb_fires
+        from engine.pattern_detector import (run_all_detectors, compute_shadow_cb_fires,
+                                             run_quality_detectors)
         from engine.quality_judge import judge_session
 
         traces = []
@@ -96,6 +98,24 @@ def evaluate_session(session: dict, db=None, dry_run: bool = False) -> dict:
                     [i.to_db_row() for i in incidents]
                 ).execute()
 
+        # Q3 quality pattern detectors — run after evals are persisted so the
+        # window includes the current session's quality scores
+        quality_incidents: list = []
+        try:
+            recent_sessions   = load_recent_sessions(db, limit=10) if db else []
+            evals_by_session  = load_evals_by_session(
+                db, [s["id"] for s in recent_sessions]
+            ) if db else {}
+            quality_incidents = run_quality_detectors(session, recent_sessions, evals_by_session)
+            result["quality_incidents"] = len(quality_incidents)
+
+            if not dry_run and db and quality_incidents:
+                db.table("c_incidents").insert(
+                    [i.to_db_row() for i in quality_incidents]
+                ).execute()
+        except Exception as qexc:
+            log.warning("Quality detector error for session %s: %s", sid[:8], qexc)
+
             # Write shadow CB fire records as info-severity incidents
             for fire in cb_fires:
                 row = {
@@ -121,9 +141,9 @@ def evaluate_session(session: dict, db=None, dry_run: bool = False) -> dict:
                 db.table("c_incidents").insert(row).execute()
 
         log.info(
-            "session=%s evals=%d quality=%d incidents=%d shadow_cb=%d%s",
+            "session=%s evals=%d quality=%d incidents=%d proactive=%d shadow_cb=%d%s",
             sid[:8], result["evals"], result["quality_evals"],
-            result["incidents"], result["shadow_cb_fires"],
+            result["incidents"], len(quality_incidents), result["shadow_cb_fires"],
             " [DRY RUN]" if dry_run else "",
         )
 

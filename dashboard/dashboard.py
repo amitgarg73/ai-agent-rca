@@ -372,7 +372,11 @@ PATTERN_DESCRIPTIONS = {
     "Tool Call Fabrication":    "2+ tool calls completed in under 50ms — too fast to have made a real API call. Agent may be hallucinating tool results.",
     "Handoff Schema Break":     "Research completed but the Risk agent's first step errored. The handoff payload is malformed or missing expected fields.",
     "Error Misinterpretation":  "HTTP error codes returned by tools (429, 500, etc.) but the agent continued as if they were successes.",
-    "Isolation Forest Anomaly": "Statistical outlier vs. baseline sessions. No named pattern matches — the session's feature vector is far from the normal cluster.",
+    "Isolation Forest Anomaly":        "Statistical outlier vs. baseline sessions. No named pattern matches — the session's feature vector is far from the normal cluster.",
+    "Proactive: Grounding Failure":    "Research scored below 0.40 on data grounding for 3 consecutive sessions. Trade proposals are being built on insufficient data — before any operational alert fires.",
+    "Proactive: Coherence Break":      "Orchestrator final decision does not match what research and risk produced this session. The synthesis layer is broken.",
+    "Proactive: Quality Cascade":      "3 or more quality dimensions each declined >0.20 over the last 5 sessions. Systemic degradation across agents — not an isolated bad day.",
+    "Proactive: Silent Degradation":   "Composite quality is declining across sessions while all operational evals stay clean. No alert has fired yet — but the trajectory is wrong.",
 }
 
 # Full detection explanation shown in RCA View expander — markdown supported here
@@ -391,6 +395,51 @@ PATTERN_DETAIL = {
         "(anomaly score ≥ 0.65). Likely causes: unusually high cost or token usage, "
         "abnormal latency, low eval pass rate, or a combination. "
         "Check the session metrics above against typical values to identify which feature is out of range."
+    ),
+    "Proactive: Grounding Failure": (
+        "**Trigger:** `research.data_grounding` scored below **0.40** for 3 consecutive sessions.\n\n"
+        "This dimension scores how many distinct tool types research called without errors. "
+        "Below 0.40 means fewer than 2 distinct data sources — research is guessing, not grounding.\n\n"
+        "**Why it matters before an operational alert fires:** Bad research inputs produce bad proposals. "
+        "The risk agent may still approve them if the structure looks right. "
+        "By the time a bad trade executes, the quality signal has been visible for 3 sessions.\n\n"
+        "**Fix:** Require 3+ distinct tool types per ticker investigation (price data, news, ATR). "
+        "Add an explicit output gate: agent must cite one price level and one quantitative indicator."
+    ),
+    "Proactive: Coherence Break": (
+        "**Trigger:** `orchestrator.decision_consistency` scored below **0.50** in this session.\n\n"
+        "This dimension checks whether the final trade decision is consistent with what research "
+        "and risk produced. Below 0.50 means the orchestrator reached a conclusion that research "
+        "and risk data do not support.\n\n"
+        "**Why critical:** The orchestrator is the final gatekeeper. If it ignores upstream "
+        "findings, the entire pipeline's reasoning chain is broken — even if all prior agents ran cleanly.\n\n"
+        "**Fix:** Add a structured handoff contract: orchestrator must reference specific research "
+        "findings and risk verdicts in its decision. Use typed outputs (Pydantic) so the "
+        "orchestrator cannot silently ignore upstream data."
+    ),
+    "Proactive: Quality Cascade": (
+        "**Trigger:** 3 or more quality dimensions each declined by more than **0.20** "
+        "over the last 5 sessions.\n\n"
+        "A single dimension declining is noise. Three or more declining together means something "
+        "systemic changed — a prompt update, a model version change, a data quality issue, "
+        "or market conditions that the pipeline was not designed for.\n\n"
+        "**Severity escalates to critical** when 5 or more dimensions are declining simultaneously.\n\n"
+        "**Fix:** Check for recent changes to agent prompts, tool schemas, or model versions. "
+        "Run a manual quality review of the last 3 sessions. "
+        "Identify which agent's dimensions are declining fastest — that is the root source."
+    ),
+    "Proactive: Silent Degradation": (
+        "**Trigger:** Composite quality score declining at more than **0.015 per session** "
+        "over the last 5 sessions, while all operational evals stay above 80% pass rate.\n\n"
+        "This is the most dangerous pattern. Operational metrics look healthy — no tool errors, "
+        "no pipeline breaks, no cost anomalies. But quality is quietly sliding. "
+        "By the time an operational alert fires, the degradation has been underway for weeks.\n\n"
+        "**The gap this closes:** Operational evals catch structural failures. "
+        "Quality evals catch reasoning failures. A pipeline can be structurally sound "
+        "while producing worse and worse decisions.\n\n"
+        "**Fix:** Manual review of recent session outputs before the next trading session. "
+        "Check for prompt drift, model behavior shifts, or gradual data quality decay. "
+        "If the trend continues for 2 more sessions, escalate to critical."
     ),
 }
 

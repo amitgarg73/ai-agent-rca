@@ -20,6 +20,11 @@ from engine.pattern_detector import (
     detect_handoff_schema_break,
     detect_error_misinterpretation,
     run_all_detectors,
+    detect_grounding_failure,
+    detect_coherence_break,
+    detect_quality_cascade,
+    detect_silent_degradation,
+    run_quality_detectors,
     Incident,
 )
 
@@ -477,6 +482,303 @@ class TestSilentPropagationSimulator:
         savings = sum(agent_costs.get(ag, 0) for ag in agents_after)
         assert savings > 0, f"CB savings should be positive, got {savings}"
         assert abs(savings - 0.0262) < 0.001, f"Expected ~$0.0262, got ${savings:.4f}"
+
+
+# ── Q3 Quality Pattern Detectors ──────────────────────────────────────────────
+
+def _make_qual_session(idx: int = 0, cost: float = 0.10, trades: int = 1) -> dict:
+    return {
+        "id": f"sess-q{idx:03d}",
+        "total_cost_usd": cost,
+        "trades_executed": trades,
+        "started_at": f"2026-06-0{(idx % 9) + 1}T06:00:00Z",
+    }
+
+
+def _qeval(session_id: str, agent: str, eval_name: str,
+           score: float, passed: bool = True) -> dict:
+    return {
+        "session_id": session_id,
+        "agent": agent,
+        "eval_name": eval_name,
+        "score": score,
+        "passed": passed,
+        "threshold": 0.60,
+    }
+
+
+def _build_history(n: int, cost: float = 0.10) -> list[dict]:
+    return [_make_qual_session(i, cost=cost) for i in range(n)]
+
+
+class TestGroundingFailure:
+    def _evals(self, sessions: list[dict], score: float) -> dict:
+        return {
+            s["id"]: [_qeval(s["id"], "research_quality", "data_grounding", score)]
+            for s in sessions
+        }
+
+    def test_fires_on_3_consecutive_low_sessions(self):
+        sessions = _build_history(3)
+        evals    = self._evals(sessions, 0.25)
+        inc      = detect_grounding_failure(sessions[-1], sessions, evals)
+        assert inc is not None
+        assert inc.pattern_name == "Proactive: Grounding Failure"
+        assert inc.severity == "warning"
+
+    def test_does_not_fire_when_only_2_low_sessions(self):
+        sessions = _build_history(2)
+        evals    = self._evals(sessions, 0.25)
+        inc      = detect_grounding_failure(sessions[-1], sessions, evals)
+        assert inc is None
+
+    def test_does_not_fire_when_last_session_above_threshold(self):
+        sessions = _build_history(3)
+        evals    = {
+            sessions[0]["id"]: [_qeval(sessions[0]["id"], "research_quality", "data_grounding", 0.25)],
+            sessions[1]["id"]: [_qeval(sessions[1]["id"], "research_quality", "data_grounding", 0.25)],
+            sessions[2]["id"]: [_qeval(sessions[2]["id"], "research_quality", "data_grounding", 0.65)],
+        }
+        inc = detect_grounding_failure(sessions[-1], sessions, evals)
+        assert inc is None
+
+    def test_does_not_fire_when_missing_eval_data(self):
+        sessions = _build_history(3)
+        # No evals for middle session
+        evals = {
+            sessions[0]["id"]: [_qeval(sessions[0]["id"], "research_quality", "data_grounding", 0.20)],
+            sessions[2]["id"]: [_qeval(sessions[2]["id"], "research_quality", "data_grounding", 0.20)],
+        }
+        inc = detect_grounding_failure(sessions[-1], sessions, evals)
+        assert inc is None
+
+    def test_uses_last_window_of_3(self):
+        """With 5 sessions where only last 3 are below threshold, should still fire."""
+        sessions = _build_history(5)
+        evals = {}
+        for i, s in enumerate(sessions):
+            score = 0.25 if i >= 2 else 0.80
+            evals[s["id"]] = [_qeval(s["id"], "research_quality", "data_grounding", score)]
+        inc = detect_grounding_failure(sessions[-1], sessions, evals)
+        assert inc is not None
+
+    def test_root_cause_contains_scores(self):
+        sessions = _build_history(3)
+        evals    = self._evals(sessions, 0.30)
+        inc      = detect_grounding_failure(sessions[-1], sessions, evals)
+        assert "0.30" in inc.root_cause
+
+
+class TestCoherenceBreak:
+    def test_fires_when_decision_consistency_below_threshold(self):
+        session = _make_qual_session(0)
+        evals   = {session["id"]: [
+            _qeval(session["id"], "orchestrator_quality", "decision_consistency", 0.35)
+        ]}
+        inc = detect_coherence_break(session, [session], evals)
+        assert inc is not None
+        assert inc.pattern_name == "Proactive: Coherence Break"
+        assert inc.severity == "critical"
+
+    def test_does_not_fire_above_threshold(self):
+        session = _make_qual_session(0)
+        evals   = {session["id"]: [
+            _qeval(session["id"], "orchestrator_quality", "decision_consistency", 0.75)
+        ]}
+        inc = detect_coherence_break(session, [session], evals)
+        assert inc is None
+
+    def test_does_not_fire_at_exact_threshold(self):
+        session = _make_qual_session(0)
+        evals   = {session["id"]: [
+            _qeval(session["id"], "orchestrator_quality", "decision_consistency", 0.50)
+        ]}
+        inc = detect_coherence_break(session, [session], evals)
+        assert inc is None
+
+    def test_does_not_fire_when_eval_missing(self):
+        session = _make_qual_session(0)
+        inc = detect_coherence_break(session, [session], {})
+        assert inc is None
+
+    def test_cost_wasted_equals_session_cost(self):
+        session = _make_qual_session(0, cost=1.23)
+        evals   = {session["id"]: [
+            _qeval(session["id"], "orchestrator_quality", "decision_consistency", 0.20)
+        ]}
+        inc = detect_coherence_break(session, [session], evals)
+        assert inc.cost_wasted == 1.23
+
+
+class TestQualityCascade:
+    def _evals_declining(self, sessions: list[dict],
+                         dims: list[tuple[str, str]], drop: float = 0.30) -> dict:
+        """Build evals where listed dims go from 0.80 to 0.80-drop across the window."""
+        result = {}
+        n = len(sessions)
+        for i, s in enumerate(sessions):
+            rows = []
+            for agent, dim in dims:
+                score = 0.80 - drop * (i / max(n - 1, 1))
+                rows.append(_qeval(s["id"], agent, dim, round(score, 3)))
+            result[s["id"]] = rows
+        return result
+
+    def test_fires_on_3_declining_dims_over_5_sessions(self):
+        sessions = _build_history(5)
+        dims     = [
+            ("research_quality",     "data_grounding"),
+            ("risk_quality",         "parameter_completeness"),
+            ("orchestrator_quality", "decision_consistency"),
+        ]
+        evals = self._evals_declining(sessions, dims, drop=0.30)
+        inc   = detect_quality_cascade(sessions[-1], sessions, evals)
+        assert inc is not None
+        assert inc.pattern_name == "Proactive: Quality Cascade"
+
+    def test_does_not_fire_on_only_2_declining_dims(self):
+        sessions = _build_history(5)
+        dims     = [
+            ("research_quality",     "data_grounding"),
+            ("risk_quality",         "parameter_completeness"),
+        ]
+        evals = self._evals_declining(sessions, dims, drop=0.30)
+        inc   = detect_quality_cascade(sessions[-1], sessions, evals)
+        assert inc is None
+
+    def test_does_not_fire_when_drop_below_threshold(self):
+        sessions = _build_history(5)
+        dims     = [
+            ("research_quality",     "data_grounding"),
+            ("risk_quality",         "parameter_completeness"),
+            ("orchestrator_quality", "decision_consistency"),
+        ]
+        evals = self._evals_declining(sessions, dims, drop=0.10)   # only 0.10 drop — below 0.20
+        inc   = detect_quality_cascade(sessions[-1], sessions, evals)
+        assert inc is None
+
+    def test_critical_severity_on_5_plus_dims(self):
+        sessions = _build_history(5)
+        dims     = [
+            ("research_quality",     "data_grounding"),
+            ("research_quality",     "thesis_coherence"),
+            ("research_quality",     "actionability"),
+            ("risk_quality",         "parameter_completeness"),
+            ("orchestrator_quality", "decision_consistency"),
+        ]
+        evals = self._evals_declining(sessions, dims, drop=0.30)
+        inc   = detect_quality_cascade(sessions[-1], sessions, evals)
+        assert inc is not None
+        assert inc.severity == "critical"
+
+    def test_requires_at_least_3_sessions(self):
+        sessions = _build_history(2)
+        dims     = [("research_quality", "data_grounding")]
+        evals    = self._evals_declining(sessions, dims, drop=0.30)
+        inc      = detect_quality_cascade(sessions[-1], sessions, evals)
+        assert inc is None
+
+
+class TestSilentDegradation:
+    def _composite_evals(self, sessions: list[dict],
+                         start: float, end: float) -> dict[str, list]:
+        """Build composite_score evals declining from start to end across the window."""
+        result = {}
+        n      = len(sessions)
+        agents = ["research_quality", "risk_quality",
+                  "orchestrator_quality", "session_quality"]
+        for i, s in enumerate(sessions):
+            score = start + (end - start) * (i / max(n - 1, 1))
+            rows  = [
+                _qeval(s["id"], a, "composite_score", round(score, 3), passed=score >= 0.60)
+                for a in agents
+            ]
+            # Add some stable operational evals (passed=True)
+            rows += [
+                {"session_id": s["id"], "agent": "research", "eval_name": "tool_success_rate",
+                 "score": 0.90, "passed": True, "threshold": 0.80}
+            ]
+            result[s["id"]] = rows
+        return result
+
+    def test_fires_when_composite_declining_and_ops_stable(self):
+        sessions = _build_history(5)
+        evals    = self._composite_evals(sessions, start=0.80, end=0.50)
+        inc      = detect_silent_degradation(sessions[-1], sessions, evals)
+        assert inc is not None
+        assert inc.pattern_name == "Proactive: Silent Degradation"
+
+    def test_warning_when_below_0_60(self):
+        sessions = _build_history(5)
+        evals    = self._composite_evals(sessions, start=0.75, end=0.45)
+        inc      = detect_silent_degradation(sessions[-1], sessions, evals)
+        assert inc is not None
+        assert inc.severity == "warning"
+
+    def test_info_when_declining_but_still_above_0_60(self):
+        sessions = _build_history(5)
+        evals    = self._composite_evals(sessions, start=0.85, end=0.65)
+        inc      = detect_silent_degradation(sessions[-1], sessions, evals)
+        assert inc is not None
+        assert inc.severity == "info"
+
+    def test_does_not_fire_when_stable(self):
+        sessions = _build_history(5)
+        evals    = self._composite_evals(sessions, start=0.75, end=0.73)  # flat
+        inc      = detect_silent_degradation(sessions[-1], sessions, evals)
+        assert inc is None
+
+    def test_does_not_fire_when_ops_also_degrading(self):
+        """If ops are also failing, let operational detectors handle it."""
+        sessions = _build_history(5)
+        n        = len(sessions)
+        agents   = ["research_quality", "risk_quality",
+                    "orchestrator_quality", "session_quality"]
+        evals: dict[str, list] = {}
+        for i, s in enumerate(sessions):
+            score = 0.80 - 0.35 * (i / max(n - 1, 1))
+            rows  = [_qeval(s["id"], a, "composite_score", round(score, 3)) for a in agents]
+            # Operational evals failing — op pass rate below floor
+            rows += [
+                {"session_id": s["id"], "agent": "research", "eval_name": "tool_success_rate",
+                 "score": 0.40, "passed": False, "threshold": 0.80}
+            ]
+            evals[s["id"]] = rows
+        inc = detect_silent_degradation(sessions[-1], sessions, evals)
+        assert inc is None
+
+    def test_requires_at_least_3_sessions(self):
+        sessions = _build_history(2)
+        evals    = self._composite_evals(sessions, start=0.80, end=0.50)
+        inc      = detect_silent_degradation(sessions[-1], sessions, evals)
+        assert inc is None
+
+
+class TestRunQualityDetectors:
+    def test_returns_list(self):
+        session = _make_qual_session(0)
+        result  = run_quality_detectors(session, [session], {})
+        assert isinstance(result, list)
+
+    def test_collects_multiple_incidents(self):
+        """Both coherence break and grounding failure can fire in the same session."""
+        sessions = _build_history(3)
+        current  = sessions[-1]
+        evals    = {}
+        for s in sessions:
+            evals[s["id"]] = [
+                _qeval(s["id"], "research_quality",     "data_grounding",        0.20),
+                _qeval(s["id"], "orchestrator_quality", "decision_consistency",  0.30),
+            ]
+        incidents = run_quality_detectors(current, sessions, evals)
+        names = [i.pattern_name for i in incidents]
+        assert "Proactive: Grounding Failure" in names
+        assert "Proactive: Coherence Break"   in names
+
+    def test_never_raises_on_bad_input(self):
+        """Detectors must not crash the monitor even with garbage data."""
+        result = run_quality_detectors({}, [None, "bad", 42], {"x": [None]})
+        assert isinstance(result, list)
 
 
 # ── Hyperactive Polling Loop ──────────────────────────────────────────────────
