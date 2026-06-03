@@ -2757,15 +2757,23 @@ elif page == "Quality Drift":
 
     # ── TAB 2: SEMANTIC HEALTH ────────────────────────────────────────────────
     with tab_sem:
-        with st.popover("? How quality is scored"):
-            st.markdown(
-                "Operational evals check whether steps *completed*. "
-                "Quality scores check whether the reasoning was *good*.\n\n"
-                "Each agent is scored across multiple dimensions and rolled into a composite score (0–1). "
-                "**Threshold is 0.60** — below that, output quality is a concern even if nothing failed operationally.\n\n"
-                "Scores are inferred from trace patterns (tool diversity, decision traces, pipeline flow). "
-                "Raw LLM output text is not yet stored in traces — full semantic scoring will activate once it is."
-            )
+
+        def _sem_section(number: str, title: str, subtitle: str, help_md: str):
+            """Render a consistent section header with inline ? popover."""
+            _hc, _hp = st.columns([11, 1])
+            with _hc:
+                st.markdown(
+                    f'<div style="margin:4px 0 2px">'
+                    f'<span style="font-size:0.70rem;font-weight:700;color:#94a3b8;'
+                    f'text-transform:uppercase;letter-spacing:0.08em">{number}</span>&nbsp;&nbsp;'
+                    f'<span style="font-size:1.05rem;font-weight:700;color:#0f172a">{title}</span>'
+                    f'<div style="font-size:0.80rem;color:#64748b;margin-top:2px">{subtitle}</div>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+            with _hp:
+                with st.popover("?"):
+                    st.markdown(help_md)
 
         _qual_colors = {
             "research_quality":     "#f59e0b",
@@ -2774,30 +2782,27 @@ elif page == "Quality Drift":
             "session_quality":      "#8b5cf6",
         }
 
-        # ── Heatmap — first thing you see ────────────────────────────────────
+        # ── Section 1: Pipeline Quality Snapshot ─────────────────────────────
         if not evals_ts.empty:
-            _hm_hdr, _hm_help = st.columns([8, 1])
-            with _hm_hdr:
-                st.markdown("**Quality composite heatmap — last 15 sessions**")
-            with _hm_help:
-                with st.popover("?"):
-                    st.markdown("**How to read the heatmap**")
-                    st.markdown(
-                        "Each cell shows one agent's composite quality score for one session.\n\n"
-                        "**Rows** = agents (Research, Risk, Orchestrator, Session)\n\n"
-                        "**Columns** = sessions, oldest on the left, most recent on the right\n\n"
-                        "**Color scale:**\n"
-                        "- Green (≥ 0.60) — quality is healthy for that agent in that session\n"
-                        "- Yellow (0.40–0.60) — borderline; worth watching\n"
-                        "- Red (< 0.40) — below threshold; the agent's reasoning quality was poor\n\n"
-                        "**What to look for:**\n"
-                        "- A row drifting from green to red (left to right) = that agent is quietly degrading — "
-                        "the Silent Degradation pattern\n"
-                        "- A column that is all red = that session had pipeline-wide quality failure\n"
-                        "- Red spreading diagonally across rows = Quality Cascade — one agent's drop "
-                        "pulled downstream agents down with it\n"
-                        "- Isolated red cells = single-session anomaly, likely noise"
-                    )
+            _sem_section(
+                "Section 1", "Pipeline Quality Snapshot",
+                "Last 15 sessions · one cell per agent per session · green = healthy, red = below threshold",
+                "**How to read the heatmap**\n\n"
+                "Each cell shows one agent's composite quality score for one session.\n\n"
+                "**Rows** = agents (Research, Risk, Orchestrator, Session)\n\n"
+                "**Columns** = sessions, oldest on the left, most recent on the right\n\n"
+                "**Color scale:**\n"
+                "- Green (≥ 0.60) — quality is healthy for that agent in that session\n"
+                "- Yellow (0.40–0.60) — borderline; worth watching\n"
+                "- Red (< 0.40) — below threshold; the agent's reasoning quality was poor\n\n"
+                "**What to look for:**\n"
+                "- A row drifting from green to red (left to right) = that agent is quietly degrading — "
+                "the Silent Degradation pattern\n"
+                "- A column that is all red = that session had pipeline-wide quality failure\n"
+                "- Red spreading diagonally across rows = Quality Cascade — one agent's drop "
+                "pulled downstream agents down with it\n"
+                "- Isolated red cells = single-session anomaly, likely noise"
+            )
             _last15_ids = s.tail(15)["id"].tolist()
             _qhm = evals_ts[
                 evals_ts["agent"].str.endswith("_quality", na=False) &
@@ -2864,27 +2869,24 @@ elif page == "Quality Drift":
                     "n":       len(_last_n),
                 }
 
-            # ── Drift summary cards ────────────────────────────────────────────
-            _drift_hdr, _drift_help = st.columns([8, 1])
-            with _drift_hdr:
-                st.markdown("**Trend direction — last 5 sessions**")
-            with _drift_help:
-                with st.popover("?"):
-                    st.markdown("**How to read these cards**")
-                    st.markdown(
-                        "Each card shows one agent's current quality score and which direction it is moving.\n\n"
-                        "**Score (large number):** The composite quality score from the most recent session. "
-                        "0 = worst, 1 = best. Anything below **0.60** is a concern even if no operational incident fired.\n\n"
-                        "**Arrow and label:** Direction of the linear trend calculated across the last 5 sessions.\n"
-                        "- ▲ Improving — score is rising session over session\n"
-                        "- → Stable — score is flat within ±0.01\n"
-                        "- ▼ Declining — score is falling. A declining trend that crosses 0.60 is the early "
-                        "warning signal for Silent Degradation — the agent is getting worse before any operational "
-                        "error fires.\n\n"
-                        "**Δ change:** Difference between the oldest and newest of the last 5 sessions. "
-                        "A large negative number means quality dropped significantly in a short window.\n\n"
-                        "**Why 5 sessions?** Short enough to catch recent drift; long enough to filter one-session noise."
-                    )
+            # ── Section 2: Recent Trend Direction ────────────────────────────
+            st.divider()
+            _sem_section(
+                "Section 2", "Recent Trend Direction",
+                "Linear trend across the last 5 sessions — current score and direction per agent",
+                "**How to read these cards**\n\n"
+                "Each card shows one agent's current quality score and which direction it is moving.\n\n"
+                "**Score (large number):** The composite quality score from the most recent session. "
+                "0 = worst, 1 = best. Anything below **0.60** is a concern even if no operational incident fired.\n\n"
+                "**Arrow and label:** Direction of the linear trend calculated across the last 5 sessions.\n"
+                "- ▲ Improving — score is rising session over session\n"
+                "- → Stable — score is flat within ±0.01\n"
+                "- ▼ Declining — score is falling. A declining trend that crosses 0.60 is the early "
+                "warning signal for Silent Degradation — the agent is getting worse before any operational error fires.\n\n"
+                "**Δ change:** Difference between the oldest and newest of the last 5 sessions. "
+                "A large negative number means quality dropped significantly in a short window.\n\n"
+                "**Why 5 sessions?** Short enough to catch recent drift; long enough to filter one-session noise."
+            )
             _dc = st.columns(4)
             for _di, _qa in enumerate(["research_quality", "risk_quality",
                                         "orchestrator_quality", "session_quality"]):
@@ -3054,9 +3056,33 @@ elif page == "Quality Drift":
                     f'</span>'
                 )
 
-            # Shared legend strip
+            # ── Section 3: Quality Trends Over Time ──────────────────────────
+            st.divider()
+            _sem_section(
+                "Section 3", "Quality Trends Over Time",
+                "Composite score per session · dashed line = linear trend · red dot = incident",
+                "**How to read these charts**\n\n"
+                "Each chart shows how one agent's quality composite score has moved across sessions.\n\n"
+                "**Solid line:** The actual composite score per session (0–1). "
+                "It is the average of all quality dimensions for that agent in that session.\n\n"
+                "**Dashed orange line:** Linear trend fitted across all sessions shown. "
+                "A downward slope means quality is declining over time even if individual sessions look acceptable. "
+                "This is the Silent Degradation signal.\n\n"
+                "**Dotted grey line at 0.60:** The quality threshold. Sessions below this line "
+                "passed operationally but the reasoning quality was below the acceptable floor.\n\n"
+                "**Red dot on a session:** An incident was detected for that session. "
+                "Hover to see which pattern fired. A cluster of red dots alongside a downward trend "
+                "suggests the pipeline is under sustained stress.\n\n"
+                "**Mean / Pass / Δ (below chart title):**\n"
+                "- Mean = average score across all sessions shown\n"
+                "- Pass = % of sessions that cleared the 0.60 threshold\n"
+                "- Δ = change from first to last session (negative = quality dropped)\n\n"
+                "**System composite** (top chart) is the mean of all four agent scores per session — "
+                "a single number summarising overall pipeline quality."
+            )
+            # Legend strip — directly under section heading
             st.markdown(
-                '<div style="font-size:0.78rem;color:#475569;margin-bottom:10px;'
+                '<div style="font-size:0.78rem;color:#475569;margin:6px 0 10px;'
                 'display:flex;gap:18px;align-items:center">'
                 '<span><span style="display:inline-block;width:24px;height:2px;'
                 'background:#3b82f6;vertical-align:middle;margin-right:4px"></span>score</span>'
@@ -3074,31 +3100,6 @@ elif page == "Quality Drift":
 
             # ── System composite card ──────────────────────────────────────────
             _smn, _spct, _sdlt = _stats(_sys_comp["score"])
-            _chart_hdr_c, _chart_help_c = st.columns([8, 1])
-            with _chart_hdr_c:
-                st.markdown("**Quality trend over time**")
-            with _chart_help_c:
-                with st.popover("?"):
-                    st.markdown("**How to read these charts**")
-                    st.markdown(
-                        "Each chart shows how one agent's quality composite score has moved across sessions.\n\n"
-                        "**Solid line:** The actual composite score per session (0–1). "
-                        "It is the average of all quality dimensions for that agent in that session.\n\n"
-                        "**Dashed orange line:** Linear trend fitted across all sessions shown. "
-                        "A downward slope means quality is declining over time even if individual sessions look acceptable. "
-                        "This is the Silent Degradation signal.\n\n"
-                        "**Dotted grey line at 0.60:** The quality threshold. Sessions below this line "
-                        "passed operationally but the reasoning quality was below the acceptable floor.\n\n"
-                        "**Red dot on a session:** An incident was detected for that session. "
-                        "Hover to see which pattern fired. A cluster of red dots alongside a downward trend "
-                        "suggests the pipeline is under sustained stress.\n\n"
-                        "**Mean / Pass / Δ (below chart title):**\n"
-                        "- Mean = average score across all sessions shown\n"
-                        "- Pass = % of sessions that cleared the 0.60 threshold\n"
-                        "- Δ = change from first to last session (negative = quality dropped)\n\n"
-                        "**System composite** (top chart) is the mean of all four agent scores per session — "
-                        "a single number summarising overall pipeline quality."
-                    )
             st.markdown(
                 '<div style="background:#ffffff;border:1px solid #e2e8f0;'
                 'border-radius:12px;padding:16px 20px 4px;margin-bottom:12px">',
@@ -3227,6 +3228,21 @@ elif page == "Quality Drift":
                 "session_quality":       "#ddd6fe",
             }
 
+            # ── Section 4: Session Detail ─────────────────────────────────────
+            st.divider()
+            _sem_section(
+                "Section 4", "Session Detail",
+                "Pick any session to see per-dimension scores with fix guidance for anything below threshold",
+                "**How to read the dimension breakdown**\n\n"
+                "Each card is one quality dimension for one agent in the selected session.\n\n"
+                "**Score (0–1):** How well the agent performed on that dimension. Below 0.60 = concern.\n\n"
+                "**Fixable badge:** The dimension is below threshold and can be improved by changing agent code. "
+                "Click **Fix ?** to see exactly what to change.\n\n"
+                "**Measurement gap badge:** Cannot be scored yet — requires raw LLM output text stored in traces. "
+                "No agent code change will improve this score until output logging is added.\n\n"
+                "**Composite score (top of each agent block):** Average of all dimensions for that agent. "
+                "This is the number shown in Sections 2 and 3."
+            )
             with st.expander("Session quality breakdown", expanded=True):
                 # Session picker — default to latest
                 _sel_col, _sel_spacer = st.columns([3, 5])
