@@ -1,7 +1,7 @@
 # AI Agent RCA — Product Design
 
 *Single source of truth. Absorbs prototype-design.md, rca-product-idea.md, semantic_quality_design.md.*
-*Last updated: 2026-05-31*
+*Last updated: 2026-06-02*
 
 ---
 
@@ -332,7 +332,9 @@ operational evals in all queries.
 
 ## 8. Pattern Library
 
-### Operational Patterns (6, rule-based, implemented)
+### Operational Patterns (10, rule-based, implemented)
+
+**Original 6:**
 
 | Pattern | Severity | Detection rule | Fix template |
 |---|---|---|---|
@@ -342,6 +344,15 @@ operational evals in all queries.
 | **Empty Result Loop** | warning | Same tool called 3+ times successfully + 0 trades | Add result quality validation; fail fast on empty returns |
 | **Silent Exit** | info | 0 trades + no terminal_reason + no tool errors | Add terminal_reason to all orchestrator exit paths |
 | **Cost Anomaly** | warning | Session cost > mean + 2 sigma | Check which agent consumed excess; review token usage |
+
+**Added 2026-06-01 (from community pain points):**
+
+| Pattern | Severity | Detection rule | Fix template |
+|---|---|---|---|
+| **Hyperactive Polling Loop** | warning | Same tool called 5+ times in <60s with same args | Add result caching and backoff logic; deduplicate calls before execution |
+| **Tool Call Fabrication** | critical | Tool call references non-existent tool name or invalid parameters | Add tool schema validation before execution; log and reject unknown tool calls |
+| **Handoff Schema Break** | critical | Agent output does not match expected input schema of next agent | Add schema validation at each handoff boundary; structured output enforcement |
+| **Error Misinterpretation** | warning | Agent proceeds normally after receiving error response from tool | Add explicit error detection in agent decision logic; treat error responses as failed steps |
 
 ### Quality Patterns (4, rule-based, to be implemented in Phase Q3)
 
@@ -478,32 +489,17 @@ session context, and trend direction.
 ### Current pages (implemented)
 
 1. **Ledger** — KPIs + Cost by Agent donut + AgGrid session grid + inline detail + LLM analyst summary
-2. **Quality Drift** — 3-tab redesign:
-   - Option A: Eval heatmap (sessions × evals, pass/fail color) + business outcome bars
-   - Option B: Sub-tabbed Operational | Business Outcomes with trend lines
-   - Option C: Health timeline (green/amber/red dots) + dual op-vs-biz bars per session
+2. **Quality Drift** — 2-tab structure:
+   - **Operational / Business Health**: session health timeline (green/amber/red, 60% op + 40% biz), incident frequency stacked bar, rolling eval pass rate by agent, critical eval scores over time, pipeline completion rate, trades vs cost, business outcome score trends, op-vs-biz score comparison
+   - **Semantic Health**: per-agent quality drift cards (slope, current score, direction), system composite trend chart, contributing agent small multiples (Research/Risk/Orchestrator), session quality dimension breakdown with inline fix/gap popovers
 3. **Incidents Feed** — filtered incident list, Run Analysis on All Sessions
 4. **RCA View** — execution trace + inline eval scores + fix suggestion
-5. **Failure Simulator** — inject any of 6 patterns, run analysis
+5. **Failure Simulator** — inject any of 10 patterns, run analysis
 6. **Trace Inspector** — raw trace browser
 
-### Quality layer additions (Phase Q2)
+### Shared KPIs above tabs (Quality Drift page)
 
-**Quality Drift — Option B, third sub-tab "Quality":**
-- Per-agent composite quality score trend (rolling 5-session line chart)
-- Per-dimension breakdown for selected agent (scores per session, red = below threshold)
-- Active recommendations panel: any dimension below threshold for 2+ sessions surfaces
-  a structured recommendation with dismiss button
-
-**Quality Drift — Option C Timeline:**
-- Health dot color: 50% operational + 20% business + 30% quality
-- Hover: Op: X% | Biz: Y% | Quality: Z%
-- Quality incidents → triangle marker vs circle
-
-**Session Deep Dive (Ledger + RCA View):**
-- "Quality Scores" section alongside existing operational eval scores
-- Per-dimension scores with LLM judge notes inline
-- Session-level recommendation if any dimension below threshold
+Four tiles: Operational Health (last 7), Business Outcomes (last 7), Incidents (last 7 sessions), Quality Score (last 7). All compare to prior 7 sessions with delta.
 
 ---
 
@@ -515,42 +511,63 @@ session context, and trend direction.
 |---|---|---|
 | 1 | Data: c_evals, c_incidents, eval engine (17 evals), pattern detector (6 patterns), backfill | 2026-05-30 |
 | 2 | RCA: call stack builder, fix suggestions, rca_engine.py | 2026-05-30 |
-| 3 | Dashboard: 6 pages, Quality Drift 3-tab, business evals, auth gate, LLM summaries | 2026-05-31 |
+| 3 | Dashboard: 6 pages, Quality Drift, business evals, auth gate, LLM summaries | 2026-05-31 |
+| 4b-patterns | 4 new operational patterns (community research): Hyperactive Polling, Tool Fabrication, Handoff Schema Break, Error Misinterpretation | 2026-06-01 |
+| 4b-shadow-cb | Shadow CBs: compute_shadow_cb_fires() in pattern_detector; realtime_monitor writes Shadow CB incidents | 2026-06-01 |
+| 4b-realtime | Supabase realtime monitor (engine/realtime_monitor.py): INSERT subscription + polling fallback | 2026-06-01 |
+| 4b-tool-tracer | Tool-level cost tracer SDK (sdk/tool_tracer.py): @trace_tool decorator, ToolSpan, c_tool_spans | 2026-06-01 |
+| D1 | Isolation Forest (engine/anomaly_detector.py): built, 3 real anomalies detected (May 28 yfinance hang) | 2026-06-01 |
+| Q1 | quality_judge.py: 20 dimensions, 4 composites, structural proxy scoring, 41 tests | 2026-06-01 |
+| Q2 | Semantic Health tab: drift cards, system composite + agent small multiples, session dimension breakdown with inline fix/gap popovers | 2026-06-02 |
 
-### Quality layer
+211 tests passing. 36 sessions, 684 quality evals backfilled.
 
-| Phase | What | Effort | Gate |
-|---|---|---|---|
-| **Q1** | `engine/quality_judge.py` — Haiku batch eval, prompt construction, JSON parsing, c_evals storage. `scripts/backfill_quality.py`. Tests. | 2-3 days | Manual review of 10 sessions to validate scores |
-| **Q2** | Quality tab in Quality Drift. Per-agent trend charts. Recommendations panel. Quality scores in session detail. | 2-3 days | Q1 done |
-| **Q3** | 4 new quality patterns in pattern_detector.py. Drift detection rules (3-session decline, threshold breach). Tests. | 1-2 days | Q2 done |
-| **Q4** | Shadow quality CBs. `would_trigger_cb` flag. CB config. Dashboard CB markers + cost-saved estimates. | 1-2 days | Q3 done |
+### Pending
 
-### Real-time
-
-| Phase | What | Effort | Gate |
-|---|---|---|---|
-| **4a** | In-process operational CBs in trading-agent-c (shadow mode). Per-agent eval after handoff. `CircuitBreakerError` skeleton. | 1-2 days | Q4 done; Strategy C still in testing |
-| **4b** | Supabase realtime subscription on c_sessions. Auto-run evals + quality judge post-session. | 1 day | 4a done |
-| **4c** | Flip CBs to real mode. Operational CBs first; quality CBs after separate validation. | 0.5 days | Strategy C testing complete; false positive rate < 10% confirmed |
-
-### ML / dynamic detection
-
-| Phase | What | Data needed | Notes |
-|---|---|---|---|
-| **D1** | `engine/anomaly_detector.py` — IsolationForestDetector, fit/score/explain/persist. Feature vector includes quality scores. Auto-retrain every 10 sessions. "Unknown Anomaly" incident type. | 20+ sessions with quality scores | scikit-learn IsolationForest |
-| **D2** | `engine/sequence_miner.py` — SequenceTrie, mine_patterns, match. Offline batch. Human review gate on discovered patterns. | 50+ sessions | Regime split at 100+ |
-| **P1** | Predictive early warning: declining eval score trend → incident probability. Simple logistic regression. Weekly health report (Haiku auto-generated). | 100+ sessions | — |
-
-### Productization
-
-| Phase | What | Gate |
+| Phase | What | Status |
 |---|---|---|
-| **9** | Multi-tenant schema (tenant_id), per-customer Isolation Forest models, hosted auth | LinkedIn demand test: 3+ engineers DM asking how to get it |
+| **Q3** | 4 quality patterns: Grounding Failure, Coherence Break, Quality Cascade, Silent Degradation — fire when composites decline across sessions | Not started |
+| **Q4** | Shadow quality CBs: would_trigger_cb flag, CB config, dashboard CB markers + cost-saved estimates | Depends on Q3 |
+| **4a** | In-process operational CBs in trading-agent-c (shadow mode, in-memory, ~0.5ms) | Not started |
+| **4c** | Flip CBs to real mode | Blocked: Strategy C still in testing |
+| **D2** | Sequence pattern mining (engine/sequence_miner.py) | Needs 50+ sessions |
+| **P1** | Predictive early warning: declining score trend → incident probability | Needs 100+ sessions |
+| **9** | Multi-tenant schema, per-customer Isolation Forest, hosted auth | Gate: LinkedIn demand test (3+ engineer DMs) |
 
 ---
 
-## 13. Product Positioning
+## 13. LLM Quality Drift Signals
+
+Current structural proxy scoring infers quality from *what ran* (tool sequences, trace patterns, token counts), not *what the LLM said*. This is deliberate — no raw output text is stored yet. The following signals extend drift detection progressively.
+
+### Signals available now (no output text required)
+
+| Signal | Source | How to detect | What it catches |
+|---|---|---|---|
+| **Output token trend** | `c_traces` (output_tokens per agent) | Rolling avg per agent, flag >20% shift over 5 sessions | LLMs producing shorter outputs on model updates; "lazy" degradation |
+| **Tool retry rate** | `c_traces` | Count repeated calls to same tool per agent per session | Rising retries = agent not satisfied with first result; degradation signal before tool_success_rate drops |
+| **Decision variance** | `c_sessions` | Same market condition (tickers, direction) → different decisions across sessions | Coherence drift — inconsistency under similar inputs |
+| **Model version tracking** | `c_sessions` metadata | Add model_name field; flag session where version changes | Silent model updates (Anthropic, OpenAI) are the most common cause of systemic drift |
+
+### Signals requiring output text storage
+
+| Signal | Method | What it catches |
+|---|---|---|
+| **Embedding drift** | Cosine similarity of research output embeddings to rolling baseline | Generic/repetitive outputs that pass all structural checks |
+| **Hedge word frequency** | Count "unable to determine", "insufficient data", "unclear" per session per agent | Models expressing uncertainty through hedging — early signal of grounding failure |
+| **Structured output completeness** | Did agent populate all expected fields in output schema? | Partial outputs that pass structural checks but are semantically incomplete |
+
+### Implementation priority
+
+1. Output token trend + model version tracking — already in traces, 10-line additions, zero schema change
+2. Tool retry rate — already in traces, computable from existing data
+3. Output text storage — requires schema change to c_traces; enables embedding drift and hedge detection
+
+Quality CB thresholds for drift signals will be calibrated once 10+ clean sessions accumulate with the new fields.
+
+---
+
+## 14. Product Positioning
 
 ### Category
 
@@ -597,7 +614,7 @@ Most people building AI observability tools come from ML eval or DevOps, not AIO
 
 ---
 
-## 14. Known Incidents to Validate Against
+## 15. Known Incidents to Validate Against
 
 Real Strategy C failures. The prototype should surface all behavioral failures:
 
@@ -612,7 +629,7 @@ Items 3-5 are schema bugs — validate a different detection class.
 
 ---
 
-## 15. What This Does NOT Do
+## 16. What This Does NOT Do
 
 - Does NOT modify trading-agent-c pipeline logic
 - Does NOT run during agent execution — quality evals are post-session async
@@ -623,7 +640,7 @@ Items 3-5 are schema bugs — validate a different detection class.
 
 ---
 
-## 16. Repository
+## 17. Repository
 
 **GitHub:** `github.com/amitgarg73/ai-agent-rca`
 **Working dir:** `/Users/amitgarg/Claude Projects/ai-agent-rca`
@@ -633,5 +650,5 @@ Items 3-5 are schema bugs — validate a different detection class.
 streamlit run dashboard/dashboard.py         # local dev
 python3 scripts/backfill_evals.py            # re-run operational evals
 python3 scripts/backfill_evals.py --dry-run  # preview only
-python3 -m pytest tests/ -v                  # run all tests (84 passing)
+python3 -m pytest tests/ -v                  # run all tests (211 passing)
 ```
