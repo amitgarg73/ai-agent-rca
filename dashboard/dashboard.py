@@ -590,44 +590,48 @@ def pipeline_strip(sid: str, traces_df, evals_df, session_agents=None) -> str:
         "risk":         "RSK",
         "orchestrator": "ORC",
     }
+
+    def _normalize(a: str) -> str:
+        a = a.lower()
+        if a.startswith("research"):   return "research"
+        if a == "market_shadow":       return "market"
+        if "news" in a:                return "news_analyst"
+        return a
+
+    # "ran" = had substantive work: tokens > 0 OR a tool_call step
     _ran: set[str] = set()
     if not traces_df.empty:
-        for a in traces_df[traces_df["session_id"] == sid]["agent"].dropna().unique():
-            a = a.lower()
-            if a.startswith("research"):
-                _ran.add("research")
-            elif a == "market_shadow":
-                _ran.add("market")
-            elif "news" in a:
-                _ran.add("news_analyst")
-            else:
+        _st = traces_df[traces_df["session_id"] == sid]
+        for _, _tr in _st.iterrows():
+            a    = _normalize(str(_tr.get("agent") or ""))
+            tok  = int(_tr.get("tokens_input") or 0) + int(_tr.get("tokens_output") or 0)
+            step = str(_tr.get("step_type") or "").lower()
+            if tok > 0 or step == "tool_call":
                 _ran.add(a)
     if not _ran and session_agents:
         for a in session_agents:
-            a = str(a).lower()
-            if a.startswith("research"):
-                _ran.add("research")
-            elif a == "market_shadow":
-                _ran.add("market")
-            elif "news" in a:
-                _ran.add("news_analyst")
-            else:
-                _ran.add(a)
+            _ran.add(_normalize(str(a)))
 
     def _eval_color(ag):
-        if ag not in _ran:
-            return "#e2e8f0", "#94a3b8", f"{_labels.get(ag, ag)}: did not run", "○"
-        _ae = (
-            evals_df[(evals_df["session_id"] == sid) & (evals_df["agent"] == ag)]
-            if not evals_df.empty else pd.DataFrame()
-        )
+        # Check operational evals (agent=ag) and quality evals (agent=ag_quality)
+        _ae = pd.DataFrame()
+        if not evals_df.empty:
+            _ae = evals_df[
+                (evals_df["session_id"] == sid) &
+                (evals_df["agent"].isin([ag, ag + "_quality"]))
+            ]
+        ran = ag in _ran
         if _ae.empty:
+            if not ran:
+                return "#e2e8f0", "#94a3b8", f"{_labels.get(ag, ag)}: did not run", "○"
             return "#94a3b8", "#ffffff", f"{_labels.get(ag, ag)}: ran — no eval data", "●"
         n_pass = int(_ae["passed"].sum())
         n_tot  = len(_ae)
         pr     = n_pass / n_tot * 100
         bg     = "#10b981" if pr >= 80 else "#f59e0b" if pr >= 60 else "#ef4444"
-        return bg, "#ffffff", f"{_labels.get(ag, ag)}: {n_pass}/{n_tot} evals passed ({pr:.0f}%)", "●"
+        sym    = "●"
+        suffix = "" if ran else " (quality eval only — agent may not have run)"
+        return bg, "#ffffff", f"{_labels.get(ag, ag)}: {n_pass}/{n_tot} evals passed ({pr:.0f}%){suffix}", sym
 
     def _node(bg, fg, tip, sym, label):
         safe = tip.replace('"', "&quot;")
