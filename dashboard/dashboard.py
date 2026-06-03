@@ -2839,10 +2839,35 @@ elif page == "Quality Drift":
             )
             _sys_comp["lbl"] = _sys_comp["started_at"].dt.strftime("%m-%d %H:%M")
 
+            # ── Per-agent incident lookup (filtered by failed_evals.agent) ───────
+            def _agent_inc_lookup(target_agent: str) -> dict:
+                result: dict = {}
+                if incidents.empty:
+                    return result
+                for _, _ir in incidents.iterrows():
+                    _fe = _ir.get("failed_evals") or []
+                    if isinstance(_fe, str):
+                        try:
+                            _fe = json.loads(_fe)
+                        except Exception:
+                            _fe = []
+                    _agents_hit = {
+                        (e.get("agent") or "").lower()
+                        for e in (_fe if isinstance(_fe, list) else [])
+                    }
+                    if target_agent.lower() in _agents_hit:
+                        _sid = _ir["session_id"]
+                        result.setdefault(_sid, []).append({
+                            "pattern":  _ir.get("pattern_name", "Unknown"),
+                            "severity": _ir.get("severity", ""),
+                        })
+                return result
+
             # ── Shared chart builder ───────────────────────────────────────────
-            def _qchart(df, color, fill, height=300):
+            def _qchart(df, color, fill, height=300, inc_lookup=None):
                 if df.empty:
                     return go.Figure()
+                _lookup = inc_lookup if inc_lookup is not None else _inc_by_sid
                 lbls   = df["lbl"].tolist()
                 scores = df["score"].tolist()
                 sids   = df["session_id"].tolist()
@@ -2874,7 +2899,7 @@ elif page == "Quality Drift":
                 )
                 # Incident markers
                 for _lbl, _score, _sid in zip(lbls, scores, sids):
-                    _incs = _inc_by_sid.get(_sid)
+                    _incs = _lookup.get(_sid)
                     if not _incs:
                         continue
                     fig.add_shape(
@@ -2988,8 +3013,9 @@ elif page == "Quality Drift":
                         unsafe_allow_html=True,
                     )
                     st.markdown(_stats_md(_mn, _pct, _dlt), unsafe_allow_html=True)
+                    _ag_inc = _agent_inc_lookup(_qa.replace("_quality", ""))
                     st.plotly_chart(
-                        _qchart(_qd_ag, _qc, _qfill, 200),
+                        _qchart(_qd_ag, _qc, _qfill, 200, inc_lookup=_ag_inc),
                         use_container_width=True, key=f"qd_{_qa}",
                     )
                     st.markdown("</div>", unsafe_allow_html=True)
