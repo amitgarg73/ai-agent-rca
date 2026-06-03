@@ -2774,6 +2774,63 @@ elif page == "Quality Drift":
             "session_quality":      "#8b5cf6",
         }
 
+        # ── Heatmap — first thing you see ────────────────────────────────────
+        if not evals_ts.empty:
+            _hm_hdr, _hm_help = st.columns([8, 1])
+            with _hm_hdr:
+                st.markdown("**Quality composite heatmap — last 15 sessions**")
+            with _hm_help:
+                with st.popover("?"):
+                    st.markdown("**How to read the heatmap**")
+                    st.markdown(
+                        "Each cell shows one agent's composite quality score for one session.\n\n"
+                        "**Rows** = agents (Research, Risk, Orchestrator, Session)\n\n"
+                        "**Columns** = sessions, oldest on the left, most recent on the right\n\n"
+                        "**Color scale:**\n"
+                        "- Green (≥ 0.60) — quality is healthy for that agent in that session\n"
+                        "- Yellow (0.40–0.60) — borderline; worth watching\n"
+                        "- Red (< 0.40) — below threshold; the agent's reasoning quality was poor\n\n"
+                        "**What to look for:**\n"
+                        "- A row drifting from green to red (left to right) = that agent is quietly degrading — "
+                        "the Silent Degradation pattern\n"
+                        "- A column that is all red = that session had pipeline-wide quality failure\n"
+                        "- Red spreading diagonally across rows = Quality Cascade — one agent's drop "
+                        "pulled downstream agents down with it\n"
+                        "- Isolated red cells = single-session anomaly, likely noise"
+                    )
+            _last15_ids = s.tail(15)["id"].tolist()
+            _qhm = evals_ts[
+                evals_ts["agent"].str.endswith("_quality", na=False) &
+                (evals_ts["eval_name"] == "composite_score") &
+                evals_ts["session_id"].isin(_last15_ids)
+            ].copy()
+            if not _qhm.empty:
+                _qhm["lbl"] = _qhm["started_at"].dt.strftime("%m-%d %H:%M")
+                _qhm["agent_label"] = _qhm["agent"].str.replace("_quality", "", regex=False).str.title()
+                _qhm_pivot = _qhm.pivot_table(
+                    index="agent_label", columns="lbl", values="score", aggfunc="first"
+                )
+                _col_order = [lb for lb in s.tail(15)["label"] if lb in _qhm_pivot.columns]
+                _qhm_pivot = _qhm_pivot[_col_order] if _col_order else _qhm_pivot
+                _z_q   = _qhm_pivot.values.astype(float)
+                _txt_q = [[f"{v:.2f}" if not pd.isna(v) else "—" for v in row] for row in _z_q]
+                fig_qhm = go.Figure(go.Heatmap(
+                    z=_z_q, x=list(_qhm_pivot.columns), y=list(_qhm_pivot.index),
+                    text=_txt_q, texttemplate="%{text}",
+                    colorscale=[[0, "#fee2e2"], [0.6, "#fef9c3"], [1, "#dcfce7"]],
+                    zmin=0, zmax=1, showscale=True,
+                    colorbar=dict(title="Score", thickness=12, len=0.8),
+                ))
+                fig_qhm.update_layout(
+                    paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
+                    font_color="#1e293b", height=200,
+                    xaxis_tickangle=-35, xaxis=dict(side="top"),
+                    margin=dict(t=60, b=20, l=120, r=60),
+                )
+                st.plotly_chart(fig_qhm, use_container_width=True)
+                st.caption("Green = quality healthy (≥0.60). Yellow = borderline. Red = below threshold.")
+            st.divider()
+
         if not evals_ts.empty:
             _qd_all = evals_ts[
                 evals_ts["agent"].str.endswith("_quality", na=False) &
@@ -3274,61 +3331,6 @@ elif page == "Quality Drift":
                     else:
                         st.info("No quality dimension data for this session.")
 
-            # ── Per-agent heatmap (last 15 sessions) ─────────────────────────
-            st.divider()
-            _hm_hdr, _hm_help = st.columns([8, 1])
-            with _hm_hdr:
-                st.markdown("**Quality composite heatmap — last 15 sessions**")
-            with _hm_help:
-                with st.popover("?"):
-                    st.markdown("**How to read the heatmap**")
-                    st.markdown(
-                        "Each cell shows one agent's composite quality score for one session.\n\n"
-                        "**Rows** = agents (Research, Risk, Orchestrator, Session)\n\n"
-                        "**Columns** = sessions, oldest on the left, most recent on the right\n\n"
-                        "**Color scale:**\n"
-                        "- Green (≥ 0.60) — quality is healthy for that agent in that session\n"
-                        "- Yellow (0.40–0.60) — borderline; worth watching\n"
-                        "- Red (< 0.40) — below threshold; the agent's reasoning quality was poor\n\n"
-                        "**What to look for:**\n"
-                        "- A row drifting from green to red (left to right) = that agent is quietly degrading — "
-                        "the Silent Degradation pattern\n"
-                        "- A column that is all red = that session had pipeline-wide quality failure\n"
-                        "- Red spreading diagonally across rows = Quality Cascade — one agent's drop "
-                        "pulled downstream agents down with it\n"
-                        "- Isolated red cells = single-session anomaly, likely noise"
-                    )
-            _last15_ids = s.tail(15)["id"].tolist()
-            _qhm = evals_ts[
-                evals_ts["agent"].str.endswith("_quality", na=False) &
-                (evals_ts["eval_name"] == "composite_score") &
-                evals_ts["session_id"].isin(_last15_ids)
-            ].copy()
-            if not _qhm.empty:
-                _qhm["lbl"] = _qhm["started_at"].dt.strftime("%m-%d %H:%M")
-                _qhm["agent_label"] = _qhm["agent"].str.replace("_quality", "", regex=False).str.title()
-                _qhm_pivot = _qhm.pivot_table(
-                    index="agent_label", columns="lbl", values="score", aggfunc="first"
-                )
-                _col_order = [lb for lb in s.tail(15)["label"] if lb in _qhm_pivot.columns]
-                _qhm_pivot = _qhm_pivot[_col_order] if _col_order else _qhm_pivot
-                _z_q    = _qhm_pivot.values.astype(float)
-                _txt_q  = [[f"{v:.2f}" if not pd.isna(v) else "—" for v in row] for row in _z_q]
-                fig_qhm = go.Figure(go.Heatmap(
-                    z=_z_q, x=list(_qhm_pivot.columns), y=list(_qhm_pivot.index),
-                    text=_txt_q, texttemplate="%{text}",
-                    colorscale=[[0, "#fee2e2"], [0.6, "#fef9c3"], [1, "#dcfce7"]],
-                    zmin=0, zmax=1, showscale=True,
-                    colorbar=dict(title="Score", thickness=12, len=0.8),
-                ))
-                fig_qhm.update_layout(
-                    paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
-                    font_color="#1e293b", height=200,
-                    xaxis_tickangle=-35, xaxis=dict(side="top"),
-                    margin=dict(t=60, b=20, l=120, r=60),
-                )
-                st.plotly_chart(fig_qhm, use_container_width=True)
-                st.caption("Green = quality healthy (≥0.60). Yellow = borderline. Red = below threshold.")
         else:
             st.info("No quality evals yet. Run: `python3 scripts/backfill_quality.py`")
 
