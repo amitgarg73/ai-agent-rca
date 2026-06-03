@@ -663,32 +663,32 @@ table(
     [
         ["1", "Data: c_evals, c_incidents, eval engine (17 evals), pattern detector (6 patterns), backfill", "2026-05-30"],
         ["2", "RCA: call stack builder, fix suggestions, rca_engine.py", "2026-05-30"],
-        ["3", "Dashboard: 6 pages, Quality Drift 3-tab, business evals, auth gate, LLM summaries", "2026-05-31"],
+        ["3", "Dashboard: 6 pages, Quality Drift 2-tab (Operational/Business + Semantic Health), business evals, auth gate, LLM summaries", "2026-05-31"],
+        ["4b-patterns", "4 new operational patterns (Hyperactive Polling, Tool Fabrication, Handoff Schema Break, Error Misinterpretation)", "2026-06-01"],
+        ["4b-realtime", "Supabase Realtime monitor + polling fallback + shadow CB persistence", "2026-06-01"],
+        ["4b-tool-tracer", "Tool-level cost tracer SDK: @trace_tool, ToolSpan, c_tool_spans", "2026-06-01"],
+        ["D1", "Isolation Forest anomaly detector — 3 real anomalies detected (May 28 yfinance hang)", "2026-06-01"],
+        ["Q1", "quality_judge.py: 20 dimensions, 4 composites, structural proxy scoring, 41 tests", "2026-06-01"],
+        ["Q2", "Semantic Health tab: drift cards, system composite + agent small multiples, dimension breakdown with inline fix/gap popovers", "2026-06-02"],
     ],
-    col_widths=[0.6, 5.4, 1.2]
+    col_widths=[1.1, 4.9, 1.2]
 )
+body("211 tests passing. 36 sessions scored. 684 quality evals backfilled.")
 
-h2("Quality Layer")
+h2("Pending")
 table(
-    ["Phase", "What", "Effort", "Gate"],
+    ["Phase", "What", "Status", "Gate"],
     [
-        ["Q1", "engine/quality_judge.py — Haiku batch eval, prompt construction, JSON parsing, c_evals storage. scripts/backfill_quality.py. Tests.", "2-3 days", "Manual review of 10 sessions"],
-        ["Q2", "Quality tab in Quality Drift. Per-agent trend charts. Recommendations panel. Quality scores in session detail.", "2-3 days", "Q1 done"],
-        ["Q3", "4 new quality patterns in pattern_detector.py. Drift detection rules. Tests.", "1-2 days", "Q2 done"],
-        ["Q4", "Shadow quality CBs. would_trigger_cb flag. CB config. Dashboard CB markers + cost-saved estimates.", "1-2 days", "Q3 done"],
+        ["Q3", "Quality patterns: Grounding Failure, Coherence Break, Quality Cascade, Silent Degradation", "Not started", "Q2 done"],
+        ["Q4", "Shadow quality CBs: would_trigger_cb flag, CB config, dashboard CB markers + cost-saved estimates", "Not started", "Q3 done"],
+        ["4a", "In-process operational CBs in trading-agent-c (shadow, in-memory, ~0.5ms)", "Not started", "Q4 done"],
+        ["4c", "Flip CBs to real mode — ops first, quality after validation", "Blocked", "Strategy C testing complete; FP < 10%"],
+        ["LDQ", "LLM drift signals: output token trend, model version tracking, tool retry rate", "Planned", "Next sprint"],
+        ["D2", "Sequence pattern mining", "Not started", "50+ sessions"],
+        ["P1", "Predictive early warning: declining score trend → incident probability", "Not started", "100+ sessions"],
+        ["9", "Multi-tenant: per-customer Isolation Forest, tenant_id schema, hosted auth", "Not started", "LinkedIn demand test: 3+ engineer DMs"],
     ],
-    col_widths=[0.5, 3.8, 0.9, 1.9]
-)
-
-h2("Real-time")
-table(
-    ["Phase", "What", "Effort", "Gate"],
-    [
-        ["4a", "In-process operational CBs in trading-agent-c (shadow mode). Per-agent eval after handoff. CircuitBreakerError skeleton.", "1-2 days", "Q4 done; Strategy C in testing"],
-        ["4b", "Supabase realtime subscription on c_sessions. Auto-run evals + quality judge post-session.", "1 day", "4a done"],
-        ["4c", "Flip CBs to real mode. Operational first; quality after separate validation.", "0.5 days", "Strategy C testing complete; FP < 10%"],
-    ],
-    col_widths=[0.5, 3.8, 0.9, 1.9]
+    col_widths=[0.7, 3.5, 0.9, 2.1]
 )
 
 h2("ML / Dynamic Detection")
