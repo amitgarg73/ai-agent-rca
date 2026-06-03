@@ -31,7 +31,8 @@ from engine.eval_engine   import (run_all_evals,
                                    PROPOSAL_ACCEPTANCE_MIN)
 from engine.pattern_detector import run_all_detectors
 from engine.rca_engine    import build_annotated_call_stack, generate_fix_suggestion, summarize_incident
-from simulator.failure_sim import simulate_failure, list_patterns
+from simulator.failure_sim import (simulate_failure, list_patterns,
+                                   simulate_quality_failure, list_quality_patterns)
 
 # ── Page config ───────────────────────────────────────────────────────────────
 
@@ -4169,133 +4170,236 @@ elif page == "Failure Simulator":
         unsafe_allow_html=True,
     )
 
-    patterns = list_patterns()
-    pat_map  = {p["label"]: p for p in patterns}
+    sim_tab1, sim_tab2 = st.tabs(["Operational Failures", "Proactive Quality"])
 
-    sc1, sc2 = st.columns([2, 3])
+    # ── Tab 1: Operational ────────────────────────────────────────────────────
+    with sim_tab1:
+        patterns = list_patterns()
+        pat_map  = {p["label"]: p for p in patterns}
 
-    with sc1:
-        chosen_label = st.selectbox(
-            "Failure pattern",
-            list(pat_map.keys()),
-        )
-        chosen = pat_map[chosen_label]
+        sc1, sc2 = st.columns([2, 3])
 
-        st.markdown(
-            f'{badge(chosen["severity"])} &nbsp; '
-            f'<span style="color:#94a3b8">{chosen["description"]}</span>',
-            unsafe_allow_html=True,
-        )
+        with sc1:
+            chosen_label = st.selectbox(
+                "Failure pattern",
+                list(pat_map.keys()),
+                key="op_pattern_select",
+            )
+            chosen = pat_map[chosen_label]
 
-        st.markdown("")
-        run_btn = st.button("Inject Failure + Run Analysis", type="primary",
-                            use_container_width=True)
+            st.markdown(
+                f'{badge(chosen["severity"])} &nbsp; '
+                f'<span style="color:#94a3b8">{chosen["description"]}</span>',
+                unsafe_allow_html=True,
+            )
 
-    with sc2:
-        st.markdown("#### What will be injected:")
-        examples = {
-            "Tool Timeout Loop": [
-                "1 × market agent trace (success)",
-                "1 × research agent llm_call (success)",
-                "8 × research tool_call get_stock_data (error: ReadTimeout)",
-                "Session: $1.98, 1027s, 0 trades",
-            ],
-            "Context Spiral": [
-                "1 × market agent trace",
-                "20 × research tool_call search_news (success, tokens climbing)",
-                "20 × research llm_call (success, high tokens)",
-                "No decision trace — agent never concludes",
-                "Session: $0.85, 42K tokens, 0 trades",
-            ],
-            "Pipeline Break": [
-                "market + research traces (success)",
-                "risk agent llm_call (error: ConnectionError)",
-                "No orchestrator traces",
-                "Session: $0.42, 0 trades",
-            ],
-            "Empty Result Loop": [
-                "market agent trace (success)",
-                "5 × research tool_call get_news with different queries (all succeed)",
-                "No trade output — results were thin",
-                "Session: $0.38, 0 trades",
-            ],
-            "Cost Anomaly": [
-                "All 4 agents run (success)",
-                "High token counts: 60K input, 20K output",
-                "Session: $3.10 — 10x normal cost",
-                "1 trade executed (pipeline worked but was expensive)",
-            ],
-            "Silent Exit": [
-                "All 4 agents run (success)",
-                "Normal token counts",
-                "Session: $0.19, 0 trades, no terminal_reason",
-                "Orchestrator exited without logging a reason",
-            ],
-            "Silent Propagation": [
-                "Market fetches stale data — all traces succeed, no exception thrown",
-                "data_freshness eval catches 15-min lag (threshold: 10 min) → Market fails",
-                "Research, Risk, Orchestrator all run on the bad input",
-                "Session: $0.0284 total · Market $0.0022 · Research $0.0148 · Risk $0.0063 · Orchestrator $0.0051",
-                "0 trades, no terminal_reason → Silent Exit pattern fires",
-                "CB savings = $0.0262 (Research + Risk + Orchestrator were preventable)",
-            ],
-        }
-        for item in examples.get(chosen_label, []):
-            st.markdown(f"- {item}")
+            st.markdown("")
+            run_btn = st.button("Inject Failure + Run Analysis", type="primary",
+                                use_container_width=True, key="op_run_btn")
 
-    if run_btn:
-        with st.status("Injecting failure...", expanded=True) as status:
-            st.write("Creating simulated session...")
-            sid = simulate_failure(chosen["id"], db=_db())
-            st.write(f"Session injected: `{sid[:16]}...`")
-            time.sleep(0.5)
+        with sc2:
+            st.markdown("#### What will be injected:")
+            examples = {
+                "Tool Timeout Loop": [
+                    "1 × market agent trace (success)",
+                    "1 × research agent llm_call (success)",
+                    "8 × research tool_call get_stock_data (error: ReadTimeout)",
+                    "Session: $1.98, 1027s, 0 trades",
+                ],
+                "Context Spiral": [
+                    "1 × market agent trace",
+                    "20 × research tool_call search_news (success, tokens climbing)",
+                    "20 × research llm_call (success, high tokens)",
+                    "No decision trace — agent never concludes",
+                    "Session: $0.85, 42K tokens, 0 trades",
+                ],
+                "Pipeline Break": [
+                    "market + research traces (success)",
+                    "risk agent llm_call (error: ConnectionError)",
+                    "No orchestrator traces",
+                    "Session: $0.42, 0 trades",
+                ],
+                "Empty Result Loop": [
+                    "market agent trace (success)",
+                    "5 × research tool_call get_news with different queries (all succeed)",
+                    "No trade output — results were thin",
+                    "Session: $0.38, 0 trades",
+                ],
+                "Cost Anomaly": [
+                    "All 4 agents run (success)",
+                    "High token counts: 60K input, 20K output",
+                    "Session: $3.10 — 10x normal cost",
+                    "1 trade executed (pipeline worked but was expensive)",
+                ],
+                "Silent Exit": [
+                    "All 4 agents run (success)",
+                    "Normal token counts",
+                    "Session: $0.19, 0 trades, no terminal_reason",
+                    "Orchestrator exited without logging a reason",
+                ],
+                "Silent Propagation": [
+                    "Market fetches stale data — all traces succeed, no exception thrown",
+                    "data_freshness eval catches 15-min lag (threshold: 10 min) → Market fails",
+                    "Research, Risk, Orchestrator all run on the bad input",
+                    "Session: $0.0284 total · Market $0.0022 · Research $0.0148 · Risk $0.0063 · Orchestrator $0.0051",
+                    "0 trades, no terminal_reason → Silent Exit pattern fires",
+                    "CB savings = $0.0262 (Research + Risk + Orchestrator were preventable)",
+                ],
+            }
+            for item in examples.get(chosen_label, []):
+                st.markdown(f"- {item}")
 
-            st.write("Loading traces...")
-            new_traces_r = _db().table("c_traces").select("*").eq("session_id", sid).execute()
-            new_traces   = new_traces_r.data or []
-            st.write(f"Found {len(new_traces)} traces.")
-            time.sleep(0.3)
+        if run_btn:
+            with st.status("Injecting failure...", expanded=True) as status:
+                st.write("Creating simulated session...")
+                sid = simulate_failure(chosen["id"], db=_db())
+                st.write(f"Session injected: `{sid[:16]}...`")
+                time.sleep(0.5)
 
-            st.write("Loading session...")
-            new_sess_r = _db().table("c_sessions").select("*").eq("id", sid).execute()
-            new_sess   = new_sess_r.data[0] if new_sess_r.data else {}
-            time.sleep(0.3)
+                st.write("Loading traces...")
+                new_traces_r = _db().table("c_traces").select("*").eq("session_id", sid).execute()
+                new_traces   = new_traces_r.data or []
+                st.write(f"Found {len(new_traces)} traces.")
+                time.sleep(0.3)
 
-            st.write("Running evals...")
-            evs = run_all_evals(new_sess, new_traces, recent_costs)
-            ev_rows = [e.to_db_row(sid) for e in evs]
-            if ev_rows:
-                _db().table("c_evals").insert(ev_rows).execute()
-            st.write(f"{len(evs)} evals computed — {sum(1 for e in evs if not e.passed)} failed.")
-            time.sleep(0.3)
+                st.write("Loading session...")
+                new_sess_r = _db().table("c_sessions").select("*").eq("id", sid).execute()
+                new_sess   = new_sess_r.data[0] if new_sess_r.data else {}
+                time.sleep(0.3)
 
-            st.write("Running pattern detection...")
-            incs = run_all_detectors(new_sess, new_traces, evs, recent_costs)
+                st.write("Running evals...")
+                evs = run_all_evals(new_sess, new_traces, recent_costs)
+                ev_rows = [e.to_db_row(sid) for e in evs]
+                if ev_rows:
+                    _db().table("c_evals").insert(ev_rows).execute()
+                st.write(f"{len(evs)} evals computed — {sum(1 for e in evs if not e.passed)} failed.")
+                time.sleep(0.3)
+
+                st.write("Running pattern detection...")
+                incs = run_all_detectors(new_sess, new_traces, evs, recent_costs)
+                if incs:
+                    _db().table("c_incidents").insert([i.to_db_row() for i in incs]).execute()
+
+                status.update(label="Done!", state="complete")
+
             if incs:
-                _db().table("c_incidents").insert([i.to_db_row() for i in incs]).execute()
+                st.success(f"Incident detected: **{incs[0].pattern_name}**")
+                st.markdown(
+                    f'{badge(incs[0].severity, True)} &nbsp; {incs[0].root_cause}',
+                    unsafe_allow_html=True,
+                )
+                st.markdown(
+                    f'<div class="fix-box">{generate_fix_suggestion(incs[0], new_traces)}</div>',
+                    unsafe_allow_html=True,
+                )
+                if st.button("View full RCA →", key="op_rca_btn"):
+                    goto_rca(incs[0].to_db_row(), sid)
+            else:
+                st.warning("No incident detected for this simulation. Check pattern detector thresholds.")
 
-            status.update(label="Done!", state="complete")
+            load_sessions.clear()
+            load_traces.clear()
+            load_all_evals.clear()
 
-        if incs:
-            st.success(f"Incident detected: **{incs[0].pattern_name}**")
+    # ── Tab 2: Proactive Quality ───────────────────────────────────────────────
+    with sim_tab2:
+        q_patterns = list_quality_patterns()
+        q_pat_map  = {p["label"]: p for p in q_patterns}
+
+        qc1, qc2 = st.columns([2, 3])
+
+        with qc1:
+            q_chosen_label = st.selectbox(
+                "Quality pattern",
+                list(q_pat_map.keys()),
+                key="q_pattern_select",
+            )
+            q_chosen = q_pat_map[q_chosen_label]
+
             st.markdown(
-                f'{badge(incs[0].severity, True)} &nbsp; {incs[0].root_cause}',
+                f'{badge(q_chosen["severity"])} &nbsp; '
+                f'<span style="color:#94a3b8">{q_chosen["description"]}</span>',
                 unsafe_allow_html=True,
             )
-            st.markdown(
-                f'<div class="fix-box">{generate_fix_suggestion(incs[0], new_traces)}</div>',
-                unsafe_allow_html=True,
-            )
-            if st.button("View full RCA →"):
-                goto_rca(incs[0].to_db_row(), sid)
-        else:
-            st.warning("No incident detected for this simulation. Check pattern detector thresholds.")
 
-        load_sessions.clear()
-        load_traces.clear()
-        load_all_evals.clear()
+            st.markdown("")
+            q_run_btn = st.button("Inject Quality Pattern", type="primary",
+                                  use_container_width=True, key="q_run_btn")
 
-    # History of simulated incidents
+        with qc2:
+            st.markdown("#### What will be injected:")
+            q_examples = {
+                "Grounding Failure": [
+                    "3 sessions staggered: -48h, -24h, now",
+                    "Each: research_quality.data_grounding = 0.25 (threshold 0.40)",
+                    "Other quality dims normal (0.65–0.75)",
+                    "No traces — quality evals written directly",
+                    "Fires: Proactive: Grounding Failure",
+                ],
+                "Coherence Break": [
+                    "1 session (now)",
+                    "orchestrator_quality.decision_consistency = 0.30 (threshold 0.50)",
+                    "Research and risk scores look normal (0.68–0.75)",
+                    "No traces — quality evals written directly",
+                    "Fires: Proactive: Coherence Break (critical)",
+                ],
+                "Quality Cascade": [
+                    "5 sessions over 5 days",
+                    "5 dimensions each decline >0.20:",
+                    "  data_grounding 0.78→0.42, thesis_coherence 0.74→0.48",
+                    "  parameter_completeness 0.80→0.50, decision_consistency 0.72→0.44",
+                    "  pipeline_coherence 0.76→0.46",
+                    "Composite score: 0.76→0.48",
+                    "Fires: Proactive: Quality Cascade",
+                ],
+                "Silent Degradation": [
+                    "5 sessions over 5 days",
+                    "Composite quality: 0.78→0.48 (negative slope across window)",
+                    "Operational evals stay clean: tool_success_rate=0.92, completion=0.88",
+                    "No operational alert fires — trend-only detection",
+                    "Fires: Proactive: Silent Degradation",
+                ],
+            }
+            for item in q_examples.get(q_chosen_label, []):
+                st.markdown(f"- {item}")
+
+        if q_run_btn:
+            with st.status("Injecting quality pattern...", expanded=True) as q_status:
+                st.write(f"Building {q_chosen['id']} scenario...")
+                q_sids = simulate_quality_failure(q_chosen["id"], db=_db())
+                st.write(f"{len(q_sids)} session(s) written with quality evals.")
+                time.sleep(0.4)
+
+                st.write("Running quality detectors...")
+                # Incidents are written inside simulate_quality_failure; fetch them
+                q_inc_r = (
+                    _db().table("c_incidents")
+                    .select("*")
+                    .in_("session_id", q_sids)
+                    .order("created_at", desc=True)
+                    .limit(5)
+                    .execute()
+                )
+                q_incs = q_inc_r.data or []
+                q_status.update(label="Done!", state="complete")
+
+            if q_incs:
+                st.success(f"Incident detected: **{q_incs[0]['pattern_name']}**")
+                st.markdown(
+                    f'{badge(q_incs[0]["severity"], True)} &nbsp; '
+                    f'{q_incs[0].get("root_cause", "")}',
+                    unsafe_allow_html=True,
+                )
+                fix = q_incs[0].get("fix_suggestion", "")
+                if fix:
+                    st.markdown(f'<div class="fix-box">{fix}</div>', unsafe_allow_html=True)
+            else:
+                st.warning("Sessions + evals written but no incident was detected. Check detector thresholds.")
+
+            load_sessions.clear()
+            load_all_evals.clear()
+
+    # History of simulated incidents (shared across both tabs)
     if not incidents.empty:
         sim_inc = incidents[incidents.get("is_simulated", incidents["is_simulated"].fillna(False))]
         if not sim_inc.empty:

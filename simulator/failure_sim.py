@@ -615,6 +615,18 @@ def simulate_failure(pattern: str, db=None) -> str:
     return session_id
 
 
+def list_quality_patterns() -> list[dict]:
+    return [
+        {
+            "id":          p,
+            "label":       p.replace("_", " ").title(),
+            "severity":    "warning" if p != "coherence_break" else "critical",
+            "description": _QUALITY_DESCRIPTIONS[p],
+        }
+        for p in QUALITY_PATTERNS
+    ]
+
+
 def list_patterns() -> list[dict]:
     return [
         {
