@@ -1754,7 +1754,8 @@ if page == "Overview":
         # \u2500\u2500 Pipeline strip detail panel \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
         _ov_sel = _ov_resp.selected_rows
         if _ov_sel is not None and len(_ov_sel) > 0:
-            _ov_sel_sid = _ov_sel[0]["_id"]
+            _ov_sel_row = _ov_sel.iloc[0] if isinstance(_ov_sel, pd.DataFrame) else _ov_sel[0]
+            _ov_sel_sid = _ov_sel_row["_id"]
             _ov_full    = sessions[sessions["id"] == _ov_sel_sid]
             _ov_sel_inc = _ov_i[_ov_i["session_id"] == _ov_sel_sid] if not _ov_i.empty else pd.DataFrame()
 
@@ -3569,8 +3570,9 @@ elif page == "Incidents Feed":
     )
     _inc_sel = _inc_resp.selected_rows
     if _inc_sel is not None and len(_inc_sel) > 0:
-        _sel_id  = _inc_sel[0]["_id"]
-        _sel_sid = _inc_sel[0]["_sid"]
+        _inc_sel_row = _inc_sel.iloc[0] if isinstance(_inc_sel, pd.DataFrame) else _inc_sel[0]
+        _sel_id  = _inc_sel_row["_id"]
+        _sel_sid = _inc_sel_row["_sid"]
         _matched = filtered[filtered["id"] == _sel_id]
         if not _matched.empty:
             goto_rca(_matched.iloc[0].to_dict(), _sel_sid)
