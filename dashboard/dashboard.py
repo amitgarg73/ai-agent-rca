@@ -2302,327 +2302,13 @@ elif page == "Quality Drift":
 
     st.divider()
 
-    opt_a, opt_b, opt_c, opt_q = st.tabs([
-        "Option A — Scorecard + Heatmap",
-        "Option B — Operational | Business",
-        "Option C — Timeline",
-        "Quality — Composite Trends",
-    ])
+    tab_op, tab_sem = st.tabs(["Operational / Business Health", "Semantic Health"])
 
-    # ── OPTION A: Two scorecards + eval heatmap + business bars ──────────────
-    with opt_a:
-        st.info(
-            "**Scorecard view.** Each column is one session; each row is one eval. "
-            "Green = passed, red = failed. "
-            "Scan vertically to spot sessions where multiple evals failed at once. "
-            "Scan horizontally to spot evals that keep failing across sessions — those are your chronic issues."
-        )
+    # ── TAB 1: OPERATIONAL / BUSINESS HEALTH ─────────────────────────────────
+    with tab_op:
 
-        if not evals_ts.empty:
-            # Build heatmap: eval_name × session (last 15)
-            _last15_s  = s.tail(15)
-            _hm_data   = evals_ts[evals_ts["session_id"].isin(_last15_s["id"])]
-            _hm_pivot  = _hm_data.pivot_table(
-                index="eval_name", columns="label", values="passed", aggfunc="first"
-            )
-            if not _hm_pivot.empty:
-                # Sort columns chronologically
-                _col_order = [lb for lb in _last15_s["label"] if lb in _hm_pivot.columns]
-                _hm_pivot  = _hm_pivot[_col_order]
-
-                # Map bool -> numeric for heatmap (1=pass, 0=fail, NaN=no data)
-                _z = _hm_pivot.astype(float).values
-                _text = [["Pass" if v == 1.0 else ("Fail" if v == 0.0 else "—")
-                          for v in row] for row in _z]
-
-                fig_hm = go.Figure(go.Heatmap(
-                    z=_z,
-                    x=list(_hm_pivot.columns),
-                    y=list(_hm_pivot.index),
-                    text=_text,
-                    texttemplate="%{text}",
-                    colorscale=[[0, "#fee2e2"], [1, "#dcfce7"]],
-                    showscale=False,
-                    zmin=0, zmax=1,
-                ))
-                fig_hm.update_layout(
-                    paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
-                    font_color="#1e293b",
-                    height=max(280, len(_hm_pivot.index) * 22 + 80),
-                    xaxis_tickangle=-35,
-                    margin=dict(t=20, b=60, l=180, r=10),
-                    xaxis=dict(side="top"),
-                )
-                st.markdown("**Eval Health Heatmap** — last 15 sessions")
-                st.plotly_chart(fig_hm, use_container_width=True)
-        else:
-            st.info("No eval data yet. Run the backfill script to populate c_evals.")
-
-        st.markdown("**Business Outcome Scores** — last 15 sessions")
-        if not biz_evals_df.empty:
-            _biz15 = biz_evals_df[biz_evals_df["session_id"].isin(s.tail(15)["id"])].copy()
-            _biz15 = _biz15.merge(s[["id", "label"]], left_on="session_id", right_on="id", how="left")
-            _biz15 = _biz15.sort_values("started_at")
-
-            fig_biz = go.Figure()
-            _biz_colors = {
-                "cost_per_trade":      "#3b82f6",
-                "research_conversion": "#f59e0b",
-                "proposal_acceptance": "#10b981",
-            }
-            for _bn, _bc in _biz_colors.items():
-                _bd = _biz15[_biz15["eval_name"] == _bn]
-                if _bd.empty:
-                    continue
-                fig_biz.add_trace(go.Bar(
-                    x=_bd["label"], y=_bd["score"],
-                    name=_bn.replace("_", " ").title(),
-                    marker_color=[("#10b981" if p else "#ef4444") for p in _bd["passed"]],
-                    opacity=0.75,
-                    customdata=_bd["value"].round(3).tolist(),
-                    hovertemplate="%{x}<br>Score: %{y:.2f}<br>Value: %{customdata}<extra></extra>",
-                ))
-            fig_biz.update_layout(
-                paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
-                font_color="#1e293b", height=260,
-                barmode="group",
-                yaxis=dict(title="Score (0-1)", range=[0, 1.15]),
-                xaxis_tickangle=-35,
-                legend=dict(orientation="h", y=1.1),
-                margin=dict(t=40, b=60),
-            )
-            st.plotly_chart(fig_biz, use_container_width=True)
-            st.caption(
-                "Green bar = passed threshold. "
-                "cost_per_trade threshold $0.50/trade; "
-                "research_conversion threshold 30%; "
-                "proposal_acceptance threshold 40%."
-            )
-        else:
-            st.info("No sessions to compute business evals from.")
-
-    # ── OPTION B: Sub-tabbed Operational / Business ───────────────────────────
-    with opt_b:
-        st.info(
-            "**Trend view.** Two sub-tabs: Operational tracks whether agents are running reliably "
-            "(pass rates, key eval scores, pipeline completion). "
-            "Business Outcomes tracks whether the pipeline is producing results "
-            "(cost per trade, how many researched stocks became trades, how many risk-approved proposals executed). "
-            "A declining trend in either sub-tab is worth investigating before it becomes an incident."
-        )
-        sub_op, sub_biz = st.tabs(["Operational", "Business Outcomes"])
-
-        with sub_op:
-            # Rolling eval pass rate by agent
-            st.markdown("**Eval Pass Rate by Agent** — rolling 5-session average")
-            if not evals_ts.empty:
-                _agent_pass = (
-                    evals_ts[evals_ts["agent"] != "business"]
-                    .groupby(["session_id", "agent", "started_at"])["passed"]
-                    .mean().reset_index()
-                    .sort_values("started_at")
-                )
-                fig_pass = go.Figure()
-                for _ag, _clr in AGENT_COLORS.items():
-                    _ag_data = _agent_pass[_agent_pass["agent"] == _ag].copy()
-                    if len(_ag_data) < 2:
-                        continue
-                    _ag_data["rolling"] = _ag_data["passed"].rolling(5, min_periods=1).mean()
-                    _ag_data["lbl"] = _ag_data["started_at"].dt.strftime("%m-%d %H:%M")
-                    fig_pass.add_trace(go.Scatter(
-                        x=_ag_data["lbl"], y=_ag_data["rolling"],
-                        mode="lines+markers", name=_ag,
-                        line=dict(color=_clr, width=2), marker=dict(size=5),
-                    ))
-                if not incidents.empty:
-                    for _, _inc in incidents.iterrows():
-                        _match = s[s["id"] == _inc["session_id"]]
-                        if not _match.empty:
-                            _x = _match.iloc[0]["label"]
-                            _c = "#ef4444" if _inc["severity"] == "critical" else "#f59e0b"
-                            fig_pass.add_shape(type="line", x0=_x, x1=_x, y0=0, y1=1,
-                                xref="x", yref="paper", line=dict(color=_c, dash="dot", width=1))
-                fig_pass.update_layout(
-                    paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
-                    font_color="#1e293b", height=290,
-                    yaxis=dict(title="Pass rate", tickformat=".0%", range=[0, 1.05]),
-                    xaxis_tickangle=-30, legend=dict(orientation="h", y=1.1),
-                    margin=dict(t=40, b=60),
-                )
-                st.plotly_chart(fig_pass, use_container_width=True)
-            else:
-                st.info("No eval data. Run backfill to populate c_evals.")
-
-            st.markdown("**Critical Eval Scores Over Time**")
-            st.caption("Large dots = eval failed that session. Dotted lines = failure thresholds.")
-            _KEY_EVALS = {
-                "research.tool_success_rate": ("#f59e0b", 0.80),
-                "orchestrator.exit_quality":  ("#3b82f6", 0.70),
-                "risk.assessment_complete":   ("#10b981", 1.00),
-            }
-            if not evals_ts.empty:
-                fig_ev = go.Figure()
-                for _key, (_clr, _thr) in _KEY_EVALS.items():
-                    _ag, _en = _key.split(".", 1)
-                    _ev_data = evals_ts[
-                        (evals_ts["agent"] == _ag) & (evals_ts["eval_name"] == _en)
-                    ].copy().sort_values("started_at")
-                    if _ev_data.empty:
-                        continue
-                    _ev_data["lbl"] = _ev_data["started_at"].dt.strftime("%m-%d %H:%M")
-                    fig_ev.add_trace(go.Scatter(
-                        x=_ev_data["lbl"], y=_ev_data["score"],
-                        mode="lines+markers", name=_key,
-                        line=dict(color=_clr, width=1.5),
-                        marker=dict(
-                            size=[8 if not p else 5 for p in _ev_data["passed"]],
-                            color=[("#ef4444" if not p else _clr) for p in _ev_data["passed"]],
-                        ),
-                    ))
-                    fig_ev.add_hline(y=_thr, line_dash="dot", line_color=_clr,
-                                     annotation_text=f"{_key} thr",
-                                     annotation_position="bottom right",
-                                     annotation_font_size=9)
-                if not incidents.empty:
-                    for _, _inc in incidents.iterrows():
-                        _match = s[s["id"] == _inc["session_id"]]
-                        if not _match.empty:
-                            _x = _match.iloc[0]["label"]
-                            _c = "#ef4444" if _inc["severity"] == "critical" else "#f59e0b"
-                            fig_ev.add_shape(type="line", x0=_x, x1=_x, y0=0, y1=1,
-                                xref="x", yref="paper", line=dict(color=_c, dash="dot", width=1))
-                fig_ev.update_layout(
-                    paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
-                    font_color="#1e293b", height=300,
-                    yaxis=dict(title="Score", range=[-0.05, 1.1]),
-                    xaxis_tickangle=-30, legend=dict(orientation="h", y=1.1),
-                    margin=dict(t=40, b=60),
-                )
-                st.plotly_chart(fig_ev, use_container_width=True)
-
-            st.markdown("**Pipeline Completion Rate**")
-            st.caption("1.0 = all 4 agents ran. Drops signal systemic pipeline breaks.")
-            if not evals_ts.empty:
-                _pc = evals_ts[evals_ts["eval_name"] == "pipeline_completion"].copy()
-                if not _pc.empty:
-                    _pc = _pc.sort_values("started_at")
-                    _pc["lbl"] = _pc["started_at"].dt.strftime("%m-%d %H:%M")
-                    _pc["rolling_pc"] = _pc["score"].rolling(7, min_periods=1).mean()
-                    fig_pc = go.Figure()
-                    fig_pc.add_trace(go.Bar(
-                        x=_pc["lbl"], y=_pc["score"], name="Completed",
-                        marker_color=["#10b981" if v == 1.0 else "#ef4444" for v in _pc["score"]],
-                        opacity=0.7,
-                    ))
-                    fig_pc.add_trace(go.Scatter(
-                        x=_pc["lbl"], y=_pc["rolling_pc"], mode="lines", name="7-session avg",
-                        line=dict(color="#0f172a", width=2, dash="dash"),
-                    ))
-                    fig_pc.update_layout(
-                        paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
-                        font_color="#1e293b", height=230,
-                        yaxis=dict(title="Score", range=[0, 1.1]),
-                        xaxis_tickangle=-30, legend=dict(orientation="h", y=1.1),
-                        margin=dict(t=20, b=60),
-                    )
-                    st.plotly_chart(fig_pc, use_container_width=True)
-
-        with sub_biz:
-            st.markdown("**Trades Executed vs Cost — session by session**")
-            st.caption(
-                "Cost flat while trades drop = agent running but not producing. "
-                "Cost rising while trades stay flat = pure waste."
-            )
-            s["rolling_cost"] = s["total_cost_usd"].rolling(7, min_periods=1).mean()
-            fig_dr = go.Figure()
-            fig_dr.add_trace(go.Bar(
-                x=s["label"], y=s["trades_executed"],
-                name="Trades executed", marker_color="#10b981", opacity=0.65, yaxis="y",
-            ))
-            fig_dr.add_trace(go.Scatter(
-                x=s["label"], y=s["total_cost_usd"],
-                mode="lines+markers", name="Cost ($)",
-                line=dict(color="#f59e0b", width=1.5), marker=dict(size=5), yaxis="y2",
-            ))
-            fig_dr.add_trace(go.Scatter(
-                x=s["label"], y=s["rolling_cost"],
-                mode="lines", name="Cost 7-avg",
-                line=dict(color="#b45309", width=1.5, dash="dash"), yaxis="y2",
-            ))
-            if not incidents.empty:
-                for _, _inc in incidents.iterrows():
-                    _match = s[s["id"] == _inc["session_id"]]
-                    if not _match.empty:
-                        _x = _match.iloc[0]["label"]
-                        _c = "#ef4444" if _inc["severity"] == "critical" else "#f59e0b"
-                        fig_dr.add_shape(type="line", x0=_x, x1=_x, y0=0, y1=1,
-                            xref="x", yref="paper", line=dict(color=_c, dash="dot", width=1))
-            fig_dr.update_layout(
-                paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
-                font_color="#1e293b", height=290,
-                xaxis_tickangle=-30,
-                yaxis=dict(title="Trades", side="left"),
-                yaxis2=dict(title="Cost (USD)", side="right", overlaying="y"),
-                legend=dict(orientation="h", y=1.1),
-                margin=dict(t=40, b=60),
-            )
-            st.plotly_chart(fig_dr, use_container_width=True)
-
-            if not biz_evals_df.empty:
-                st.markdown("**Business Outcome Scores — trend**")
-                _biz_ts = biz_evals_df.merge(s[["id", "label"]], left_on="session_id", right_on="id", how="left")
-                _biz_ts = _biz_ts.sort_values("started_at")
-                _biz_colors_b = {
-                    "cost_per_trade":      "#3b82f6",
-                    "research_conversion": "#f59e0b",
-                    "proposal_acceptance": "#10b981",
-                }
-                fig_bts = go.Figure()
-                for _bn, _bc in _biz_colors_b.items():
-                    _bd = _biz_ts[_biz_ts["eval_name"] == _bn]
-                    if _bd.empty:
-                        continue
-                    fig_bts.add_trace(go.Scatter(
-                        x=_bd["label"], y=_bd["score"],
-                        mode="lines+markers", name=_bn.replace("_", " ").title(),
-                        line=dict(color=_bc, width=2),
-                        marker=dict(
-                            size=[7 if not p else 5 for p in _bd["passed"]],
-                            color=[("#ef4444" if not p else _bc) for p in _bd["passed"]],
-                        ),
-                        customdata=_bd["value"].round(3).tolist(),
-                        hovertemplate="%{x}<br>Score: %{y:.2f}<br>Value: %{customdata}<extra></extra>",
-                    ))
-                fig_bts.add_hline(y=1.0, line_dash="dot", line_color="#94a3b8",
-                                  annotation_text="target", annotation_font_size=9)
-                fig_bts.update_layout(
-                    paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
-                    font_color="#1e293b", height=280,
-                    yaxis=dict(title="Score (0-1)", range=[-0.05, 1.15]),
-                    xaxis_tickangle=-30, legend=dict(orientation="h", y=1.1),
-                    margin=dict(t=40, b=60),
-                )
-                st.plotly_chart(fig_bts, use_container_width=True)
-                st.caption(
-                    "Red markers = threshold missed. "
-                    "cost_per_trade: pass < $0.50; "
-                    "research_conversion: pass > 30%; "
-                    "proposal_acceptance: pass > 40%."
-                )
-
-    # ── OPTION C: Timeline with health color + dual score bars ───────────────
-    with opt_c:
-        st.info(
-            "**Session health timeline.** Each dot is one session. "
-            "Green = healthy (combined score ≥75%), amber = watch (45–75%), red = below threshold. "
-            "Diamond shape means an incident was detected that session. "
-            "Hover any dot to see the breakdown. "
-            "The bar chart below compares operational vs business score side by side — "
-            "if operational is high but business is low, the pipeline ran but didn't produce trades."
-        )
+        # Compute per-session health scores (shared by timeline + dual bars)
         s_c = s.copy()
-
-        # Compute per-session operational score (mean pass rate)
         if not evals_ts.empty:
             _op_scores = (
                 evals_ts[evals_ts["agent"] != "business"]
@@ -2634,7 +2320,6 @@ elif page == "Quality Drift":
         else:
             s_c["op_score"] = 0.5
 
-        # Compute per-session business score (mean pass rate of business evals)
         if not biz_evals_df.empty:
             _biz_scores = (
                 biz_evals_df.groupby("session_id")["passed"].mean()
@@ -2645,57 +2330,311 @@ elif page == "Quality Drift":
         else:
             s_c["biz_score"] = 0.0
 
-        # Combined health: 60% operational, 40% business
         s_c["health"] = s_c["op_score"] * 0.6 + s_c["biz_score"] * 0.4
 
-        def _health_color(h: float) -> str:
-            if h >= 0.75:
-                return "#10b981"
-            if h >= 0.45:
-                return "#f59e0b"
-            return "#ef4444"
+        # ── Section: Session Health ────────────────────────────────────────────
+        st.markdown("#### Session Health")
 
-        # Timeline scatter
+        # Group sessions into up to 6 traces (3 health buckets × 2 incident states)
+        _inc_sids_tl = set(incidents["session_id"].tolist()) if not incidents.empty else set()
+        s_c["health_bucket"] = s_c["health"].apply(
+            lambda h: "healthy" if h >= 0.75 else ("watch" if h >= 0.45 else "critical")
+        )
+        s_c["has_incident"] = s_c["id"].isin(_inc_sids_tl)
+
+        _bucket_colors = {"healthy": "#10b981", "watch": "#f59e0b", "critical": "#ef4444"}
+        _bucket_names  = {"healthy": "Healthy (>=75%)", "watch": "Watch (45-75%)", "critical": "Critical (<45%)"}
+
         fig_tl = go.Figure()
-        _inc_sids = set(incidents["session_id"].tolist()) if not incidents.empty else set()
-        for _, row in s_c.iterrows():
-            _clr = _health_color(row["health"])
-            _sym = "diamond" if row["id"] in _inc_sids else "circle"
-            fig_tl.add_trace(go.Scatter(
-                x=[row["label"]], y=[row["health"]],
-                mode="markers",
-                marker=dict(size=14, color=_clr, symbol=_sym,
-                            line=dict(color="#0f172a", width=1)),
-                name="",
-                showlegend=False,
-                hovertemplate=(
-                    f"<b>{row['label']}</b><br>"
-                    f"Health: {row['health']:.0%}<br>"
-                    f"Op: {row['op_score']:.0%}  Biz: {row['biz_score']:.0%}<br>"
-                    f"Trades: {int(row.get('trades_executed', 0))}<br>"
-                    f"Cost: ${float(row.get('total_cost_usd', 0)):.4f}"
-                    "<extra></extra>"
-                ),
-            ))
+        for _bucket, _bclr in _bucket_colors.items():
+            for _has_inc in [False, True]:
+                _grp = s_c[(s_c["health_bucket"] == _bucket) & (s_c["has_incident"] == _has_inc)]
+                if _grp.empty:
+                    continue
+                _sym = "diamond" if _has_inc else "circle"
+                _lnm = _bucket_names[_bucket] + (" + incident" if _has_inc else "")
+                fig_tl.add_trace(go.Scatter(
+                    x=_grp["label"], y=_grp["health"],
+                    mode="markers", name=_lnm,
+                    marker=dict(size=14, color=_bclr, symbol=_sym,
+                                line=dict(color="#0f172a", width=1)),
+                    customdata=_grp[["op_score", "biz_score", "trades_executed", "total_cost_usd"]].values,
+                    hovertemplate=(
+                        "<b>%{x}</b><br>"
+                        "Health: %{y:.0%}<br>"
+                        "Op: %{customdata[0]:.0%}  Biz: %{customdata[1]:.0%}<br>"
+                        "Trades: %{customdata[2]:.0f}<br>"
+                        "Cost: $%{customdata[3]:.4f}"
+                        "<extra></extra>"
+                    ),
+                ))
         if not incidents.empty:
             for _, _inc in incidents.iterrows():
                 _match = s_c[s_c["id"] == _inc["session_id"]]
                 if not _match.empty:
                     _x = _match.iloc[0]["label"]
-                    fig_tl.add_shape(type="line", x0=_x, x1=_x, y0=0, y1=1,
+                    fig_tl.add_shape(
+                        type="line", x0=_x, x1=_x, y0=0, y1=1,
                         xref="x", yref="paper",
-                        line=dict(color="#ef4444", dash="dot", width=1))
+                        line=dict(color="rgba(239,68,68,0.35)", dash="dot", width=1),
+                    )
         fig_tl.update_layout(
             paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
-            font_color="#1e293b", height=230,
+            font_color="#1e293b", height=240,
             yaxis=dict(title="Health score", tickformat=".0%", range=[0, 1.1]),
             xaxis_tickangle=-35,
-            margin=dict(t=20, b=60),
+            legend=dict(orientation="h", y=1.12, font_size=11),
+            margin=dict(t=30, b=60),
         )
-        st.markdown("**Session Health Timeline** — green=healthy, amber=watch, red=incident; diamond=incident detected")
-        st.plotly_chart(fig_tl, use_container_width=True)
+        st.markdown(
+            "**Session Health Timeline** — 60% operational + 40% business; "
+            "diamond = incident detected; hover for breakdown"
+        )
+        st.plotly_chart(fig_tl, use_container_width=True, key="tl_health")
 
-        # Dual bar: operational vs business score per session
+        # Incident frequency stacked bar
+        if not incidents.empty:
+            _inc_freq = (
+                incidents.groupby(["session_id", "severity"]).size()
+                .reset_index(name="count")
+                .merge(s[["id", "label", "started_at"]], left_on="session_id", right_on="id", how="left")
+                .sort_values("started_at")
+            )
+            fig_inc = go.Figure()
+            for _sev, _sclr in [("critical", "#ef4444"), ("warning", "#f59e0b"), ("info", "#3b82f6")]:
+                _sd = _inc_freq[_inc_freq["severity"] == _sev]
+                if _sd.empty:
+                    continue
+                fig_inc.add_trace(go.Bar(
+                    x=_sd["label"], y=_sd["count"],
+                    name=_sev.title(), marker_color=_sclr, opacity=0.8,
+                ))
+            fig_inc.update_layout(
+                paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
+                font_color="#1e293b", height=190,
+                barmode="stack",
+                yaxis=dict(title="Incidents", dtick=1),
+                xaxis_tickangle=-35,
+                legend=dict(orientation="h", y=1.12),
+                margin=dict(t=30, b=60),
+            )
+            st.markdown("**Incident Frequency** — per session, by severity")
+            st.plotly_chart(fig_inc, use_container_width=True, key="tl_incfreq")
+
+        st.divider()
+
+        # ── Section: Operational Trends ────────────────────────────────────────
+        st.markdown("#### Operational Trends")
+
+        st.markdown("**Eval Pass Rate by Agent** — rolling 5-session average")
+        if not evals_ts.empty:
+            _agent_pass = (
+                evals_ts[evals_ts["agent"] != "business"]
+                .groupby(["session_id", "agent", "started_at"])["passed"]
+                .mean().reset_index()
+                .sort_values("started_at")
+            )
+            fig_pass = go.Figure()
+            for _ag, _clr in AGENT_COLORS.items():
+                _ag_data = _agent_pass[_agent_pass["agent"] == _ag].copy()
+                if len(_ag_data) < 2:
+                    continue
+                _ag_data["rolling"] = _ag_data["passed"].rolling(5, min_periods=1).mean()
+                _ag_data["lbl"]     = _ag_data["started_at"].dt.strftime("%m-%d %H:%M")
+                fig_pass.add_trace(go.Scatter(
+                    x=_ag_data["lbl"], y=_ag_data["rolling"],
+                    mode="lines+markers", name=_ag,
+                    line=dict(color=_clr, width=2), marker=dict(size=5),
+                ))
+            if not incidents.empty:
+                for _, _inc in incidents.iterrows():
+                    _match = s[s["id"] == _inc["session_id"]]
+                    if not _match.empty:
+                        _x = _match.iloc[0]["label"]
+                        _c = "#ef4444" if _inc["severity"] == "critical" else "#f59e0b"
+                        fig_pass.add_shape(
+                            type="line", x0=_x, x1=_x, y0=0, y1=1,
+                            xref="x", yref="paper", line=dict(color=_c, dash="dot", width=1),
+                        )
+            fig_pass.update_layout(
+                paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
+                font_color="#1e293b", height=290,
+                yaxis=dict(title="Pass rate", tickformat=".0%", range=[0, 1.05]),
+                xaxis_tickangle=-30, legend=dict(orientation="h", y=1.1),
+                margin=dict(t=40, b=60),
+            )
+            st.plotly_chart(fig_pass, use_container_width=True, key="op_passrate")
+        else:
+            st.info("No eval data. Run backfill to populate c_evals.")
+
+        st.markdown("**Critical Eval Scores Over Time**")
+        st.caption("Large dots = eval failed that session. Dotted lines = failure thresholds.")
+        _KEY_EVALS = {
+            "research.tool_success_rate": ("#f59e0b", 0.80),
+            "orchestrator.exit_quality":  ("#3b82f6", 0.70),
+            "risk.assessment_complete":   ("#10b981", 1.00),
+        }
+        if not evals_ts.empty:
+            fig_ev = go.Figure()
+            for _key, (_clr, _thr) in _KEY_EVALS.items():
+                _ag, _en = _key.split(".", 1)
+                _ev_data = evals_ts[
+                    (evals_ts["agent"] == _ag) & (evals_ts["eval_name"] == _en)
+                ].copy().sort_values("started_at")
+                if _ev_data.empty:
+                    continue
+                _ev_data["lbl"] = _ev_data["started_at"].dt.strftime("%m-%d %H:%M")
+                fig_ev.add_trace(go.Scatter(
+                    x=_ev_data["lbl"], y=_ev_data["score"],
+                    mode="lines+markers", name=_key,
+                    line=dict(color=_clr, width=1.5),
+                    marker=dict(
+                        size=[8 if not p else 5 for p in _ev_data["passed"]],
+                        color=[("#ef4444" if not p else _clr) for p in _ev_data["passed"]],
+                    ),
+                ))
+                fig_ev.add_hline(y=_thr, line_dash="dot", line_color=_clr,
+                                 annotation_text=f"{_key} thr",
+                                 annotation_position="bottom right",
+                                 annotation_font_size=9)
+            if not incidents.empty:
+                for _, _inc in incidents.iterrows():
+                    _match = s[s["id"] == _inc["session_id"]]
+                    if not _match.empty:
+                        _x = _match.iloc[0]["label"]
+                        _c = "#ef4444" if _inc["severity"] == "critical" else "#f59e0b"
+                        fig_ev.add_shape(
+                            type="line", x0=_x, x1=_x, y0=0, y1=1,
+                            xref="x", yref="paper", line=dict(color=_c, dash="dot", width=1),
+                        )
+            fig_ev.update_layout(
+                paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
+                font_color="#1e293b", height=300,
+                yaxis=dict(title="Score", range=[-0.05, 1.1]),
+                xaxis_tickangle=-30, legend=dict(orientation="h", y=1.1),
+                margin=dict(t=40, b=60),
+            )
+            st.plotly_chart(fig_ev, use_container_width=True, key="op_keyevals")
+
+        st.markdown("**Pipeline Completion Rate**")
+        st.caption("1.0 = all 4 agents ran. Drops signal systemic pipeline breaks.")
+        if not evals_ts.empty:
+            _pc = evals_ts[evals_ts["eval_name"] == "pipeline_completion"].copy()
+            if not _pc.empty:
+                _pc = _pc.sort_values("started_at")
+                _pc["lbl"]        = _pc["started_at"].dt.strftime("%m-%d %H:%M")
+                _pc["rolling_pc"] = _pc["score"].rolling(7, min_periods=1).mean()
+                fig_pc = go.Figure()
+                fig_pc.add_trace(go.Bar(
+                    x=_pc["lbl"], y=_pc["score"], name="Completed",
+                    marker_color=["#10b981" if v == 1.0 else "#ef4444" for v in _pc["score"]],
+                    opacity=0.7,
+                ))
+                fig_pc.add_trace(go.Scatter(
+                    x=_pc["lbl"], y=_pc["rolling_pc"], mode="lines", name="7-session avg",
+                    line=dict(color="#0f172a", width=2, dash="dash"),
+                ))
+                fig_pc.update_layout(
+                    paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
+                    font_color="#1e293b", height=230,
+                    yaxis=dict(title="Score", range=[0, 1.1]),
+                    xaxis_tickangle=-30, legend=dict(orientation="h", y=1.1),
+                    margin=dict(t=20, b=60),
+                )
+                st.plotly_chart(fig_pc, use_container_width=True, key="op_pipeline")
+
+        st.divider()
+
+        # ── Section: Business Outcomes ─────────────────────────────────────────
+        st.markdown("#### Business Outcomes")
+
+        st.markdown("**Trades Executed vs Cost** — per session")
+        st.caption(
+            "Cost flat while trades drop = agent running but not producing. "
+            "Cost rising while trades stay flat = pure waste."
+        )
+        s["rolling_cost"] = s["total_cost_usd"].rolling(7, min_periods=1).mean()
+        fig_dr = go.Figure()
+        fig_dr.add_trace(go.Bar(
+            x=s["label"], y=s["trades_executed"],
+            name="Trades executed", marker_color="#10b981", opacity=0.65, yaxis="y",
+        ))
+        fig_dr.add_trace(go.Scatter(
+            x=s["label"], y=s["total_cost_usd"],
+            mode="lines+markers", name="Cost ($)",
+            line=dict(color="#f59e0b", width=1.5), marker=dict(size=5), yaxis="y2",
+        ))
+        fig_dr.add_trace(go.Scatter(
+            x=s["label"], y=s["rolling_cost"],
+            mode="lines", name="Cost 7-avg",
+            line=dict(color="#b45309", width=1.5, dash="dash"), yaxis="y2",
+        ))
+        if not incidents.empty:
+            for _, _inc in incidents.iterrows():
+                _match = s[s["id"] == _inc["session_id"]]
+                if not _match.empty:
+                    _x = _match.iloc[0]["label"]
+                    _c = "#ef4444" if _inc["severity"] == "critical" else "#f59e0b"
+                    fig_dr.add_shape(
+                        type="line", x0=_x, x1=_x, y0=0, y1=1,
+                        xref="x", yref="paper", line=dict(color=_c, dash="dot", width=1),
+                    )
+        fig_dr.update_layout(
+            paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
+            font_color="#1e293b", height=290,
+            xaxis_tickangle=-30,
+            yaxis=dict(title="Trades", side="left"),
+            yaxis2=dict(title="Cost (USD)", side="right", overlaying="y"),
+            legend=dict(orientation="h", y=1.1),
+            margin=dict(t=40, b=60),
+        )
+        st.plotly_chart(fig_dr, use_container_width=True, key="biz_tradescost")
+
+        if not biz_evals_df.empty:
+            st.markdown("**Business Outcome Scores** — trend")
+            _biz_ts = (
+                biz_evals_df
+                .merge(s[["id", "label", "started_at"]], left_on="session_id", right_on="id", how="left")
+                .sort_values("started_at")
+            )
+            _biz_colors_b = {
+                "cost_per_trade":      "#3b82f6",
+                "research_conversion": "#f59e0b",
+                "proposal_acceptance": "#10b981",
+            }
+            fig_bts = go.Figure()
+            for _bn, _bc in _biz_colors_b.items():
+                _bd = _biz_ts[_biz_ts["eval_name"] == _bn]
+                if _bd.empty:
+                    continue
+                fig_bts.add_trace(go.Scatter(
+                    x=_bd["label"], y=_bd["score"],
+                    mode="lines+markers", name=_bn.replace("_", " ").title(),
+                    line=dict(color=_bc, width=2),
+                    marker=dict(
+                        size=[7 if not p else 5 for p in _bd["passed"]],
+                        color=[("#ef4444" if not p else _bc) for p in _bd["passed"]],
+                    ),
+                    customdata=_bd["value"].round(3).tolist(),
+                    hovertemplate="%{x}<br>Score: %{y:.2f}<br>Value: %{customdata}<extra></extra>",
+                ))
+            fig_bts.add_hline(y=1.0, line_dash="dot", line_color="#94a3b8",
+                              annotation_text="target", annotation_font_size=9)
+            fig_bts.update_layout(
+                paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
+                font_color="#1e293b", height=280,
+                yaxis=dict(title="Score (0-1)", range=[-0.05, 1.15]),
+                xaxis_tickangle=-30, legend=dict(orientation="h", y=1.1),
+                margin=dict(t=40, b=60),
+            )
+            st.plotly_chart(fig_bts, use_container_width=True, key="biz_outcomes")
+            st.caption(
+                "Red markers = threshold missed. "
+                "cost_per_trade: pass < $0.50; "
+                "research_conversion: pass > 30%; "
+                "proposal_acceptance: pass > 40%."
+            )
+
         st.markdown("**Operational vs Business Score** — side by side per session")
         fig_dual = go.Figure()
         fig_dual.add_trace(go.Bar(
@@ -2715,15 +2654,15 @@ elif page == "Quality Drift":
             legend=dict(orientation="h", y=1.1),
             margin=dict(t=30, b=60),
         )
-        st.plotly_chart(fig_dual, use_container_width=True)
+        st.plotly_chart(fig_dual, use_container_width=True, key="biz_dual")
         st.caption(
             "Operational score = mean pass rate across all agent evals. "
             "Business score = mean pass rate across cost_per_trade, research_conversion, proposal_acceptance. "
             "A pipeline can score high on operational and low on business — it ran cleanly but produced nothing."
         )
 
-    # ── QUALITY TAB: Composite quality score trends ───────────────────────────
-    with opt_q:
+    # ── TAB 2: SEMANTIC HEALTH ────────────────────────────────────────────────
+    with tab_sem:
         with st.popover("? How quality is scored"):
             st.markdown(
                 "Operational evals check whether steps *completed*. "
