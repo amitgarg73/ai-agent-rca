@@ -581,9 +581,15 @@ def compute_cb_savings(sid: str, row: dict, evals_df, traces_df) -> tuple:
 
 
 def pipeline_strip(sid: str, traces_df, evals_df, session_agents=None) -> str:
-    """Inline 4-node pipeline strip colored by agent eval health for one session."""
-    _agents     = ["market", "research", "risk", "orchestrator"]
-    _labels     = {"market": "MKT", "research": "RES", "risk": "RSK", "orchestrator": "ORC"}
+    """Pipeline strip: ORC coordinates → MKT → NEWS → RES → RSK → ORC synthesizes."""
+    _sub_agents = ["market", "news_analyst", "research", "risk"]
+    _labels     = {
+        "market":       "MKT",
+        "news_analyst": "NEWS",
+        "research":     "RES",
+        "risk":         "RSK",
+        "orchestrator": "ORC",
+    }
     _ran: set[str] = set()
     if not traces_df.empty:
         for a in traces_df[traces_df["session_id"] == sid]["agent"].dropna().unique():
@@ -592,9 +598,10 @@ def pipeline_strip(sid: str, traces_df, evals_df, session_agents=None) -> str:
                 _ran.add("research")
             elif a == "market_shadow":
                 _ran.add("market")
+            elif "news" in a:
+                _ran.add("news_analyst")
             else:
                 _ran.add(a)
-    # fallback: use agents_invoked from session row when traces aren't cached yet
     if not _ran and session_agents:
         for a in session_agents:
             a = str(a).lower()
@@ -602,43 +609,56 @@ def pipeline_strip(sid: str, traces_df, evals_df, session_agents=None) -> str:
                 _ran.add("research")
             elif a == "market_shadow":
                 _ran.add("market")
+            elif "news" in a:
+                _ran.add("news_analyst")
             else:
                 _ran.add(a)
 
-    html = '<div style="display:flex;align-items:center;gap:3px">'
-    for i, ag in enumerate(_agents):
+    def _eval_color(ag):
         if ag not in _ran:
-            bg, fg = "#e2e8f0", "#94a3b8"
-            tip = f"{ag.title()}: did not run"
-            sym = "○"
-        else:
-            if not evals_df.empty:
-                _ae = evals_df[(evals_df["session_id"] == sid) & (evals_df["agent"] == ag)]
-            else:
-                _ae = pd.DataFrame()
-            if _ae.empty:
-                bg, fg = "#94a3b8", "#ffffff"
-                tip = f"{ag.title()}: ran — no eval data"
-                sym = "●"
-            else:
-                n_pass = int(_ae["passed"].sum())
-                n_tot  = len(_ae)
-                pr     = n_pass / n_tot * 100
-                bg     = "#10b981" if pr >= 80 else "#f59e0b" if pr >= 60 else "#ef4444"
-                fg     = "#ffffff"
-                tip    = f"{ag.title()}: {n_pass}/{n_tot} evals passed ({pr:.0f}%)"
-                sym    = "●"
-        safe_tip = tip.replace('"', "&quot;")
-        label    = _labels[ag]
-        html += (
+            return "#e2e8f0", "#94a3b8", f"{_labels.get(ag, ag)}: did not run", "○"
+        _ae = (
+            evals_df[(evals_df["session_id"] == sid) & (evals_df["agent"] == ag)]
+            if not evals_df.empty else pd.DataFrame()
+        )
+        if _ae.empty:
+            return "#94a3b8", "#ffffff", f"{_labels.get(ag, ag)}: ran — no eval data", "●"
+        n_pass = int(_ae["passed"].sum())
+        n_tot  = len(_ae)
+        pr     = n_pass / n_tot * 100
+        bg     = "#10b981" if pr >= 80 else "#f59e0b" if pr >= 60 else "#ef4444"
+        return bg, "#ffffff", f"{_labels.get(ag, ag)}: {n_pass}/{n_tot} evals passed ({pr:.0f}%)", "●"
+
+    def _node(bg, fg, tip, sym, label):
+        safe = tip.replace('"', "&quot;")
+        return (
             f'<div style="display:flex;flex-direction:column;align-items:center;gap:1px">'
-            f'<span class="pipe-node" data-tip="{safe_tip}" '
-            f'style="background:{bg};color:{fg}">{sym}</span>'
+            f'<span class="pipe-node" data-tip="{safe}" style="background:{bg};color:{fg}">{sym}</span>'
             f'<span style="font-size:0.58rem;color:#94a3b8;line-height:1.2">{label}</span>'
             f'</div>'
         )
-        if i < len(_agents) - 1:
-            html += '<span style="color:#cbd5e1;font-size:0.75rem;margin-bottom:10px">→</span>'
+
+    arrow = '<span style="color:#cbd5e1;font-size:0.75rem;margin-bottom:10px">→</span>'
+
+    # Left ORC: coordinator — green if any agent ran, gray otherwise
+    orc_ran = bool(_ran)
+    orc_l_bg  = "#10b981" if orc_ran else "#e2e8f0"
+    orc_l_fg  = "#ffffff"  if orc_ran else "#94a3b8"
+    orc_l_tip = "Orchestrator: session initiated — dispatching to sub-agents" if orc_ran else "Orchestrator: no session data"
+    orc_l_sym = "●" if orc_ran else "○"
+
+    # Right ORC: synthesizer — eval pass rate
+    orc_r_bg, orc_r_fg, orc_r_tip, orc_r_sym = _eval_color("orchestrator")
+    orc_r_tip = orc_r_tip.replace("ORC:", "Orchestrator synthesizer:")
+
+    html = '<div style="display:flex;align-items:center;gap:3px">'
+    html += _node(orc_l_bg, orc_l_fg, orc_l_tip, orc_l_sym, "ORC")
+    html += arrow
+    for ag in _sub_agents:
+        bg, fg, tip, sym = _eval_color(ag)
+        html += _node(bg, fg, tip, sym, _labels[ag])
+        html += arrow
+    html += _node(orc_r_bg, orc_r_fg, orc_r_tip, orc_r_sym, "ORC")
     html += '</div>'
     return html
 
@@ -1800,17 +1820,28 @@ if page == "Overview":
                         )
 
                 _strip_html = pipeline_strip(_ov_sel_sid, traces_all, _ov_ae)
+
+                # Accent color mirrors the selected row's state
+                _has_inc_flag   = not _ov_sel_inc.empty
+                _zero_trade_flag = _ov_s_trades == 0
+                _accent = "#ef4444" if _has_inc_flag else "#f59e0b" if _zero_trade_flag else "#3b82f6"
+
                 _detail_html = f"""
-<div style="border:1px solid #e2e8f0;border-radius:10px;padding:14px 18px;margin-top:10px;background:#fafafa">
-  <div style="display:flex;align-items:center;gap:18px;flex-wrap:wrap">
-    <div style="font-size:0.72rem;color:#94a3b8;margin-bottom:6px;width:100%">{_ov_s_date_str}</div>
+<div style="margin-top:0;border-left:4px solid {_accent};border-radius:0 8px 8px 0;
+            padding:12px 16px 12px 14px;background:#f8fafc;border-top:1px solid #e2e8f0;
+            border-right:1px solid #e2e8f0;border-bottom:1px solid #e2e8f0">
+  <div style="font-size:0.7rem;color:#94a3b8;margin-bottom:8px;letter-spacing:0.03em">
+    PIPELINE DETAIL &nbsp;·&nbsp; {_ov_s_date_str}
+  </div>
+  <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
     {_strip_html}
-    <div style="display:flex;gap:14px;flex-wrap:wrap;margin-left:12px">
-      <span style="font-size:0.82rem"><strong>Cost</strong> ${_ov_s_cost:.4f}</span>
-      <span style="font-size:0.82rem"><strong>Trades</strong> {_ov_s_trades}</span>
-      <span style="font-size:0.82rem"><strong>Duration</strong> {_ov_s_dur}s</span>
-      <span style="font-size:0.82rem"><strong>Tokens</strong> {_ov_s_tok:,}</span>
-      <span style="background:{_ec_bg};color:{_ec_fg};border-radius:4px;padding:2px 8px;font-size:0.78rem;font-weight:600">{_ov_s_exit or "unknown"}</span>
+    <div style="display:flex;gap:16px;flex-wrap:wrap;margin-left:8px;border-left:1px solid #e2e8f0;padding-left:16px">
+      <span style="font-size:0.82rem"><strong style="color:#64748b">Cost</strong>&nbsp;${_ov_s_cost:.4f}</span>
+      <span style="font-size:0.82rem"><strong style="color:#64748b">Trades</strong>&nbsp;{_ov_s_trades}</span>
+      <span style="font-size:0.82rem"><strong style="color:#64748b">Duration</strong>&nbsp;{_ov_s_dur}s</span>
+      <span style="font-size:0.82rem"><strong style="color:#64748b">Tokens</strong>&nbsp;{_ov_s_tok:,}</span>
+      <span style="background:{_ec_bg};color:{_ec_fg};border-radius:4px;padding:2px 8px;
+                  font-size:0.75rem;font-weight:600;letter-spacing:0.02em">{_ov_s_exit or "unknown"}</span>
     </div>
   </div>
   {_inc_html}
