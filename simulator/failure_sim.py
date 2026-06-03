@@ -48,12 +48,18 @@ SEVERITY = {
 }
 
 
+# Simulated sessions are backdated this many days to avoid interfering with
+# today's trading pipeline guards (e.g. _existing_session_guard in premarket.py).
+_SIM_DAYS_AGO = 7
+_SIM_OFFSET_S = -_SIM_DAYS_AGO * 86400
+
+
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return (datetime.now(timezone.utc) + timedelta(seconds=_SIM_OFFSET_S)).isoformat()
 
 
 def _ts(offset_seconds: int = 0) -> str:
-    return (datetime.now(timezone.utc) + timedelta(seconds=offset_seconds)).isoformat()
+    return (datetime.now(timezone.utc) + timedelta(seconds=_SIM_OFFSET_S + offset_seconds)).isoformat()
 
 
 def _trace(session_id: str, agent: str, step_type: str, tool_name: str | None,
@@ -64,7 +70,7 @@ def _trace(session_id: str, agent: str, step_type: str, tool_name: str | None,
         "id":           str(uuid.uuid4()),
         "session_id":   session_id,
         "span_id":      str(uuid.uuid4()),
-        "date":         datetime.now(timezone.utc).date().isoformat(),
+        "date":         (datetime.now(timezone.utc) + timedelta(seconds=_SIM_OFFSET_S)).date().isoformat(),
         "sequence":     sequence,
         "agent":        agent,
         "step_type":    step_type,
@@ -83,7 +89,7 @@ def _session(label: list[str], cost: float, tokens_in: int, tokens_out: int,
              latency_ms: int, trades: int, reason: str | None) -> dict:
     return {
         "id":                  str(uuid.uuid4()),
-        "date":                datetime.now(timezone.utc).date().isoformat(),
+        "date":                (datetime.now(timezone.utc) + timedelta(seconds=_SIM_OFFSET_S)).date().isoformat(),
         "total_cost_usd":      cost,
         "total_latency_ms":    latency_ms,
         "total_tokens_input":  tokens_in,
