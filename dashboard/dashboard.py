@@ -2758,23 +2758,6 @@ elif page == "Quality Drift":
     # ── TAB 2: SEMANTIC HEALTH ────────────────────────────────────────────────
     with tab_sem:
 
-        def _sem_section(number: str, title: str, subtitle: str, help_md: str):
-            """Render a consistent section header with inline ? popover."""
-            _hc, _hp = st.columns([11, 1])
-            with _hc:
-                st.markdown(
-                    f'<div style="margin:4px 0 2px">'
-                    f'<span style="font-size:0.70rem;font-weight:700;color:#94a3b8;'
-                    f'text-transform:uppercase;letter-spacing:0.08em">{number}</span>&nbsp;&nbsp;'
-                    f'<span style="font-size:1.05rem;font-weight:700;color:#0f172a">{title}</span>'
-                    f'<div style="font-size:0.80rem;color:#64748b;margin-top:2px">{subtitle}</div>'
-                    f'</div>',
-                    unsafe_allow_html=True,
-                )
-            with _hp:
-                with st.popover("?"):
-                    st.markdown(help_md)
-
         _qual_colors = {
             "research_quality":     "#f59e0b",
             "risk_quality":         "#10b981",
@@ -2782,58 +2765,57 @@ elif page == "Quality Drift":
             "session_quality":      "#8b5cf6",
         }
 
-        # ── Section 1: Pipeline Quality Snapshot ─────────────────────────────
         if not evals_ts.empty:
-            _sem_section(
-                "Section 1", "Pipeline Quality Snapshot",
-                "Last 15 sessions · one cell per agent per session · green = healthy, red = below threshold",
-                "**How to read the heatmap**\n\n"
-                "Each cell shows one agent's composite quality score for one session.\n\n"
-                "**Rows** = agents (Research, Risk, Orchestrator, Session)\n\n"
-                "**Columns** = sessions, oldest on the left, most recent on the right\n\n"
-                "**Color scale:**\n"
-                "- Green (≥ 0.60) — quality is healthy for that agent in that session\n"
-                "- Yellow (0.40–0.60) — borderline; worth watching\n"
-                "- Red (< 0.40) — below threshold; the agent's reasoning quality was poor\n\n"
-                "**What to look for:**\n"
-                "- A row drifting from green to red (left to right) = that agent is quietly degrading — "
-                "the Silent Degradation pattern\n"
-                "- A column that is all red = that session had pipeline-wide quality failure\n"
-                "- Red spreading diagonally across rows = Quality Cascade — one agent's drop "
-                "pulled downstream agents down with it\n"
-                "- Isolated red cells = single-session anomaly, likely noise"
-            )
-            _last15_ids = s.tail(15)["id"].tolist()
-            _qhm = evals_ts[
-                evals_ts["agent"].str.endswith("_quality", na=False) &
-                (evals_ts["eval_name"] == "composite_score") &
-                evals_ts["session_id"].isin(_last15_ids)
-            ].copy()
-            if not _qhm.empty:
-                _qhm["lbl"] = _qhm["started_at"].dt.strftime("%m-%d %H:%M")
-                _qhm["agent_label"] = _qhm["agent"].str.replace("_quality", "", regex=False).str.title()
-                _qhm_pivot = _qhm.pivot_table(
-                    index="agent_label", columns="lbl", values="score", aggfunc="first"
-                )
-                _col_order = [lb for lb in s.tail(15)["label"] if lb in _qhm_pivot.columns]
-                _qhm_pivot = _qhm_pivot[_col_order] if _col_order else _qhm_pivot
-                _z_q   = _qhm_pivot.values.astype(float)
-                _txt_q = [[f"{v:.2f}" if not pd.isna(v) else "—" for v in row] for row in _z_q]
-                fig_qhm = go.Figure(go.Heatmap(
-                    z=_z_q, x=list(_qhm_pivot.columns), y=list(_qhm_pivot.index),
-                    text=_txt_q, texttemplate="%{text}",
-                    colorscale=[[0, "#fee2e2"], [0.6, "#fef9c3"], [1, "#dcfce7"]],
-                    zmin=0, zmax=1, showscale=True,
-                    colorbar=dict(title="Score", thickness=12, len=0.8),
-                ))
-                fig_qhm.update_layout(
-                    paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
-                    font_color="#1e293b", height=200,
-                    xaxis_tickangle=-35, xaxis=dict(side="top"),
-                    margin=dict(t=60, b=20, l=120, r=60),
-                )
-                st.plotly_chart(fig_qhm, use_container_width=True)
-                st.caption("Green = quality healthy (≥0.60). Yellow = borderline. Red = below threshold.")
+            with st.expander("**Pipeline Quality Snapshot**  ·  Last 15 sessions · green = healthy, red = below threshold", expanded=True):
+                with st.popover("?"):
+                    st.markdown(
+                        "**How to read the heatmap**\n\n"
+                        "Each cell shows one agent's composite quality score for one session.\n\n"
+                        "**Rows** = agents (Research, Risk, Orchestrator, Session)\n\n"
+                        "**Columns** = sessions, oldest on the left, most recent on the right\n\n"
+                        "**Color scale:**\n"
+                        "- Green (≥ 0.60) — quality is healthy for that agent in that session\n"
+                        "- Yellow (0.40–0.60) — borderline; worth watching\n"
+                        "- Red (< 0.40) — below threshold; the agent's reasoning quality was poor\n\n"
+                        "**What to look for:**\n"
+                        "- A row drifting from green to red (left to right) = that agent is quietly degrading — "
+                        "the Silent Degradation pattern\n"
+                        "- A column that is all red = that session had pipeline-wide quality failure\n"
+                        "- Red spreading diagonally across rows = Quality Cascade — one agent's drop "
+                        "pulled downstream agents down with it\n"
+                        "- Isolated red cells = single-session anomaly, likely noise"
+                    )
+                _last15_ids = s.tail(15)["id"].tolist()
+                _qhm = evals_ts[
+                    evals_ts["agent"].str.endswith("_quality", na=False) &
+                    (evals_ts["eval_name"] == "composite_score") &
+                    evals_ts["session_id"].isin(_last15_ids)
+                ].copy()
+                if not _qhm.empty:
+                    _qhm["lbl"] = _qhm["started_at"].dt.strftime("%m-%d %H:%M")
+                    _qhm["agent_label"] = _qhm["agent"].str.replace("_quality", "", regex=False).str.title()
+                    _qhm_pivot = _qhm.pivot_table(
+                        index="agent_label", columns="lbl", values="score", aggfunc="first"
+                    )
+                    _col_order = [lb for lb in s.tail(15)["label"] if lb in _qhm_pivot.columns]
+                    _qhm_pivot = _qhm_pivot[_col_order] if _col_order else _qhm_pivot
+                    _z_q   = _qhm_pivot.values.astype(float)
+                    _txt_q = [[f"{v:.2f}" if not pd.isna(v) else "—" for v in row] for row in _z_q]
+                    fig_qhm = go.Figure(go.Heatmap(
+                        z=_z_q, x=list(_qhm_pivot.columns), y=list(_qhm_pivot.index),
+                        text=_txt_q, texttemplate="%{text}",
+                        colorscale=[[0, "#fee2e2"], [0.6, "#fef9c3"], [1, "#dcfce7"]],
+                        zmin=0, zmax=1, showscale=True,
+                        colorbar=dict(title="Score", thickness=12, len=0.8),
+                    ))
+                    fig_qhm.update_layout(
+                        paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
+                        font_color="#1e293b", height=200,
+                        xaxis_tickangle=-35, xaxis=dict(side="top"),
+                        margin=dict(t=60, b=20, l=120, r=60),
+                    )
+                    st.plotly_chart(fig_qhm, use_container_width=True)
+                    st.caption("Green = quality healthy (≥0.60). Yellow = borderline. Red = below threshold.")
             st.divider()
 
         if not evals_ts.empty:
@@ -2869,61 +2851,60 @@ elif page == "Quality Drift":
                     "n":       len(_last_n),
                 }
 
-            # ── Section 2: Recent Trend Direction ────────────────────────────
             st.divider()
-            _sem_section(
-                "Section 2", "Recent Trend Direction",
-                "Linear trend across the last 5 sessions — current score and direction per agent",
-                "**How to read these cards**\n\n"
-                "Each card shows one agent's current quality score and which direction it is moving.\n\n"
-                "**Score (large number):** The composite quality score from the most recent session. "
-                "0 = worst, 1 = best. Anything below **0.60** is a concern even if no operational incident fired.\n\n"
-                "**Arrow and label:** Direction of the linear trend calculated across the last 5 sessions.\n"
-                "- ▲ Improving — score is rising session over session\n"
-                "- → Stable — score is flat within ±0.01\n"
-                "- ▼ Declining — score is falling. A declining trend that crosses 0.60 is the early "
-                "warning signal for Silent Degradation — the agent is getting worse before any operational error fires.\n\n"
-                "**Δ change:** Difference between the oldest and newest of the last 5 sessions. "
-                "A large negative number means quality dropped significantly in a short window.\n\n"
-                "**Why 5 sessions?** Short enough to catch recent drift; long enough to filter one-session noise."
-            )
-            _dc = st.columns(4)
-            for _di, _qa in enumerate(["research_quality", "risk_quality",
-                                        "orchestrator_quality", "session_quality"]):
-                _qc   = _qual_colors[_qa]
-                _qlbl = _drift_labels_map[_qa]
-                _dd   = _drift.get(_qa)
-                if not _dd:
+            with st.expander("**Recent Trend Direction**  ·  Linear trend across the last 5 sessions per agent", expanded=True):
+                with st.popover("?"):
+                    st.markdown(
+                        "**How to read these cards**\n\n"
+                        "Each card shows one agent's current quality score and which direction it is moving.\n\n"
+                        "**Score (large number):** The composite quality score from the most recent session. "
+                        "0 = worst, 1 = best. Anything below **0.60** is a concern even if no operational incident fired.\n\n"
+                        "**Arrow and label:** Direction of the linear trend calculated across the last 5 sessions.\n"
+                        "- ▲ Improving — score is rising session over session\n"
+                        "- → Stable — score is flat within ±0.01\n"
+                        "- ▼ Declining — score is falling. A declining trend that crosses 0.60 is the early "
+                        "warning signal for Silent Degradation — the agent is getting worse before any operational error fires.\n\n"
+                        "**Δ change:** Difference between the oldest and newest of the last 5 sessions. "
+                        "A large negative number means quality dropped significantly in a short window.\n\n"
+                        "**Why 5 sessions?** Short enough to catch recent drift; long enough to filter one-session noise."
+                    )
+                _dc = st.columns(4)
+                for _di, _qa in enumerate(["research_quality", "risk_quality",
+                                            "orchestrator_quality", "session_quality"]):
+                    _qc   = _qual_colors[_qa]
+                    _qlbl = _drift_labels_map[_qa]
+                    _dd   = _drift.get(_qa)
+                    if not _dd:
+                        _dc[_di].markdown(
+                            f'<div style="background:#f8fafc;border:1px solid #e2e8f0;'
+                            f'border-radius:8px;padding:12px 10px;text-align:center">'
+                            f'<div style="font-size:0.75rem;font-weight:600;color:{_qc}">{_qlbl}</div>'
+                            f'<div style="font-size:1.4rem;font-weight:700;color:#334155">—</div>'
+                            f'<div style="font-size:0.65rem;color:#94a3b8">not enough data</div>'
+                            f'</div>', unsafe_allow_html=True,
+                        )
+                        continue
+                    _slp = _dd["slope"]
+                    if _slp > 0.01:
+                        _arrow, _aclr, _ttxt = "▲", "#16a34a", "improving"
+                        _cbg, _cbrd = "#f0fdf4", "#a7f3d0"
+                    elif _slp < -0.01:
+                        _arrow, _aclr, _ttxt = "▼", "#dc2626", "declining"
+                        _cbg, _cbrd = "#fef2f2", "#fca5a5"
+                    else:
+                        _arrow, _aclr, _ttxt = "→", "#64748b", "stable"
+                        _cbg, _cbrd = "#f8fafc", "#e2e8f0"
+                    _chg_str = f"{_dd['change']:+.3f}" if abs(_dd["change"]) >= 0.001 else "±0.000"
                     _dc[_di].markdown(
-                        f'<div style="background:#f8fafc;border:1px solid #e2e8f0;'
+                        f'<div style="background:{_cbg};border:1px solid {_cbrd};'
                         f'border-radius:8px;padding:12px 10px;text-align:center">'
-                        f'<div style="font-size:0.75rem;font-weight:600;color:{_qc}">{_qlbl}</div>'
-                        f'<div style="font-size:1.4rem;font-weight:700;color:#334155">—</div>'
-                        f'<div style="font-size:0.65rem;color:#94a3b8">not enough data</div>'
+                        f'<div style="font-size:0.75rem;font-weight:600;color:{_qc};margin-bottom:4px">{_qlbl}</div>'
+                        f'<div style="font-size:1.4rem;font-weight:700;color:#0f172a">{_dd["current"]:.2f}</div>'
+                        f'<div style="font-size:1.0rem;color:{_aclr};font-weight:700;margin:2px 0">{_arrow} {_ttxt}</div>'
+                        f'<div style="font-size:0.65rem;color:#64748b">{_chg_str} over {_dd["n"]} sessions</div>'
                         f'</div>', unsafe_allow_html=True,
                     )
-                    continue
-                _slp = _dd["slope"]
-                if _slp > 0.01:
-                    _arrow, _aclr, _ttxt = "▲", "#16a34a", "improving"
-                    _cbg, _cbrd = "#f0fdf4", "#a7f3d0"
-                elif _slp < -0.01:
-                    _arrow, _aclr, _ttxt = "▼", "#dc2626", "declining"
-                    _cbg, _cbrd = "#fef2f2", "#fca5a5"
-                else:
-                    _arrow, _aclr, _ttxt = "→", "#64748b", "stable"
-                    _cbg, _cbrd = "#f8fafc", "#e2e8f0"
-                _chg_str = f"{_dd['change']:+.3f}" if abs(_dd["change"]) >= 0.001 else "±0.000"
-                _dc[_di].markdown(
-                    f'<div style="background:{_cbg};border:1px solid {_cbrd};'
-                    f'border-radius:8px;padding:12px 10px;text-align:center">'
-                    f'<div style="font-size:0.75rem;font-weight:600;color:{_qc};margin-bottom:4px">{_qlbl}</div>'
-                    f'<div style="font-size:1.4rem;font-weight:700;color:#0f172a">{_dd["current"]:.2f}</div>'
-                    f'<div style="font-size:1.0rem;color:{_aclr};font-weight:700;margin:2px 0">{_arrow} {_ttxt}</div>'
-                    f'<div style="font-size:0.65rem;color:#64748b">{_chg_str} over {_dd["n"]} sessions</div>'
-                    f'</div>', unsafe_allow_html=True,
-                )
-            st.markdown("<div style='margin-bottom:8px'></div>", unsafe_allow_html=True)
+                st.markdown("<div style='margin-bottom:8px'></div>", unsafe_allow_html=True)
 
             # ── Incident lookup: session_id → list of {pattern, severity} ─────
             _inc_by_sid: dict = {}
@@ -3056,94 +3037,93 @@ elif page == "Quality Drift":
                     f'</span>'
                 )
 
-            # ── Section 3: Quality Trends Over Time ──────────────────────────
             st.divider()
-            _sem_section(
-                "Section 3", "Quality Trends Over Time",
-                "Composite score per session · dashed line = linear trend · red dot = incident",
-                "**How to read these charts**\n\n"
-                "Each chart shows how one agent's quality composite score has moved across sessions.\n\n"
-                "**Solid line:** The actual composite score per session (0–1). "
-                "It is the average of all quality dimensions for that agent in that session.\n\n"
-                "**Dashed orange line:** Linear trend fitted across all sessions shown. "
-                "A downward slope means quality is declining over time even if individual sessions look acceptable. "
-                "This is the Silent Degradation signal.\n\n"
-                "**Dotted grey line at 0.60:** The quality threshold. Sessions below this line "
-                "passed operationally but the reasoning quality was below the acceptable floor.\n\n"
-                "**Red dot on a session:** An incident was detected for that session. "
-                "Hover to see which pattern fired. A cluster of red dots alongside a downward trend "
-                "suggests the pipeline is under sustained stress.\n\n"
-                "**Mean / Pass / Δ (below chart title):**\n"
-                "- Mean = average score across all sessions shown\n"
-                "- Pass = % of sessions that cleared the 0.60 threshold\n"
-                "- Δ = change from first to last session (negative = quality dropped)\n\n"
-                "**System composite** (top chart) is the mean of all four agent scores per session — "
-                "a single number summarising overall pipeline quality."
-            )
-            # Legend strip — directly under section heading
-            st.markdown(
-                '<div style="font-size:0.78rem;color:#475569;margin:6px 0 10px;'
-                'display:flex;gap:18px;align-items:center">'
-                '<span><span style="display:inline-block;width:24px;height:2px;'
-                'background:#3b82f6;vertical-align:middle;margin-right:4px"></span>score</span>'
-                '<span><span style="display:inline-block;width:24px;height:0;'
-                'border-top:2px dashed #b45309;vertical-align:middle;margin-right:4px"></span>trend</span>'
-                '<span><span style="display:inline-block;width:24px;height:0;'
-                'border-top:2px dotted #94a3b8;vertical-align:middle;margin-right:4px"></span>'
-                '0.60 threshold</span>'
-                '<span><span style="display:inline-block;width:10px;height:10px;'
-                'background:#ef4444;border-radius:50%;vertical-align:middle;margin-right:4px"></span>'
-                'incident</span>'
-                '</div>',
-                unsafe_allow_html=True,
-            )
-
-            # ── System composite card ──────────────────────────────────────────
-            _smn, _spct, _sdlt = _stats(_sys_comp["score"])
-            st.markdown(
-                '<div style="background:#ffffff;border:1px solid #e2e8f0;'
-                'border-radius:12px;padding:16px 20px 4px;margin-bottom:12px">',
-                unsafe_allow_html=True,
-            )
-            st.markdown(
-                '<span style="font-size:1.0rem;font-weight:700;color:#3b82f6">'
-                '● Session (system composite)</span>',
-                unsafe_allow_html=True,
-            )
-            st.markdown(_stats_md(_smn, _spct, _sdlt), unsafe_allow_html=True)
-            st.plotly_chart(_qchart(_sys_comp, "#3b82f6", "rgba(59,130,246,0.07)", 280),
-                            use_container_width=True, key="qd_sys")
-            st.markdown("</div>", unsafe_allow_html=True)
-
-            # ── Contributing agent small multiples ─────────────────────────────
-            _ag_cfg = [
-                ("research_quality",     "Research",     "#f59e0b", "rgba(245,158,11,0.07)"),
-                ("risk_quality",         "Risk",         "#10b981", "rgba(16,185,129,0.07)"),
-                ("orchestrator_quality", "Orchestrator", "#3b82f6", "rgba(59,130,246,0.07)"),
-            ]
-            _ag_cols = st.columns(3)
-            for _ci, (_qa, _qlbl, _qc, _qfill) in enumerate(_ag_cfg):
-                _qd_ag = _qd_all[_qd_all["agent"] == _qa].copy().sort_values("started_at")
-                _qd_ag["lbl"] = _qd_ag["started_at"].dt.strftime("%m-%d %H:%M")
-                _mn, _pct, _dlt = _stats(_qd_ag["score"])
-                with _ag_cols[_ci]:
+            with st.expander("**Quality Trends Over Time**  ·  Composite score per session · dashed line = trend · red dot = incident", expanded=True):
+                with st.popover("?"):
                     st.markdown(
-                        f'<div style="background:#ffffff;border:1px solid #e2e8f0;'
-                        f'border-radius:12px;padding:16px 20px 4px;margin-bottom:12px">',
-                        unsafe_allow_html=True,
+                        "**How to read these charts**\n\n"
+                        "Each chart shows how one agent's quality composite score has moved across sessions.\n\n"
+                        "**Solid line:** The actual composite score per session (0–1). "
+                        "It is the average of all quality dimensions for that agent in that session.\n\n"
+                        "**Dashed orange line:** Linear trend fitted across all sessions shown. "
+                        "A downward slope means quality is declining over time even if individual sessions look acceptable. "
+                        "This is the Silent Degradation signal.\n\n"
+                        "**Dotted grey line at 0.60:** The quality threshold. Sessions below this line "
+                        "passed operationally but the reasoning quality was below the acceptable floor.\n\n"
+                        "**Red dot on a session:** An incident was detected for that session. "
+                        "Hover to see which pattern fired. A cluster of red dots alongside a downward trend "
+                        "suggests the pipeline is under sustained stress.\n\n"
+                        "**Mean / Pass / Δ (below chart title):**\n"
+                        "- Mean = average score across all sessions shown\n"
+                        "- Pass = % of sessions that cleared the 0.60 threshold\n"
+                        "- Δ = change from first to last session (negative = quality dropped)\n\n"
+                        "**System composite** (top chart) is the mean of all four agent scores per session — "
+                        "a single number summarising overall pipeline quality."
                     )
-                    st.markdown(
-                        f'<span style="font-size:1.0rem;font-weight:700;color:{_qc}">'
-                        f'● {_qlbl}</span>',
-                        unsafe_allow_html=True,
-                    )
-                    st.markdown(_stats_md(_mn, _pct, _dlt), unsafe_allow_html=True)
-                    _ag_inc = _agent_inc_lookup(_qa.replace("_quality", ""))
-                    st.plotly_chart(
-                        _qchart(_qd_ag, _qc, _qfill, 200, inc_lookup=_ag_inc),
-                        use_container_width=True, key=f"qd_{_qa}",
-                    )
-                    st.markdown("</div>", unsafe_allow_html=True)
+                # Legend strip
+                st.markdown(
+                    '<div style="font-size:0.78rem;color:#475569;margin:6px 0 10px;'
+                    'display:flex;gap:18px;align-items:center">'
+                    '<span><span style="display:inline-block;width:24px;height:2px;'
+                    'background:#3b82f6;vertical-align:middle;margin-right:4px"></span>score</span>'
+                    '<span><span style="display:inline-block;width:24px;height:0;'
+                    'border-top:2px dashed #b45309;vertical-align:middle;margin-right:4px"></span>trend</span>'
+                    '<span><span style="display:inline-block;width:24px;height:0;'
+                    'border-top:2px dotted #94a3b8;vertical-align:middle;margin-right:4px"></span>'
+                    '0.60 threshold</span>'
+                    '<span><span style="display:inline-block;width:10px;height:10px;'
+                    'background:#ef4444;border-radius:50%;vertical-align:middle;margin-right:4px"></span>'
+                    'incident</span>'
+                    '</div>',
+                    unsafe_allow_html=True,
+                )
+
+                # ── System composite card ─────────────────────────────────────
+                _smn, _spct, _sdlt = _stats(_sys_comp["score"])
+                st.markdown(
+                    '<div style="background:#ffffff;border:1px solid #e2e8f0;'
+                    'border-radius:12px;padding:16px 20px 4px;margin-bottom:12px">',
+                    unsafe_allow_html=True,
+                )
+                st.markdown(
+                    '<span style="font-size:1.0rem;font-weight:700;color:#3b82f6">'
+                    '● Session (system composite)</span>',
+                    unsafe_allow_html=True,
+                )
+                st.markdown(_stats_md(_smn, _spct, _sdlt), unsafe_allow_html=True)
+                st.plotly_chart(_qchart(_sys_comp, "#3b82f6", "rgba(59,130,246,0.07)", 280),
+                                use_container_width=True, key="qd_sys")
+                st.markdown("</div>", unsafe_allow_html=True)
+
+                # ── Contributing agent small multiples ────────────────────────
+                _ag_cfg = [
+                    ("research_quality",     "Research",     "#f59e0b", "rgba(245,158,11,0.07)"),
+                    ("risk_quality",         "Risk",         "#10b981", "rgba(16,185,129,0.07)"),
+                    ("orchestrator_quality", "Orchestrator", "#3b82f6", "rgba(59,130,246,0.07)"),
+                ]
+                _ag_cols = st.columns(3)
+                for _ci, (_qa, _qlbl, _qc, _qfill) in enumerate(_ag_cfg):
+                    _qd_ag = _qd_all[_qd_all["agent"] == _qa].copy().sort_values("started_at")
+                    _qd_ag["lbl"] = _qd_ag["started_at"].dt.strftime("%m-%d %H:%M")
+                    _mn, _pct, _dlt = _stats(_qd_ag["score"])
+                    with _ag_cols[_ci]:
+                        st.markdown(
+                            f'<div style="background:#ffffff;border:1px solid #e2e8f0;'
+                            f'border-radius:12px;padding:16px 20px 4px;margin-bottom:12px">',
+                            unsafe_allow_html=True,
+                        )
+                        st.markdown(
+                            f'<span style="font-size:1.0rem;font-weight:700;color:{_qc}">'
+                            f'● {_qlbl}</span>',
+                            unsafe_allow_html=True,
+                        )
+                        st.markdown(_stats_md(_mn, _pct, _dlt), unsafe_allow_html=True)
+                        _ag_inc = _agent_inc_lookup(_qa.replace("_quality", ""))
+                        st.plotly_chart(
+                            _qchart(_qd_ag, _qc, _qfill, 200, inc_lookup=_ag_inc),
+                            use_container_width=True, key=f"qd_{_qa}",
+                        )
+                        st.markdown("</div>", unsafe_allow_html=True)
 
             # ── Session quality dimension breakdown ────────────────────────────
             st.divider()
@@ -3228,22 +3208,20 @@ elif page == "Quality Drift":
                 "session_quality":       "#ddd6fe",
             }
 
-            # ── Section 4: Session Detail ─────────────────────────────────────
             st.divider()
-            _sem_section(
-                "Section 4", "Session Detail",
-                "Pick any session to see per-dimension scores with fix guidance for anything below threshold",
-                "**How to read the dimension breakdown**\n\n"
-                "Each card is one quality dimension for one agent in the selected session.\n\n"
-                "**Score (0–1):** How well the agent performed on that dimension. Below 0.60 = concern.\n\n"
-                "**Fixable badge:** The dimension is below threshold and can be improved by changing agent code. "
-                "Click **Fix ?** to see exactly what to change.\n\n"
-                "**Measurement gap badge:** Cannot be scored yet — requires raw LLM output text stored in traces. "
-                "No agent code change will improve this score until output logging is added.\n\n"
-                "**Composite score (top of each agent block):** Average of all dimensions for that agent. "
-                "This is the number shown in Sections 2 and 3."
-            )
-            with st.expander("Session quality breakdown", expanded=True):
+            with st.expander("**Session Detail**  ·  Per-dimension scores with fix guidance", expanded=False):
+                with st.popover("?"):
+                    st.markdown(
+                        "**How to read the dimension breakdown**\n\n"
+                        "Each card is one quality dimension for one agent in the selected session.\n\n"
+                        "**Score (0–1):** How well the agent performed on that dimension. Below 0.60 = concern.\n\n"
+                        "**Fixable badge:** The dimension is below threshold and can be improved by changing agent code. "
+                        "Click **Fix ?** to see exactly what to change.\n\n"
+                        "**Measurement gap badge:** Cannot be scored yet — requires raw LLM output text stored in traces. "
+                        "No agent code change will improve this score until output logging is added.\n\n"
+                        "**Composite score (top of each agent block):** Average of all dimensions for that agent. "
+                        "This is the number shown in the trend charts above."
+                    )
                 # Session picker — default to latest
                 _sel_col, _sel_spacer = st.columns([3, 5])
                 _sess_options = []
