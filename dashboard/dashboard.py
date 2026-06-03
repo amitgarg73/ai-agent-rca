@@ -2842,33 +2842,6 @@ elif page == "Quality Drift":
                     ),
                     hovertemplate="%{x}<br>Score: %{y:.3f}<extra></extra>",
                 ))
-                # Dashed trend line over last DRIFT_N sessions
-                _dd = _drift.get(_qa)
-                if _dd and len(_qd) >= 2:
-                    _tln    = min(_DRIFT_N, len(_qd))
-                    _tl_df  = _qd.tail(_tln)
-                    _xs_t   = np.arange(_tln, dtype=float)
-                    _sl_t, _ic_t = np.polyfit(_xs_t, _tl_df["score"].values, 1)
-                    _fitted = (_sl_t * _xs_t + _ic_t).tolist()
-                    fig_qt.add_trace(go.Scatter(
-                        x=_tl_df["lbl"].tolist(), y=_fitted,
-                        mode="lines",
-                        line=dict(color=_qc, width=1.5, dash="dash"),
-                        showlegend=False, hoverinfo="skip",
-                    ))
-                    _ann_slp = _dd["slope"]
-                    if abs(_ann_slp) < 0.01:
-                        _ann_txt, _ann_clr = "→", "#64748b"
-                    elif _ann_slp > 0:
-                        _ann_txt, _ann_clr = f"▲ +{_ann_slp:.3f}", "#16a34a"
-                    else:
-                        _ann_txt, _ann_clr = f"▼ {_ann_slp:.3f}", "#dc2626"
-                    fig_qt.add_annotation(
-                        x=_tl_df["lbl"].iloc[-1], y=_fitted[-1],
-                        text=_ann_txt, showarrow=False,
-                        font=dict(size=9, color=_ann_clr),
-                        xanchor="left", yanchor="middle", xshift=6,
-                    )
             fig_qt.add_hline(y=0.60, line_dash="dot", line_color="#94a3b8",
                              annotation_text="threshold (0.60)",
                              annotation_position="bottom right",
@@ -2879,10 +2852,10 @@ elif page == "Quality Drift":
                 yaxis=dict(title="Composite score", range=[-0.05, 1.10]),
                 xaxis_tickangle=-35,
                 legend=dict(orientation="h", y=1.12),
-                margin=dict(t=40, b=60, r=80),
+                margin=dict(t=40, b=60),
             )
             st.plotly_chart(fig_qt, use_container_width=True)
-            st.caption("X marker = failed threshold. Red dot = score below 0.60. Dashed line = 5-session trend.")
+            st.caption("X marker = failed threshold. Red dot = score below 0.60.")
 
             # ── Session quality dimension breakdown ────────────────────────────
             st.divider()
