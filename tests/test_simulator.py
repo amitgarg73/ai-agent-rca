@@ -165,20 +165,21 @@ class TestQualityDetectorFiringFromBuilders:
 
 class TestSimulateQualityFailure:
     def test_grounding_failure_dry_run(self):
-        sids = simulate_quality_failure("grounding_failure", db=None)
+        sids, incs = simulate_quality_failure("grounding_failure", db=None)
         assert len(sids) == 3
         assert all(isinstance(s, str) for s in sids)
+        assert incs == []  # dry-run returns no incidents
 
     def test_coherence_break_dry_run(self):
-        sids = simulate_quality_failure("coherence_break", db=None)
+        sids, incs = simulate_quality_failure("coherence_break", db=None)
         assert len(sids) == 1
 
     def test_quality_cascade_dry_run(self):
-        sids = simulate_quality_failure("quality_cascade", db=None)
+        sids, incs = simulate_quality_failure("quality_cascade", db=None)
         assert len(sids) == 5
 
     def test_silent_degradation_dry_run(self):
-        sids = simulate_quality_failure("silent_degradation", db=None)
+        sids, incs = simulate_quality_failure("silent_degradation", db=None)
         assert len(sids) == 5
 
     def test_unknown_pattern_raises(self):
@@ -186,7 +187,7 @@ class TestSimulateQualityFailure:
             simulate_quality_failure("made_up_pattern", db=None)
 
     def test_returns_unique_ids(self):
-        sids = simulate_quality_failure("quality_cascade", db=None)
+        sids, _ = simulate_quality_failure("quality_cascade", db=None)
         assert len(set(sids)) == len(sids)
 
 

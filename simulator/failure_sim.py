@@ -549,11 +549,11 @@ _QUALITY_DESCRIPTIONS = {
 }
 
 
-def simulate_quality_failure(pattern: str, db=None) -> list[str]:
+def simulate_quality_failure(pattern: str, db=None) -> tuple[list[str], list]:
     """
     Inject synthetic sessions + quality evals for a Proactive quality pattern.
     Writes sessions, evals, runs the detector in-memory, writes incidents.
-    Returns the list of simulated session_ids.
+    Returns (session_ids, incidents). Incidents have is_simulated=True.
     """
     if pattern not in _QUALITY_BUILDERS:
         raise ValueError(f"Unknown quality pattern '{pattern}'. Choose: {QUALITY_PATTERNS}")
@@ -564,7 +564,7 @@ def simulate_quality_failure(pattern: str, db=None) -> list[str]:
         print(f"[DRY RUN] Proactive quality pattern: {pattern}")
         for s in sessions:
             print(f"  session_id={s['id']}  evals={len(evals_by.get(s['id'], []))}")
-        return [s["id"] for s in sessions]
+        return [s["id"] for s in sessions], []
 
     for sess in sessions:
         db.table("c_sessions").insert(sess).execute()
@@ -575,6 +575,8 @@ def simulate_quality_failure(pattern: str, db=None) -> list[str]:
 
     from engine.pattern_detector import run_quality_detectors
     incidents = run_quality_detectors(sessions[-1], sessions, evals_by)
+    for inc in incidents:
+        inc.is_simulated = True
     if incidents:
         db.table("c_incidents").insert([i.to_db_row() for i in incidents]).execute()
         for inc in incidents:
@@ -582,7 +584,7 @@ def simulate_quality_failure(pattern: str, db=None) -> list[str]:
     else:
         print(f"[WARN] {pattern}: sessions + evals written but no incident fired")
 
-    return [s["id"] for s in sessions]
+    return [s["id"] for s in sessions], incidents
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -665,8 +667,8 @@ if __name__ == "__main__":
     db = None if args.dry_run else __import__("sdk.db", fromlist=["get_db"]).get_db()
 
     if args.pattern in QUALITY_PATTERNS:
-        sids = simulate_quality_failure(args.pattern, db=db)
-        print(f"Quality pattern '{args.pattern}': {len(sids)} session(s) written")
+        sids, incs = simulate_quality_failure(args.pattern, db=db)
+        print(f"Quality pattern '{args.pattern}': {len(sids)} session(s), {len(incs)} incident(s)")
     else:
         sid = simulate_failure(args.pattern, db=db)
         print(f"Pattern '{args.pattern}': session_id={sid}")

@@ -4366,35 +4366,24 @@ elif page == "Failure Simulator":
         if q_run_btn:
             with st.status("Injecting quality pattern...", expanded=True) as q_status:
                 st.write(f"Building {q_chosen['id']} scenario...")
-                q_sids = simulate_quality_failure(q_chosen["id"], db=_db())
+                q_sids, q_inc_objs = simulate_quality_failure(q_chosen["id"], db=_db())
                 st.write(f"{len(q_sids)} session(s) written with quality evals.")
-                time.sleep(0.4)
-
-                st.write("Running quality detectors...")
-                # Incidents are written inside simulate_quality_failure; fetch them
-                q_inc_r = (
-                    _db().table("c_incidents")
-                    .select("*")
-                    .in_("session_id", q_sids)
-                    .order("created_at", desc=True)
-                    .limit(5)
-                    .execute()
-                )
-                q_incs = q_inc_r.data or []
+                st.write(f"Pattern detector: {len(q_inc_objs)} incident(s) fired.")
                 q_status.update(label="Done!", state="complete")
 
-            if q_incs:
-                st.success(f"Incident detected: **{q_incs[0]['pattern_name']}**")
+            if q_inc_objs:
+                inc0 = q_inc_objs[0]
+                st.success(f"Incident detected: **{inc0.pattern_name}**")
                 st.markdown(
-                    f'{badge(q_incs[0]["severity"], True)} &nbsp; '
-                    f'{q_incs[0].get("root_cause", "")}',
+                    f'{badge(inc0.severity, True)} &nbsp; {inc0.root_cause}',
                     unsafe_allow_html=True,
                 )
-                fix = q_incs[0].get("fix_suggestion", "")
-                if fix:
-                    st.markdown(f'<div class="fix-box">{fix}</div>', unsafe_allow_html=True)
+                if inc0.fix_suggestion:
+                    st.markdown(f'<div class="fix-box">{inc0.fix_suggestion}</div>',
+                                unsafe_allow_html=True)
+                st.info("Find this incident in **Incidents Feed** under **Simulated only**.")
             else:
-                st.warning("Sessions + evals written but no incident was detected. Check detector thresholds.")
+                st.warning("Sessions + evals written but no incident fired. Check detector thresholds.")
 
             load_sessions.clear()
             load_all_evals.clear()
