@@ -1669,93 +1669,83 @@ if page == "Overview":
         _ov_rs["started_at"] = pd.to_datetime(_ov_rs["started_at"], errors="coerce", utc=True)
         _ov_rs = _ov_rs.sort_values("started_at", ascending=False).head(20)
 
-        # Column headers (outside scroll so they stay fixed)
-        _hdr_cols = st.columns([3, 2, 5, 4])
-        for _c, _l in zip(_hdr_cols, [
-            "Date",
-            "Cost" + tip_badge("Total LLM API spend for this session across all agents. Drawn from cost_breakdown if the session ended early."),
-            "Pipeline",
-            "Cost Savings with Circuit Breakers" + tip_badge("LLM spend that a circuit breaker would have prevented by stopping the pipeline right after the first failing agent. The failing agent's cost is already incurred. Zero means no downstream agents ran, so the pipeline stopped naturally."),
-        ]):
-            _c.markdown(
-                f'<span style="font-size:0.72rem;font-weight:600;color:#64748b;'
-                f'text-transform:uppercase;letter-spacing:0.06em;'
-                f'white-space:normal;word-break:break-word;display:inline-block">{_l}</span>',
-                unsafe_allow_html=True,
-            )
-        st.markdown(
-            '<hr style="margin:4px 0;border:0;border-top:2px solid #e2e8f0">',
-            unsafe_allow_html=True,
-        )
-
-        # Build all rows as one HTML block inside a scrollable container
-        _row_html_parts = []
+        _ov_rows = []
         for _, _ov_row in _ov_rs.iterrows():
             _ov_sid   = _ov_row["id"]
             _ov_sincs = _ov_i[_ov_i["session_id"] == _ov_sid] if not _ov_i.empty else pd.DataFrame()
-            _ov_dt    = (
-                _ov_row["started_at"].strftime("%Y-%m-%d %H:%M")
-                if pd.notna(_ov_row["started_at"]) else "—"
-            )
-
-            _ov_cost = float(_ov_row.get("total_cost_usd") or 0)
+            _ov_cost  = float(_ov_row.get("total_cost_usd") or 0)
             if _ov_cost == 0:
                 _bd = _ov_row.get("cost_breakdown")
-                if isinstance(_bd, dict) and _bd:
-                    _ov_cost = sum(
-                        v.get("cost_usd", 0) for v in _bd.values()
-                        if isinstance(v, dict)
-                    )
-
-            # CB savings = cost of agents that ran AFTER the first failing agent
-            _ov_wasted, _ov_savings_tip = (
+                if isinstance(_bd, dict):
+                    _ov_cost = sum(v.get("cost_usd", 0) for v in _bd.values() if isinstance(v, dict))
+            _ov_wasted, _ = (
                 compute_cb_savings(_ov_sid, _ov_row.to_dict(), _ov_ae, traces_all)
                 if not _ov_sincs.empty else (0.0, "")
             )
-
-            _cost_cell = (
-                f'<span style="font-size:0.83rem">${_ov_cost:.3f}</span>'
-                if _ov_cost > 0 else
-                '<span style="font-size:0.83rem;color:#94a3b8">—</span>'
+            _n_incs = len(_ov_sincs)
+            _pattern = (
+                _ov_sincs["pattern_name"].iloc[0] if _n_incs == 1
+                else f"{_ov_sincs['pattern_name'].iloc[0]} +{_n_incs-1}" if _n_incs > 1
+                else ""
             )
-            if _ov_wasted > 0:
-                _savings_cell = (
-                    f'<div style="display:flex;flex-direction:column;gap:1px">'
-                    f'<span style="font-size:0.83rem;color:#ef4444;font-weight:600">${_ov_wasted:.3f}</span>'
-                    f'<span style="font-size:0.68rem;color:#94a3b8;line-height:1.3">{_ov_savings_tip}</span>'
-                    f'</div>'
-                )
-            else:
-                _savings_cell = '<span style="font-size:0.83rem;color:#94a3b8">—</span>'
-            _ov_inv = _ov_row.get("agents_invoked") or []
-            _pipe_cell = pipeline_strip(_ov_sid, traces_all, _ov_ae, session_agents=_ov_inv)
-            _is_sim = bool(_ov_row.get("is_simulated", False))
-            _sim_badge = (
-                ' <span style="font-size:0.62rem;background:#dbeafe;color:#1d4ed8;'
-                'border-radius:3px;padding:1px 4px;font-weight:600">SIM</span>'
-                if _is_sim else ""
-            )
+            _ov_rows.append({
+                "_id":         _ov_sid,
+                "_has_inc":    _n_incs > 0,
+                "_zero_trade": int(_ov_row.get("trades_executed") or 0) == 0,
+                "Session":     _ov_row["started_at"].strftime("%m-%d %H:%M") if pd.notna(_ov_row["started_at"]) else "-",
+                "Cost ($)":    f"${_ov_cost:.4f}" if _ov_cost > 0 else "-",
+                "Trades":      int(_ov_row.get("trades_executed") or 0),
+                "Duration (s)": int((_ov_row.get("total_latency_ms") or 0) / 1000),
+                "Tokens":      int((_ov_row.get("total_tokens_input") or 0) + (_ov_row.get("total_tokens_output") or 0)),
+                "Incidents":   _n_incs,
+                "Pattern":     _pattern,
+                "Exit Reason": str(_ov_row.get("terminal_reason") or ""),
+                "CB Saved ($)": f"${_ov_wasted:.4f}" if _ov_wasted > 0 else "-",
+            })
+        _ov_tbl = pd.DataFrame(_ov_rows)
 
-            _row_html_parts.append(
-                f'<div style="display:grid;grid-template-columns:3fr 2fr 5fr 4fr;'
-                f'align-items:center;padding:5px 0;'
-                f'border-bottom:1px solid #f1f5f9">'
-                f'<span style="font-size:0.83rem">{_ov_dt}{_sim_badge}</span>'
-                f'{_cost_cell}'
-                f'{_pipe_cell}'
-                f'{_savings_cell}'
-                f'</div>'
-            )
-
+        _ov_gb = GridOptionsBuilder.from_dataframe(_ov_tbl)
+        _ov_gb.configure_default_column(suppressMenu=True, sortable=False, resizable=False, filter=False)
+        _ov_gb.configure_column("_id",        hide=True)
+        _ov_gb.configure_column("_has_inc",   hide=True)
+        _ov_gb.configure_column("_zero_trade",hide=True)
+        _ov_gb.configure_column("Exit Reason", cellStyle=JsCode("""
+            function(params) {
+                var v = params.value || '';
+                if (v === 'converged') return {'color':'#166534','fontWeight':'600'};
+                if (v === 'no_viable_proposals' || v === 'all_rejected') return {'color':'#c2410c','fontWeight':'600'};
+                if (v === 'watchdog_timeout' || v === 'timeout') return {'color':'#991b1b','fontWeight':'700'};
+                if (v === 'eod_complete' || v === 'superseded') return {'color':'#475569'};
+                return {};
+            }
+        """))
+        _ov_gb.configure_selection("single", use_checkbox=False)
+        _ov_gb.configure_grid_options(
+            getRowStyle=JsCode("""
+                function(params) {
+                    if (params.data._has_inc)    return {'background':'#fee2e2','color':'#7f1d1d'};
+                    if (params.data._zero_trade) return {'background':'#fef9c3','color':'#713f12'};
+                }
+            """),
+            rowHeight=34,
+            headerHeight=36,
+            suppressHorizontalScroll=True,
+        )
+        AgGrid(
+            _ov_tbl,
+            gridOptions=_ov_gb.build(),
+            update_mode=GridUpdateMode.NO_UPDATE,
+            height=min(500, 56 + len(_ov_tbl) * 34),
+            use_container_width=True,
+            allow_unsafe_jscode=True,
+            fit_columns_on_grid_load=True,
+            theme="streamlit",
+        )
         st.markdown(
-            '<div style="max-height:380px;overflow-y:auto;'
-            'border:1px solid #e2e8f0;border-radius:8px;padding:4px 8px">'
-            + "".join(_row_html_parts)
-            + "</div>",
+            "<div style='font-size:0.8rem;color:#94a3b8;margin-top:4px'>"
+            "Red = incident \u00b7 Amber = 0 trades \u00b7 Showing last 20 sessions</div>",
             unsafe_allow_html=True,
         )
-    else:
-        st.info("No sessions found.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3456,73 +3446,71 @@ elif page == "Incidents Feed":
 
     st.divider()
 
-    # Pagination state — reset to page 0 when filters change
-    _INC_PAGE_SIZE = 10
-    sorted_inc = filtered.sort_values("created_at", ascending=False).reset_index(drop=True)
-    total_inc  = len(sorted_inc)
-    n_pages    = max(1, (total_inc + _INC_PAGE_SIZE - 1) // _INC_PAGE_SIZE)
+    # Build AgGrid table — all filtered rows, AgGrid handles pagination via rowHeight
+    _inc_PAGE = 15
+    _inc_sorted = filtered.sort_values("created_at", ascending=False).reset_index(drop=True)
 
-    filter_sig = f"{sev_filter}|{pattern_filter}|{sim_filter}|{show_shadow_cb}"
-    if st.session_state.get("_inc_filter_sig") != filter_sig:
-        st.session_state["_inc_filter_sig"] = filter_sig
-        st.session_state["_inc_page"]       = 0
-    cur_page = max(0, min(st.session_state.get("_inc_page", 0), n_pages - 1))
+    _inc_tbl = pd.DataFrame({
+        "_id":       _inc_sorted["id"],
+        "_sid":      _inc_sorted["session_id"],
+        "_sev":      _inc_sorted["severity"],
+        "Time":      pd.to_datetime(_inc_sorted["created_at"], utc=True).dt.strftime("%m-%d %H:%M"),
+        "Severity":  _inc_sorted["severity"].str.upper() + _inc_sorted["is_simulated"].fillna(False).apply(lambda x: " · SIM" if x else ""),
+        "Pattern":   _inc_sorted["pattern_name"],
+        "Root Cause": _inc_sorted["root_cause"].str[:110],
+        "Cost":      _inc_sorted["cost_wasted"].apply(lambda x: f"${x:.4f}" if x > 0 else "—"),
+    })
 
-    page_start = cur_page * _INC_PAGE_SIZE
-    page_df    = sorted_inc.iloc[page_start : page_start + _INC_PAGE_SIZE]
+    _inc_gb = GridOptionsBuilder.from_dataframe(_inc_tbl)
+    _inc_gb.configure_default_column(suppressMenu=True, sortable=False, resizable=False, filter=False)
+    _inc_gb.configure_column("_id",  hide=True)
+    _inc_gb.configure_column("_sid", hide=True)
+    _inc_gb.configure_column("_sev", hide=True)
+    _inc_gb.configure_column("Time",      width=90,  suppressSizeToFit=True)
+    _inc_gb.configure_column("Severity",  width=130, suppressSizeToFit=True)
+    _inc_gb.configure_column("Pattern",   width=220, suppressSizeToFit=True)
+    _inc_gb.configure_column("Root Cause", flex=1)
+    _inc_gb.configure_column("Cost",      width=80,  suppressSizeToFit=True)
+    _inc_gb.configure_selection("single", use_checkbox=False)
+    _inc_gb.configure_grid_options(
+        pagination=True,
+        paginationPageSize=_inc_PAGE,
+        suppressPaginationPanel=False,
+        getRowStyle=JsCode("""
+            function(params) {
+                var s = (params.data._sev || '').toLowerCase();
+                if (s === 'critical') return {'background': '#fee2e2', 'color': '#7f1d1d'};
+                if (s === 'warning')  return {'background': '#fef9c3', 'color': '#713f12'};
+            }
+        """),
+        rowHeight=34,
+        headerHeight=36,
+        suppressHorizontalScroll=True,
+    )
 
-    # Pagination nav
-    pn1, pn2, pn3 = st.columns([1, 3, 1])
-    if pn1.button("← Prev", disabled=(cur_page == 0), use_container_width=True):
-        st.session_state["_inc_page"] = cur_page - 1
-        st.rerun()
-    pn2.markdown(
-        f"<div style='text-align:center;padding-top:6px;color:#64748b;font-size:0.88rem'>"
-        f"Showing {page_start + 1}–{min(page_start + _INC_PAGE_SIZE, total_inc)} of {total_inc} incidents"
-        f"&nbsp;&nbsp;·&nbsp;&nbsp;Page {cur_page + 1} of {n_pages}</div>",
+    _inc_resp = AgGrid(
+        _inc_tbl,
+        gridOptions=_inc_gb.build(),
+        update_mode=GridUpdateMode.SELECTION_CHANGED,
+        height=min(600, 56 + min(len(_inc_tbl), _inc_PAGE) * 34 + 60),
+        use_container_width=True,
+        allow_unsafe_jscode=True,
+        fit_columns_on_grid_load=True,
+        theme="streamlit",
+    )
+    _inc_sel = _inc_resp.selected_rows
+    if _inc_sel is not None and len(_inc_sel) > 0:
+        _sel_id  = _inc_sel[0]["_id"]
+        _sel_sid = _inc_sel[0]["_sid"]
+        _matched = filtered[filtered["id"] == _sel_id]
+        if not _matched.empty:
+            goto_rca(_matched.iloc[0].to_dict(), _sel_sid)
+
+    st.markdown(
+        f"<div style='font-size:0.8rem;color:#94a3b8;margin-top:4px'>"
+        f"{len(_inc_tbl)} incidents · Red = critical · Amber = warning · Click a row to open RCA</div>",
         unsafe_allow_html=True,
     )
-    if pn3.button("Next →", disabled=(cur_page >= n_pages - 1), use_container_width=True):
-        st.session_state["_inc_page"] = cur_page + 1
-        st.rerun()
-
-    # CSS: collapse default padding so rows are tight single-line height
-    st.markdown("""
-<style>
-.inc-grid [data-testid="stColumns"] { gap: 0.5rem; align-items: center; }
-.inc-grid [data-testid="stColumn"]  > div { padding-top: 4px !important; padding-bottom: 4px !important; }
-.inc-grid .stMarkdown p             { margin: 0; line-height: 1.3; }
-.inc-grid .stButton > button        { padding: 2px 10px; font-size: 0.8rem; }
-</style>""", unsafe_allow_html=True)
-
-    st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
-
-    # Incident rows in a bordered panel
-    with st.container(border=True):
-        st.markdown('<div class="inc-grid">', unsafe_allow_html=True)
-
-        # Column headers
-        gh1, gh2, gh3, gh4, gh5 = st.columns([1.5, 2.5, 3.5, 1, 1])
-        gh1.markdown("<small style='color:#94a3b8;font-weight:600'>SEVERITY</small>", unsafe_allow_html=True)
-        gh2.markdown("<small style='color:#94a3b8;font-weight:600'>PATTERN</small>", unsafe_allow_html=True)
-        gh3.markdown("<small style='color:#94a3b8;font-weight:600'>ROOT CAUSE</small>", unsafe_allow_html=True)
-        gh4.markdown("<small style='color:#94a3b8;font-weight:600'>COST</small>", unsafe_allow_html=True)
-        st.markdown("<hr style='margin:4px 0;border-color:#e2e8f0'>", unsafe_allow_html=True)
-
-        for _, inc in page_df.iterrows():
-            sim  = bool(inc.get("is_simulated", False))
-            cost = f"${inc['cost_wasted']:.4f}" if inc["cost_wasted"] > 0 else "—"
-
-            hc1, hc2, hc3, hc4, hc5 = st.columns([1.5, 2.5, 3.5, 1, 1])
-            hc1.markdown(badge(inc["severity"], sim), unsafe_allow_html=True)
-            hc2.markdown(f"<span style='font-size:0.88rem;font-weight:600'>{inc['pattern_name']}</span>", unsafe_allow_html=True)
-            hc3.markdown(f"<span style='font-size:0.82rem;color:#94a3b8'>{inc['root_cause'][:95]}…</span>", unsafe_allow_html=True)
-            hc4.markdown(f"<span style='font-size:0.85rem'>{cost}</span>", unsafe_allow_html=True)
-            if hc5.button("RCA →", key=f"go_{inc['id']}"):
-                goto_rca(inc.to_dict(), inc.get("session_id"))
-            st.markdown("<hr style='margin:0;border-color:#f1f5f9'>", unsafe_allow_html=True)
-
-        st.markdown('</div>', unsafe_allow_html=True)
 
 
 
