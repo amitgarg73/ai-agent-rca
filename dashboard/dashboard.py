@@ -2594,7 +2594,7 @@ elif page == "Quality Drift":
             st.markdown("**Business Outcome Scores** — trend")
             _biz_ts = (
                 biz_evals_df
-                .merge(s[["id", "label", "started_at"]], left_on="session_id", right_on="id", how="left")
+                .merge(s[["id", "label"]], left_on="session_id", right_on="id", how="left")
                 .sort_values("started_at")
             )
             _biz_colors_b = {
