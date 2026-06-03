@@ -372,12 +372,12 @@ PATTERN_DESCRIPTIONS = {
     "Tool Call Fabrication":    "2+ tool calls completed in under 50ms — too fast to have made a real API call. Agent may be hallucinating tool results.",
     "Handoff Schema Break":     "Research completed but the Risk agent's first step errored. The handoff payload is malformed or missing expected fields.",
     "Error Misinterpretation":  "HTTP error codes returned by tools (429, 500, etc.) but the agent continued as if they were successes.",
-    "Unknown Anomaly":          "Statistical outlier vs. baseline sessions (Isolation Forest). No named pattern matches — review traces manually.",
+    "Isolation Forest Anomaly": "Statistical outlier vs. baseline sessions. No named pattern matches — the session's feature vector is far from the normal cluster.",
 }
 
 # Full detection explanation shown in RCA View expander — markdown supported here
 PATTERN_DETAIL = {
-    "Unknown Anomaly": (
+    "Isolation Forest Anomaly": (
         "Detected by an **Isolation Forest** model trained on all sessions.\n\n"
         "**8 features scored per session:**\n"
         "- Total cost (USD)\n"

@@ -3,7 +3,7 @@ Isolation Forest anomaly detector — Phase D1.
 
 Learns what "normal" looks like from real session data.
 Scores each new session against that baseline.
-Anomaly score > threshold fires an "Unknown Anomaly" incident — no named pattern needed.
+Anomaly score > threshold fires an "Isolation Forest Anomaly" incident — no named pattern needed.
 
 Design decisions:
   - Per-pipeline model (single model for Strategy C; multi-tenant = per-customer models)
@@ -195,7 +195,7 @@ class IsolationForestDetector:
         evals_typed = [e for e in (evals or []) if isinstance(e, EvalResult)]
         return Incident(
             session_id    = session.get("id", ""),
-            pattern_name  = "Unknown Anomaly",
+            pattern_name  = "Isolation Forest Anomaly",
             severity      = "warning",
             root_cause    = (
                 f"Session anomaly score {score:.2f} exceeds threshold {threshold}. "
@@ -291,9 +291,9 @@ def _run_score(db, detector: IsolationForestDetector | None = None, persist: boo
     for e in (evals_r.data or []):
         evals_by.setdefault(e["session_id"], []).append(e)
 
-    # Clear existing Unknown Anomaly incidents so re-runs stay idempotent
+    # Clear existing Isolation Forest Anomaly incidents so re-runs stay idempotent
     if persist:
-        db.table("c_incidents").delete().eq("pattern_name", "Unknown Anomaly").execute()
+        db.table("c_incidents").delete().eq("pattern_name", "Isolation Forest Anomaly").execute()
 
     print(f"\n{'Session':<38} {'Score':>6} {'Flag'}")
     print("-" * 55)
@@ -315,7 +315,7 @@ def _run_score(db, detector: IsolationForestDetector | None = None, persist: boo
     print(f"\n{flagged}/{len(sessions)} sessions flagged as anomalous "
           f"(threshold={ANOMALY_THRESHOLD})")
     if persist and flagged:
-        print(f"{flagged} Unknown Anomaly incidents written to c_incidents.")
+        print(f"{flagged} Isolation Forest Anomaly incidents written to c_incidents.")
 
 
 if __name__ == "__main__":
