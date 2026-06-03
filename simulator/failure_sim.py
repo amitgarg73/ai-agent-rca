@@ -26,6 +26,13 @@ PATTERNS = [
     "error_misinterpretation",
 ]
 
+QUALITY_PATTERNS = [
+    "grounding_failure",
+    "coherence_break",
+    "quality_cascade",
+    "silent_degradation",
+]
+
 SEVERITY = {
     "tool_timeout_loop":     "critical",
     "context_spiral":        "warning",
@@ -392,6 +399,192 @@ PATTERN_BUILDERS = {
 }
 
 
+# ── Quality pattern builders (Phase Q3) ──────────────────────────────────────
+# Each returns (sessions: list[dict], evals_by_session: dict[str, list]).
+# Sessions are in chronological order with staggered started_at timestamps.
+
+def _qual_eval_row(session_id: str, agent: str, eval_name: str,
+                   score: float, threshold: float = 0.60) -> dict:
+    return {
+        "id":         str(uuid.uuid4()),
+        "session_id": session_id,
+        "agent":      agent,
+        "eval_name":  eval_name,
+        "score":      round(score, 3),
+        "passed":     score >= threshold,
+        "threshold":  threshold,
+        "detail":     {},
+    }
+
+
+def _build_quality_grounding_failure() -> tuple[list[dict], dict[str, list]]:
+    """3 sessions with research.data_grounding < 0.40 each."""
+    sessions: list[dict] = []
+    evals_by: dict[str, list] = {}
+    for i in range(3):
+        offset_h = -(2 - i) * 24
+        sid  = str(uuid.uuid4())
+        sess = _session(
+            ["market", "research", "risk", "orchestrator"],
+            0.12, 5000, 2000, 90_000, 1, "converged",
+        )
+        sess["id"]           = sid
+        sess["started_at"]   = _ts(offset_h * 3600)
+        sess["completed_at"] = _ts(offset_h * 3600 + 90)
+        sessions.append(sess)
+        evals_by[sid] = [
+            _qual_eval_row(sid, "research_quality",     "data_grounding",         0.25),
+            _qual_eval_row(sid, "research_quality",     "thesis_coherence",       0.70),
+            _qual_eval_row(sid, "research_quality",     "composite_score",        0.55),
+            _qual_eval_row(sid, "risk_quality",         "parameter_completeness", 0.75),
+            _qual_eval_row(sid, "risk_quality",         "composite_score",        0.72),
+            _qual_eval_row(sid, "orchestrator_quality", "decision_consistency",   0.68),
+            _qual_eval_row(sid, "orchestrator_quality", "composite_score",        0.66),
+            _qual_eval_row(sid, "session_quality",      "pipeline_coherence",     0.80),
+            _qual_eval_row(sid, "session_quality",      "composite_score",        0.74),
+        ]
+    return sessions, evals_by
+
+
+def _build_quality_coherence_break() -> tuple[list[dict], dict[str, list]]:
+    """1 session with orchestrator.decision_consistency < 0.50."""
+    sid  = str(uuid.uuid4())
+    sess = _session(
+        ["market", "research", "risk", "orchestrator"],
+        0.15, 6000, 2500, 85_000, 0, "converged",
+    )
+    sess["id"] = sid
+    evals = [
+        _qual_eval_row(sid, "research_quality",     "data_grounding",          0.72),
+        _qual_eval_row(sid, "research_quality",     "thesis_coherence",        0.68),
+        _qual_eval_row(sid, "research_quality",     "composite_score",         0.68),
+        _qual_eval_row(sid, "risk_quality",         "parameter_completeness",  0.75),
+        _qual_eval_row(sid, "risk_quality",         "composite_score",         0.73),
+        _qual_eval_row(sid, "orchestrator_quality", "decision_consistency",    0.30),
+        _qual_eval_row(sid, "orchestrator_quality", "resolution_completeness", 0.65),
+        _qual_eval_row(sid, "orchestrator_quality", "composite_score",         0.48),
+        _qual_eval_row(sid, "session_quality",      "pipeline_coherence",      0.80),
+        _qual_eval_row(sid, "session_quality",      "composite_score",         0.74),
+    ]
+    return [sess], {sid: evals}
+
+
+def _build_quality_cascade() -> tuple[list[dict], dict[str, list]]:
+    """5 sessions with 5 dimensions each declining >0.20."""
+    sessions: list[dict] = []
+    evals_by: dict[str, list] = {}
+    declining = [
+        ("research_quality",     "data_grounding",         0.78, 0.42),
+        ("research_quality",     "thesis_coherence",       0.74, 0.48),
+        ("risk_quality",         "parameter_completeness", 0.80, 0.50),
+        ("orchestrator_quality", "decision_consistency",   0.72, 0.44),
+        ("session_quality",      "pipeline_coherence",     0.76, 0.46),
+    ]
+    n = 5
+    for i in range(n):
+        offset_h = -(n - 1 - i) * 24
+        sid  = str(uuid.uuid4())
+        sess = _session(
+            ["market", "research", "risk", "orchestrator"],
+            0.12, 5000, 2000, 90_000, 1, "converged",
+        )
+        sess["id"]           = sid
+        sess["started_at"]   = _ts(offset_h * 3600)
+        sess["completed_at"] = _ts(offset_h * 3600 + 90)
+        sessions.append(sess)
+        rows = []
+        for agent, dim, start, end in declining:
+            score = start + (end - start) * (i / (n - 1))
+            rows.append(_qual_eval_row(sid, agent, dim, round(score, 3)))
+        comp = round(0.76 - 0.28 * (i / (n - 1)), 3)
+        for agent in ["research_quality", "risk_quality",
+                      "orchestrator_quality", "session_quality"]:
+            rows.append(_qual_eval_row(sid, agent, "composite_score", comp))
+        evals_by[sid] = rows
+    return sessions, evals_by
+
+
+def _build_quality_silent_degradation() -> tuple[list[dict], dict[str, list]]:
+    """5 sessions: composite quality 0.78→0.48 while operational evals stay stable."""
+    sessions: list[dict] = []
+    evals_by: dict[str, list] = {}
+    n = 5
+    for i in range(n):
+        offset_h = -(n - 1 - i) * 24
+        sid  = str(uuid.uuid4())
+        sess = _session(
+            ["market", "research", "risk", "orchestrator"],
+            0.12, 5000, 2000, 90_000, 1, "converged",
+        )
+        sess["id"]           = sid
+        sess["started_at"]   = _ts(offset_h * 3600)
+        sess["completed_at"] = _ts(offset_h * 3600 + 90)
+        sessions.append(sess)
+        comp = round(0.78 - 0.30 * (i / (n - 1)), 3)
+        rows = []
+        for agent in ["research_quality", "risk_quality",
+                      "orchestrator_quality", "session_quality"]:
+            rows.append(_qual_eval_row(sid, agent, "composite_score", comp))
+        # Operational evals — clean and passing throughout
+        rows += [
+            _qual_eval_row(sid, "research", "tool_success_rate", 0.92, 0.80),
+            _qual_eval_row(sid, "research", "completion",        0.88, 0.70),
+        ]
+        evals_by[sid] = rows
+    return sessions, evals_by
+
+
+_QUALITY_BUILDERS = {
+    "grounding_failure":  _build_quality_grounding_failure,
+    "coherence_break":    _build_quality_coherence_break,
+    "quality_cascade":    _build_quality_cascade,
+    "silent_degradation": _build_quality_silent_degradation,
+}
+
+_QUALITY_DESCRIPTIONS = {
+    "grounding_failure":  "3 sessions of research.data_grounding < 0.40. Research making proposals without enough data sources.",
+    "coherence_break":    "Orchestrator decision_consistency scored 0.30 — final decision does not match research and risk output.",
+    "quality_cascade":    "5 quality dimensions each declined >0.20 over 5 sessions. Systemic degradation across agents.",
+    "silent_degradation": "Composite quality 0.78→0.48 over 5 sessions while all operational evals stay clean. No alert fired.",
+}
+
+
+def simulate_quality_failure(pattern: str, db=None) -> list[str]:
+    """
+    Inject synthetic sessions + quality evals for a Proactive quality pattern.
+    Writes sessions, evals, runs the detector in-memory, writes incidents.
+    Returns the list of simulated session_ids.
+    """
+    if pattern not in _QUALITY_BUILDERS:
+        raise ValueError(f"Unknown quality pattern '{pattern}'. Choose: {QUALITY_PATTERNS}")
+
+    sessions, evals_by = _QUALITY_BUILDERS[pattern]()
+
+    if not db:
+        print(f"[DRY RUN] Proactive quality pattern: {pattern}")
+        for s in sessions:
+            print(f"  session_id={s['id']}  evals={len(evals_by.get(s['id'], []))}")
+        return [s["id"] for s in sessions]
+
+    for sess in sessions:
+        db.table("c_sessions").insert(sess).execute()
+
+    all_eval_rows = [row for rows in evals_by.values() for row in rows]
+    if all_eval_rows:
+        db.table("c_evals").insert(all_eval_rows).execute()
+
+    from engine.pattern_detector import run_quality_detectors
+    incidents = run_quality_detectors(sessions[-1], sessions, evals_by)
+    if incidents:
+        db.table("c_incidents").insert([i.to_db_row() for i in incidents]).execute()
+        for inc in incidents:
+            print(f"  [{inc.severity}] {inc.pattern_name}")
+    else:
+        print(f"[WARN] {pattern}: sessions + evals written but no incident fired")
+
+    return [s["id"] for s in sessions]
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def simulate_failure(pattern: str, db=None) -> str:
@@ -452,14 +645,17 @@ def _pattern_description(pattern: str) -> str:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--pattern", choices=PATTERNS, required=True)
+    parser = argparse.ArgumentParser(description="Inject synthetic failure patterns into Supabase")
+    parser.add_argument("--pattern", choices=PATTERNS + QUALITY_PATTERNS, required=True)
     parser.add_argument("--dry-run", action="store_true", default=False)
     args = parser.parse_args()
 
-    if args.dry_run:
-        sid = simulate_failure(args.pattern, db=None)
+    db = None if args.dry_run else __import__("sdk.db", fromlist=["get_db"]).get_db()
+
+    if args.pattern in QUALITY_PATTERNS:
+        sids = simulate_quality_failure(args.pattern, db=db)
+        print(f"Quality pattern '{args.pattern}': {len(sids)} session(s) written")
     else:
-        from sdk.db import get_db
-        sid = simulate_failure(args.pattern, db=get_db())
+        sid = simulate_failure(args.pattern, db=db)
+        print(f"Pattern '{args.pattern}': session_id={sid}")
         print(f"Injected: {args.pattern} → session_id={sid}")

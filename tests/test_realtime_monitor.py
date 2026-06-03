@@ -136,9 +136,12 @@ class TestEvaluateSessionQualityIntegration:
 
         with patch("sdk.db.load_session_traces", return_value=[]), \
              patch("sdk.db.load_recent_session_costs", return_value=[]), \
+             patch("sdk.db.load_recent_sessions", return_value=[]), \
+             patch("sdk.db.load_evals_by_session", return_value={}), \
              patch("engine.eval_engine.run_all_evals", return_value=[op_eval]), \
              patch("engine.pattern_detector.run_all_detectors", return_value=[]), \
              patch("engine.pattern_detector.compute_shadow_cb_fires", return_value=[]), \
+             patch("engine.pattern_detector.run_quality_detectors", return_value=[]), \
              patch("engine.quality_judge.judge_session", return_value=[q_eval]):
 
             evaluate_session(session, db=mock_db, dry_run=True)
