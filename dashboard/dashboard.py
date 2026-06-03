@@ -651,7 +651,7 @@ def pipeline_strip(sid: str, traces_df, evals_df, session_agents=None) -> str:
     orc_r_bg, orc_r_fg, orc_r_tip, orc_r_sym = _eval_color("orchestrator")
     orc_r_tip = orc_r_tip.replace("ORC:", "Orchestrator synthesizer:")
 
-    html = '<div style="display:flex;align-items:center;gap:3px">'
+    html = '<div style="display:flex;align-items:flex-start;gap:3px;overflow:visible;padding-bottom:2px">'
     html += _node(orc_l_bg, orc_l_fg, orc_l_tip, orc_l_sym, "ORC")
     html += arrow
     for ag in _sub_agents:
@@ -1828,12 +1828,12 @@ if page == "Overview":
 
                 _detail_html = f"""
 <div style="margin-top:0;border-left:4px solid {_accent};border-radius:0 8px 8px 0;
-            padding:12px 16px 12px 14px;background:#f8fafc;border-top:1px solid #e2e8f0;
-            border-right:1px solid #e2e8f0;border-bottom:1px solid #e2e8f0">
+            padding:12px 16px 20px 14px;background:#f8fafc;border-top:1px solid #e2e8f0;
+            border-right:1px solid #e2e8f0;border-bottom:1px solid #e2e8f0;overflow:visible">
   <div style="font-size:0.7rem;color:#94a3b8;margin-bottom:8px;letter-spacing:0.03em">
     PIPELINE DETAIL &nbsp;·&nbsp; {_ov_s_date_str}
   </div>
-  <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+  <div style="display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap;overflow:visible;padding-bottom:4px">
     {_strip_html}
     <div style="display:flex;gap:16px;flex-wrap:wrap;margin-left:8px;border-left:1px solid #e2e8f0;padding-left:16px">
       <span style="font-size:0.82rem"><strong style="color:#64748b">Cost</strong>&nbsp;${_ov_s_cost:.4f}</span>
