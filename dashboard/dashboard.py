@@ -1852,6 +1852,34 @@ if page == "Overview":
                                 f'</div>'
                             )
 
+                _exit_explanations = {
+                    "converged":           "All agents completed. Orchestrator found viable proposals and executed trades.",
+                    "eod_complete":        "End-of-day session. Open positions closed, P&L reconciled.",
+                    "no_viable_proposals": "Market conditions did not support any trades. Pipeline stopped at Market agent, saving Research/Risk/Orchestrator cost.",
+                    "all_rejected":        "Research and Risk ran but all proposals were rejected against risk criteria. No trades placed.",
+                    "superseded":          "Session replaced by a newer run (duplicate start or manual restart).",
+                    "watchdog_timeout":    "Session exceeded the watchdog time limit and was force-shut down. Check for hung agents.",
+                    "timeout":             "An agent or tool call exceeded its time limit. Session aborted.",
+                }
+                _exit_explain = _exit_explanations.get(_ov_s_exit or "", "")
+
+                _legend_html = """
+<div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:10px;padding-top:8px;
+            border-top:1px solid #e2e8f0;font-size:0.72rem;color:#64748b;align-items:center">
+  <span style="font-weight:600;color:#94a3b8;letter-spacing:0.04em">NODES</span>
+  <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#10b981;margin-right:4px;vertical-align:middle"></span>Passed evals</span>
+  <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#f59e0b;margin-right:4px;vertical-align:middle"></span>Partial pass</span>
+  <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#ef4444;margin-right:4px;vertical-align:middle"></span>Failed evals</span>
+  <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#475569;margin-right:4px;vertical-align:middle"></span>Ran, not evaluated</span>
+  <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;border:2px solid #cbd5e1;background:#e2e8f0;margin-right:4px;vertical-align:middle"></span>Did not run</span>
+</div>"""
+
+                _exit_html = (
+                    f'<div style="font-size:0.78rem;color:#475569;margin-top:8px;padding-top:8px;'
+                    f'border-top:1px solid #e2e8f0">'
+                    f'<strong style="color:#64748b">Exit:</strong> {_exit_explain}</div>'
+                ) if _exit_explain else ""
+
                 _detail_html = f"""
 <div style="margin-top:0;border-left:4px solid {_accent};border-radius:0 8px 8px 0;
             padding:12px 16px 20px 14px;background:#f8fafc;border-top:1px solid #e2e8f0;
@@ -1870,8 +1898,10 @@ if page == "Overview":
                   font-size:0.75rem;font-weight:600;letter-spacing:0.02em">{_ov_s_exit or "unknown"}</span>
     </div>
   </div>
+  {_exit_html}
   {_eff_html}
   {_inc_html}
+  {_legend_html}
 </div>"""
                 st.markdown(_detail_html, unsafe_allow_html=True)
 
