@@ -5904,16 +5904,12 @@ elif page == "Ledger v2":
             x=_wf_values,
             y=_wf_labels,
             connector=dict(line=dict(color="#e2e8f0", width=1)),
-            decreasing=dict(marker_color=_V2_RED),
-            increasing=dict(marker_color=_V2_GREEN),
-            totals=dict(marker_color="#94a3b8"),
+            marker=dict(color=_wf_colors),
             text=[f"${abs(v):.4f}" for v in _wf_values],
             textposition="outside",
             customdata=_wf_n_sessions,
             hovertemplate="<b>%{y}</b><br>$%{x:.4f}<br>%{customdata} sessions<extra></extra>",
         ))
-        # Override colors per bar
-        _fig_wf.data[0].marker.color = _wf_colors
         _fig_wf.update_layout(
             height=max(320, 50 + len(_wf_labels) * 38),
             paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
