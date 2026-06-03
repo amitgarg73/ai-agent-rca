@@ -1819,7 +1819,7 @@ if page == "Overview":
                             f'<div style="background:{_ibg};color:{_ifg};border-radius:6px;'
                             f'padding:6px 10px;font-size:0.78rem;margin-top:4px">'
                             f'<strong>{_sev.upper()}</strong> \u00b7 {_ipat}'
-                            f'{"  \u2014  " + _irc if _irc else ""}</div>'
+                            + (f'  \u2014  {_irc}' if _irc else '') + '</div>'
                         )
 
                 _ov_agents_inv = _ov_sr.get("agents_invoked") or []
@@ -3416,22 +3416,234 @@ elif page == "Quality Drift":
                         "**Composite score (top of each agent block):** Average of all dimensions for that agent. "
                         "This is the number shown in the trend charts above."
                     )
-                # Session picker — default to latest
-                _sel_col, _sel_spacer = st.columns([3, 5])
-                _sess_options = []
-                if not s.empty:
-                    for _, _sr in s.sort_values("started_at", ascending=False).iterrows():
-                        _dt = pd.to_datetime(_sr["started_at"]).strftime("%m-%d %H:%M") if pd.notnull(_sr.get("started_at")) else "?"
-                        _sess_options.append((_dt + f"  ·  {_sr['id'][:8]}", _sr["id"]))
-                _sel_labels = [o[0] for o in _sess_options]
-                _sel_ids    = [o[1] for o in _sess_options]
-                _sel_idx = _sel_col.selectbox(
-                    "Session", options=range(len(_sel_labels)),
-                    format_func=lambda i: _sel_labels[i],
-                    index=0, key="qd_session_picker",
-                    label_visibility="collapsed",
+                # ── Session quality browser ───────────────────────────────────
+                _qd_composites = evals_ts[
+                    evals_ts["agent"].str.endswith("_quality", na=False) &
+                    (evals_ts["eval_name"] == "composite_score")
+                ][["session_id", "agent", "score"]].copy()
+
+                _qd_pivot = (
+                    _qd_composites
+                    .pivot_table(index="session_id", columns="agent", values="score", aggfunc="first")
+                    .reset_index()
+                ) if not _qd_composites.empty else pd.DataFrame(columns=["session_id"])
+
+                _qd_sess = s.sort_values("started_at", ascending=False)[
+                    ["id", "started_at", "label", "terminal_reason",
+                     "total_cost_usd", "trades_executed",
+                     "total_latency_ms", "total_tokens_input", "total_tokens_output",
+                     "agents_invoked"]
+                ].copy()
+                _qd_merged = _qd_sess.merge(_qd_pivot, left_on="id", right_on="session_id", how="left")
+
+                if not incidents.empty:
+                    _qd_inc_c = incidents.groupby("session_id").size().reset_index(name="_inc_count")
+                    _qd_merged = _qd_merged.merge(_qd_inc_c, left_on="id", right_on="session_id", how="left")
+                    _qd_merged["_inc_count"] = _qd_merged["_inc_count"].fillna(0).astype(int)
+                else:
+                    _qd_merged["_inc_count"] = 0
+
+                def _qscore(row, col):
+                    v = row.get(col)
+                    return round(float(v), 2) if v is not None and not pd.isna(v) else None
+
+                _qd_rows = []
+                for _, _qr in _qd_merged.iterrows():
+                    _qd_rows.append({
+                        "_id":          _qr["id"],
+                        "_has_inc":     int(_qr["_inc_count"]) > 0,
+                        "Session":      _qr["label"],
+                        "Research":     _qscore(_qr, "research_quality"),
+                        "Risk":         _qscore(_qr, "risk_quality"),
+                        "Orchestrator": _qscore(_qr, "orchestrator_quality"),
+                        "Session Q":    _qscore(_qr, "session_quality"),
+                        "Exit":         str(_qr.get("terminal_reason") or ""),
+                        "Incidents":    int(_qr["_inc_count"]),
+                    })
+                _qd_tbl = pd.DataFrame(_qd_rows)
+
+                _score_cell = JsCode("""
+                    function(params) {
+                        var v = params.value;
+                        if (v === null || v === undefined || v === '') return {};
+                        if (v >= 0.60) return {color:'#166534', fontWeight:'600'};
+                        if (v >= 0.40) return {color:'#92400e', fontWeight:'600'};
+                        return {color:'#991b1b', fontWeight:'700'};
+                    }
+                """)
+
+                _qd_PAGE = 10
+                _qd_gb = GridOptionsBuilder.from_dataframe(_qd_tbl)
+                _qd_gb.configure_default_column(suppressMenu=True, sortable=False, resizable=False, filter=False)
+                _qd_gb.configure_column("_id",     hide=True)
+                _qd_gb.configure_column("_has_inc", hide=True)
+                _qd_gb.configure_column("Session",      width=110, suppressSizeToFit=True)
+                _qd_gb.configure_column("Research",     width=90,  suppressSizeToFit=True, cellStyle=_score_cell)
+                _qd_gb.configure_column("Risk",         width=70,  suppressSizeToFit=True, cellStyle=_score_cell)
+                _qd_gb.configure_column("Orchestrator", width=110, suppressSizeToFit=True, cellStyle=_score_cell)
+                _qd_gb.configure_column("Session Q",    width=90,  suppressSizeToFit=True, cellStyle=_score_cell)
+                _qd_gb.configure_column("Exit",         flex=1,    cellStyle=JsCode("""
+                    function(params) {
+                        var v = params.value || '';
+                        if (v === 'converged') return {color:'#166534', fontWeight:'600'};
+                        if (v === 'no_viable_proposals' || v === 'all_rejected') return {color:'#c2410c', fontWeight:'600'};
+                        if (v === 'watchdog_timeout' || v === 'timeout') return {color:'#991b1b', fontWeight:'700'};
+                        if (v === 'eod_complete' || v === 'superseded') return {color:'#475569'};
+                        return {};
+                    }
+                """))
+                _qd_gb.configure_column("Incidents",    width=80, suppressSizeToFit=True)
+                _qd_gb.configure_selection("single", use_checkbox=False)
+                _qd_gb.configure_grid_options(
+                    pagination=True,
+                    paginationPageSize=_qd_PAGE,
+                    suppressPaginationPanel=len(_qd_tbl) <= _qd_PAGE,
+                    getRowStyle=JsCode("""
+                        function(params) {
+                            if (params.data._has_inc) return {'background':'#fee2e2','color':'#7f1d1d'};
+                        }
+                    """),
+                    rowHeight=34, headerHeight=36, suppressHorizontalScroll=True,
                 )
-                _picked_sid = _sel_ids[_sel_idx] if _sel_ids else None
+                _qd_resp = AgGrid(
+                    _qd_tbl,
+                    gridOptions=_qd_gb.build(),
+                    update_mode=GridUpdateMode.SELECTION_CHANGED,
+                    height=min(560, 56 + min(len(_qd_tbl), _qd_PAGE) * 34 + (0 if len(_qd_tbl) <= _qd_PAGE else 60)),
+                    use_container_width=True,
+                    allow_unsafe_jscode=True,
+                    fit_columns_on_grid_load=True,
+                    theme="streamlit",
+                )
+                st.markdown(
+                    "<div style='font-size:0.78rem;color:#94a3b8;margin-top:4px'>"
+                    "Green = score &ge;0.60 &nbsp;·&nbsp; Amber = 0.40–0.60 &nbsp;·&nbsp; "
+                    "Red = below 0.40 &nbsp;·&nbsp; Red row = incident &nbsp;·&nbsp; "
+                    "Click a row to see pipeline and dimension breakdown</div>",
+                    unsafe_allow_html=True,
+                )
+
+                # ── Pipeline strip + quality detail panel ─────────────────────
+                _qd_sel = _qd_resp.selected_rows
+                _picked_sid = None
+                if _qd_sel is not None and len(_qd_sel) > 0:
+                    _qd_sel_row  = _qd_sel.iloc[0] if isinstance(_qd_sel, pd.DataFrame) else _qd_sel[0]
+                    _picked_sid  = _qd_sel_row["_id"]
+                    _qd_full     = sessions[sessions["id"] == _picked_sid]
+                    _qd_sel_incs = incidents[incidents["session_id"] == _picked_sid] if not incidents.empty else pd.DataFrame()
+
+                    if not _qd_full.empty:
+                        _qd_sr       = _qd_full.iloc[0]
+                        _qd_cost     = float(_qd_sr.get("total_cost_usd") or 0)
+                        _qd_trades   = int(_qd_sr.get("trades_executed") or 0)
+                        _qd_dur      = int((_qd_sr.get("total_latency_ms") or 0) / 1000)
+                        _qd_tok      = int((_qd_sr.get("total_tokens_input") or 0) + (_qd_sr.get("total_tokens_output") or 0))
+                        _qd_exit     = str(_qd_sr.get("terminal_reason") or "")
+                        _qd_date_str = pd.to_datetime(_qd_sr.get("started_at"), errors="coerce", utc=True)
+                        _qd_date_str = _qd_date_str.strftime("%Y-%m-%d %H:%M UTC") if pd.notna(_qd_date_str) else "-"
+
+                        _qd_agents_inv = _qd_sr.get("agents_invoked") or []
+                        _qd_strip      = pipeline_strip(_picked_sid, traces_all, all_evals, session_agents=_qd_agents_inv)
+
+                        _ec_fg2, _ec_bg2 = {
+                            "converged":           ("#166534", "#dcfce7"),
+                            "eod_complete":        ("#334155", "#f1f5f9"),
+                            "superseded":          ("#334155", "#f1f5f9"),
+                            "no_viable_proposals": ("#c2410c", "#fff7ed"),
+                            "all_rejected":        ("#c2410c", "#fff7ed"),
+                            "watchdog_timeout":    ("#991b1b", "#fee2e2"),
+                            "timeout":             ("#991b1b", "#fee2e2"),
+                        }.get(_qd_exit, ("#475569", "#f8fafc"))
+
+                        _exit_explanations2 = {
+                            "converged":           "All agents completed. Orchestrator found viable proposals and executed trades.",
+                            "eod_complete":        "End-of-day session. Open positions closed, P&L reconciled.",
+                            "no_viable_proposals": "Market conditions did not support any trades. Pipeline stopped at Market agent.",
+                            "all_rejected":        "Research and Risk ran but all proposals were rejected against risk criteria.",
+                            "superseded":          "Session replaced by a newer run.",
+                            "watchdog_timeout":    "Session exceeded the watchdog time limit and was force-shut down.",
+                            "timeout":             "An agent or tool call exceeded its time limit. Session aborted.",
+                        }
+                        _qd_exit_explain = _exit_explanations2.get(_qd_exit, "")
+
+                        _qd_has_inc = not _qd_sel_incs.empty
+                        _qd_accent  = "#ef4444" if _qd_has_inc else "#f59e0b" if _qd_trades == 0 else "#3b82f6"
+
+                        # Quality scores summary row
+                        _q_scores_html = ""
+                        for _qa_key, _qa_lbl, _qa_clr in [
+                            ("research_quality", "Research", "#f59e0b"),
+                            ("risk_quality", "Risk", "#10b981"),
+                            ("orchestrator_quality", "Orchestrator", "#3b82f6"),
+                            ("session_quality", "Session", "#8b5cf6"),
+                        ]:
+                            _qa_row = all_evals[
+                                (all_evals["session_id"] == _picked_sid) &
+                                (all_evals["agent"] == _qa_key) &
+                                (all_evals["eval_name"] == "composite_score")
+                            ]
+                            if not _qa_row.empty:
+                                _qa_score = float(_qa_row["score"].iloc[0])
+                                _qa_clr2  = "#166534" if _qa_score >= 0.60 else "#92400e" if _qa_score >= 0.40 else "#991b1b"
+                                _qa_bg2   = "#dcfce7" if _qa_score >= 0.60 else "#fef9c3" if _qa_score >= 0.40 else "#fee2e2"
+                                _q_scores_html += (
+                                    f'<span style="background:{_qa_bg2};color:{_qa_clr2};border-radius:4px;'
+                                    f'padding:2px 8px;font-size:0.78rem;font-weight:600">'
+                                    f'{_qa_lbl}&nbsp;{_qa_score:.2f}</span> '
+                                )
+
+                        # Incident banners
+                        _qd_inc_html = ""
+                        if _qd_has_inc:
+                            for _, _ir in _qd_sel_incs.iterrows():
+                                _sev  = str(_ir.get("severity") or "").lower()
+                                _ibg  = "#fee2e2" if _sev == "critical" else "#fef9c3"
+                                _ifg  = "#7f1d1d" if _sev == "critical" else "#713f12"
+                                _ipat = str(_ir.get("pattern_name") or "")
+                                _irc  = str(_ir.get("root_cause") or "")[:90]
+                                _qd_inc_html += (
+                                    f'<div style="background:{_ibg};color:{_ifg};border-radius:6px;'
+                                    f'padding:6px 10px;font-size:0.78rem;margin-top:4px">'
+                                    f'<strong>{_sev.upper()}</strong> · {_ipat}'
+                                    f'{"  —  " + _irc if _irc else ""}</div>'
+                                )
+
+                        _qd_legend = """
+<div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:10px;padding-top:8px;
+            border-top:1px solid #e2e8f0;font-size:0.72rem;color:#64748b;align-items:center">
+  <span style="font-weight:600;color:#94a3b8;letter-spacing:0.04em">NODES</span>
+  <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#10b981;margin-right:4px;vertical-align:middle"></span>Passed evals</span>
+  <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#f59e0b;margin-right:4px;vertical-align:middle"></span>Partial pass</span>
+  <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#ef4444;margin-right:4px;vertical-align:middle"></span>Failed evals</span>
+  <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#475569;margin-right:4px;vertical-align:middle"></span>Ran, not evaluated</span>
+  <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;border:2px solid #cbd5e1;background:#e2e8f0;margin-right:4px;vertical-align:middle"></span>Did not run</span>
+</div>"""
+
+                        st.markdown(f"""
+<div style="margin-top:8px;border-left:4px solid {_qd_accent};border-radius:0 8px 8px 0;
+            padding:12px 16px 20px 14px;background:#f8fafc;border-top:1px solid #e2e8f0;
+            border-right:1px solid #e2e8f0;border-bottom:1px solid #e2e8f0;overflow:visible">
+  <div style="font-size:0.7rem;color:#94a3b8;margin-bottom:8px;letter-spacing:0.03em">
+    PIPELINE DETAIL &nbsp;·&nbsp; {_qd_date_str}{"&nbsp;&nbsp;<span style='color:#ef4444'>Red row = incident flagged, not a pipeline failure</span>" if _qd_has_inc and _qd_exit in ("converged","eod_complete") else ""}
+  </div>
+  <div style="display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap;overflow:visible;padding-bottom:4px">
+    {_qd_strip}
+    <div style="display:flex;gap:16px;flex-wrap:wrap;margin-left:8px;border-left:1px solid #e2e8f0;padding-left:16px">
+      <span style="font-size:0.82rem"><strong style="color:#64748b">Cost</strong>&nbsp;${_qd_cost:.4f}</span>
+      <span style="font-size:0.82rem"><strong style="color:#64748b">Trades</strong>&nbsp;{_qd_trades}</span>
+      <span style="font-size:0.82rem"><strong style="color:#64748b">Duration</strong>&nbsp;{_qd_dur}s</span>
+      <span style="font-size:0.82rem"><strong style="color:#64748b">Tokens</strong>&nbsp;{_qd_tok:,}</span>
+      <span style="background:{_ec_bg2};color:{_ec_fg2};border-radius:4px;padding:2px 8px;
+                  font-size:0.75rem;font-weight:600">{_qd_exit or "unknown"}</span>
+    </div>
+  </div>
+  {"<div style='font-size:0.78rem;color:#475569;margin-top:8px;padding-top:8px;border-top:1px solid #e2e8f0'><strong style='color:#64748b'>Exit:</strong> " + _qd_exit_explain + "</div>" if _qd_exit_explain else ""}
+  {"<div style='margin-top:8px;padding-top:8px;border-top:1px solid #e2e8f0;display:flex;gap:6px;flex-wrap:wrap;align-items:center'><span style='font-size:0.72rem;color:#94a3b8;font-weight:600;letter-spacing:0.03em'>QUALITY</span> " + _q_scores_html + "</div>" if _q_scores_html else ""}
+  {_qd_inc_html}
+  {_qd_legend}
+</div>""", unsafe_allow_html=True)
+
+                st.markdown("<div style='margin-top:16px'></div>", unsafe_allow_html=True)
 
                 if _picked_sid:
                     _picked_qd = evals_ts[
