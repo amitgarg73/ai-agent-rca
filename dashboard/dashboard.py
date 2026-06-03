@@ -2822,40 +2822,177 @@ elif page == "Quality Drift":
                 )
             st.markdown("<div style='margin-bottom:8px'></div>", unsafe_allow_html=True)
 
-            # ── Composite trend chart with trend line overlay ─────────────────
-            st.markdown("**Composite Quality Score — all sessions**")
-            fig_qt = go.Figure()
-            for _qa, _qc in _qual_colors.items():
-                _qd = _qd_all[_qd_all["agent"] == _qa].copy()
-                if _qd.empty:
-                    continue
-                _qd["lbl"] = _qd["started_at"].dt.strftime("%m-%d %H:%M")
-                fig_qt.add_trace(go.Scatter(
-                    x=_qd["lbl"], y=_qd["score"],
-                    mode="lines+markers",
-                    name=_qa.replace("_quality", "").title(),
-                    line=dict(color=_qc, width=2),
-                    marker=dict(
-                        size=[9 if not p else 5 for p in _qd["passed"]],
-                        color=[("#ef4444" if not p else _qc) for p in _qd["passed"]],
-                        symbol=[("x" if not p else "circle") for p in _qd["passed"]],
-                    ),
+            # ── Incident lookup: session_id → list of {pattern, severity} ─────
+            _inc_by_sid: dict = {}
+            if not incidents.empty:
+                for _, _ir in incidents.iterrows():
+                    _isid = _ir["session_id"]
+                    _inc_by_sid.setdefault(_isid, []).append({
+                        "pattern":  _ir.get("pattern_name", "Unknown"),
+                        "severity": _ir.get("severity", ""),
+                    })
+
+            # ── System composite: mean of all 4 quality composites per session ─
+            _sys_comp = (
+                _qd_all.groupby(["session_id", "started_at"])["score"]
+                .mean().reset_index().sort_values("started_at")
+            )
+            _sys_comp["lbl"] = _sys_comp["started_at"].dt.strftime("%m-%d %H:%M")
+
+            # ── Shared chart builder ───────────────────────────────────────────
+            def _qchart(df, color, fill, height=300):
+                if df.empty:
+                    return go.Figure()
+                lbls   = df["lbl"].tolist()
+                scores = df["score"].tolist()
+                sids   = df["session_id"].tolist()
+                _xs    = np.arange(len(scores), dtype=float)
+                _sl, _ic = np.polyfit(_xs, scores, 1)
+                _fitted  = (_sl * _xs + _ic).tolist()
+
+                fig = go.Figure()
+                # Score line + fill
+                fig.add_trace(go.Scatter(
+                    x=lbls, y=scores, mode="lines+markers", name="score",
+                    line=dict(color=color, width=2),
+                    marker=dict(size=5, color=color),
+                    fill="tozeroy", fillcolor=fill,
                     hovertemplate="%{x}<br>Score: %{y:.3f}<extra></extra>",
                 ))
-            fig_qt.add_hline(y=0.60, line_dash="dot", line_color="#94a3b8",
-                             annotation_text="threshold (0.60)",
-                             annotation_position="bottom right",
-                             annotation_font_size=9)
-            fig_qt.update_layout(
-                paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
-                font_color="#1e293b", height=300,
-                yaxis=dict(title="Composite score", range=[-0.05, 1.10]),
-                xaxis_tickangle=-35,
-                legend=dict(orientation="h", y=1.12),
-                margin=dict(t=40, b=60),
+                # Trend line
+                fig.add_trace(go.Scatter(
+                    x=lbls, y=_fitted, mode="lines", name="trend",
+                    line=dict(color="#b45309", width=1.5, dash="dash"),
+                    hoverinfo="skip",
+                ))
+                # Threshold
+                fig.add_hline(
+                    y=0.60, line_dash="dot", line_color="#94a3b8",
+                    annotation_text="0.60 threshold",
+                    annotation_position="bottom right",
+                    annotation_font_size=8,
+                )
+                # Incident markers
+                for _lbl, _score, _sid in zip(lbls, scores, sids):
+                    _incs = _inc_by_sid.get(_sid)
+                    if not _incs:
+                        continue
+                    fig.add_shape(
+                        type="line", x0=_lbl, x1=_lbl, y0=0, y1=1,
+                        xref="x", yref="paper",
+                        line=dict(color="rgba(239,68,68,0.35)", width=1, dash="dot"),
+                    )
+                    _hover_lines = "<br>".join(
+                        f"{i['pattern']} ({i['severity']})" for i in _incs
+                    )
+                    fig.add_trace(go.Scatter(
+                        x=[_lbl], y=[_score], mode="markers",
+                        name="incident", showlegend=False,
+                        marker=dict(size=10, color="#ef4444",
+                                    line=dict(color="#ffffff", width=1.5)),
+                        hovertemplate=(
+                            f"<b>{'Incidents' if len(_incs) > 1 else 'Incident'}</b><br>"
+                            f"{_hover_lines}<br>"
+                            f"<span style='color:#94a3b8'>{_lbl} · {_sid[:8]}</span>"
+                            "<extra></extra>"
+                        ),
+                    ))
+                fig.update_layout(
+                    paper_bgcolor="#ffffff", plot_bgcolor="#ffffff",
+                    font_color="#1e293b", height=height,
+                    yaxis=dict(range=[0, 1.05], tickvals=[0.0, 0.5, 1.0],
+                               showgrid=True, gridcolor="#f1f5f9", gridwidth=1),
+                    xaxis=dict(showgrid=False, tickangle=-30),
+                    showlegend=False,
+                    margin=dict(t=8, b=50, l=36, r=10),
+                )
+                return fig
+
+            def _stats(scores_s):
+                if scores_s.empty:
+                    return 0.0, 0.0, 0.0
+                return (float(scores_s.mean()),
+                        float((scores_s >= 0.60).mean() * 100),
+                        float(scores_s.iloc[-1] - scores_s.iloc[0]))
+
+            def _stats_md(mn, pct, dlt):
+                _sign = "+" if dlt >= 0 else ""
+                _dc   = "#16a34a" if dlt > 0.01 else ("#dc2626" if dlt < -0.01 else "#64748b")
+                return (
+                    f'<span style="font-size:0.82rem;color:#475569">'
+                    f'mean <b style="color:#0f172a">{mn:.2f}</b>&nbsp;&nbsp;'
+                    f'pass <b style="color:#0f172a">{pct:.0f}%</b>&nbsp;&nbsp;'
+                    f'<b style="color:{_dc}">Δ {_sign}{dlt:.2f}</b>'
+                    f'</span>'
+                )
+
+            # Shared legend strip
+            st.markdown(
+                '<div style="font-size:0.78rem;color:#475569;margin-bottom:10px;'
+                'display:flex;gap:18px;align-items:center">'
+                '<span><span style="display:inline-block;width:24px;height:2px;'
+                'background:#3b82f6;vertical-align:middle;margin-right:4px"></span>score</span>'
+                '<span><span style="display:inline-block;width:24px;height:0;'
+                'border-top:2px dashed #b45309;vertical-align:middle;margin-right:4px"></span>trend</span>'
+                '<span><span style="display:inline-block;width:24px;height:0;'
+                'border-top:2px dotted #94a3b8;vertical-align:middle;margin-right:4px"></span>'
+                '0.60 threshold</span>'
+                '<span><span style="display:inline-block;width:10px;height:10px;'
+                'background:#ef4444;border-radius:50%;vertical-align:middle;margin-right:4px"></span>'
+                'incident</span>'
+                '</div>',
+                unsafe_allow_html=True,
             )
-            st.plotly_chart(fig_qt, use_container_width=True)
-            st.caption("X marker = failed threshold. Red dot = score below 0.60.")
+
+            # ── System composite card ──────────────────────────────────────────
+            _smn, _spct, _sdlt = _stats(_sys_comp["score"])
+            st.markdown(
+                '<div style="background:#ffffff;border:1px solid #e2e8f0;'
+                'border-radius:12px;padding:16px 20px 4px;margin-bottom:12px">',
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                '<span style="font-size:1.0rem;font-weight:700;color:#3b82f6">'
+                '● Session (system composite)</span>',
+                unsafe_allow_html=True,
+            )
+            st.markdown(_stats_md(_smn, _spct, _sdlt), unsafe_allow_html=True)
+            st.plotly_chart(_qchart(_sys_comp, "#3b82f6", "rgba(59,130,246,0.07)", 280),
+                            use_container_width=True, key="qd_sys")
+            st.markdown("</div>", unsafe_allow_html=True)
+
+            # ── Contributing agent small multiples ─────────────────────────────
+            st.markdown(
+                '<div style="font-size:0.82rem;color:#64748b;margin:4px 0 8px">Contributing agents</div>',
+                unsafe_allow_html=True,
+            )
+            _ag_cfg = [
+                ("research_quality",     "Research",     "#f59e0b", "rgba(245,158,11,0.07)"),
+                ("risk_quality",         "Risk",         "#10b981", "rgba(16,185,129,0.07)"),
+                ("orchestrator_quality", "Orchestrator", "#3b82f6", "rgba(59,130,246,0.07)"),
+            ]
+            _ag_cols = st.columns(3)
+            for _ci, (_qa, _qlbl, _qc, _qfill) in enumerate(_ag_cfg):
+                _qd_ag = _qd_all[_qd_all["agent"] == _qa].copy().sort_values("started_at")
+                _qd_ag["lbl"] = _qd_ag["started_at"].dt.strftime("%m-%d %H:%M")
+                _mn, _pct, _dlt = _stats(_qd_ag["score"])
+                with _ag_cols[_ci]:
+                    st.markdown(
+                        f'<div style="background:#ffffff;border:1px solid #e2e8f0;'
+                        f'border-radius:12px;padding:14px 16px 4px">',
+                        unsafe_allow_html=True,
+                    )
+                    st.markdown(
+                        f'<span style="font-size:0.9rem;font-weight:700;color:{_qc}">'
+                        f'● {_qlbl}</span>',
+                        unsafe_allow_html=True,
+                    )
+                    st.markdown(_stats_md(_mn, _pct, _dlt), unsafe_allow_html=True)
+                    st.plotly_chart(
+                        _qchart(_qd_ag, _qc, _qfill, 200),
+                        use_container_width=True, key=f"qd_{_qa}",
+                    )
+                    st.markdown("</div>", unsafe_allow_html=True)
 
             # ── Session quality dimension breakdown ────────────────────────────
             st.divider()
