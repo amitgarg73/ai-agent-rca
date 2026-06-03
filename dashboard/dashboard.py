@@ -2816,7 +2816,7 @@ elif page == "Quality Drift":
                     )
                     st.plotly_chart(fig_qhm, use_container_width=True)
                     st.caption("Green = quality healthy (≥0.60). Yellow = borderline. Red = below threshold.")
-            st.divider()
+            st.markdown("<div style='margin:6px 0'></div>", unsafe_allow_html=True)
 
         if not evals_ts.empty:
             _qd_all = evals_ts[
@@ -2851,7 +2851,7 @@ elif page == "Quality Drift":
                     "n":       len(_last_n),
                 }
 
-            st.divider()
+            st.markdown("<div style='margin:6px 0'></div>", unsafe_allow_html=True)
             with st.expander("**Recent Trend Direction**  ·  Linear trend across the last 5 sessions per agent", expanded=True):
                 with st.popover("?"):
                     st.markdown(
@@ -3037,7 +3037,7 @@ elif page == "Quality Drift":
                     f'</span>'
                 )
 
-            st.divider()
+            st.markdown("<div style='margin:6px 0'></div>", unsafe_allow_html=True)
             with st.expander("**Quality Trends Over Time**  ·  Composite score per session · dashed line = trend · red dot = incident", expanded=True):
                 with st.popover("?"):
                     st.markdown(
@@ -3208,7 +3208,7 @@ elif page == "Quality Drift":
                 "session_quality":       "#ddd6fe",
             }
 
-            st.divider()
+            st.markdown("<div style='margin:6px 0'></div>", unsafe_allow_html=True)
             with st.expander("**Session Detail**  ·  Per-dimension scores with fix guidance", expanded=False):
                 with st.popover("?"):
                     st.markdown(
