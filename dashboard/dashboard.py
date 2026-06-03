@@ -22,6 +22,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
+from plotly.subplots import make_subplots
 from supabase import create_client
 
 from engine.eval_engine   import (run_all_evals,
@@ -1334,6 +1335,7 @@ def _build_cost_donut(sess_row: dict, sess_traces: list):
 _NAV_PAGES = [
     "Overview", "Ledger", "Quality Drift",
     "Incidents Feed", "RCA View", "Failure Simulator", "Trace Inspector",
+    "Overview v2", "Ledger v2", "Quality v2",
 ]
 
 if "_page" in st.session_state:
@@ -5085,3 +5087,1896 @@ elif page == "Trace Inspector":
                 for row in filtered_t.head(5).to_dict("records"):
                     st.json(row)
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# V2 SHARED COMPONENTS
+# ══════════════════════════════════════════════════════════════════════════════
+
+_V2_GREEN  = "#10b981"
+_V2_AMBER  = "#f59e0b"
+_V2_RED    = "#ef4444"
+_V2_SLATE  = "#475569"
+_V2_MUTED  = "#94a3b8"
+
+def _v2_pass_color(pct: float) -> tuple[str, str]:
+    """Return (bg, text) for a pass-rate percentage."""
+    if pct >= 80:  return (_V2_GREEN, "#ffffff")
+    if pct >= 60:  return (_V2_AMBER, "#ffffff")
+    return (_V2_RED, "#ffffff")
+
+def _v2_score_color(score: float) -> tuple[str, str]:
+    """Return (bg, text) for a quality score 0-1."""
+    if score >= 0.60: return (_V2_GREEN, "#ffffff")
+    if score >= 0.40: return (_V2_AMBER, "#ffffff")
+    return (_V2_RED, "#ffffff")
+
+def _v2_efficiency_color(pct: float) -> tuple[str, str]:
+    if pct >= 70: return (_V2_GREEN, "#ffffff")
+    if pct >= 40: return (_V2_AMBER, "#ffffff")
+    return (_V2_RED, "#ffffff")
+
+def _v2_delta_html(curr, prev, higher_good=True) -> str:
+    if prev is None or prev == 0 or pd.isna(prev):
+        return ""
+    d   = curr - prev
+    if abs(d) < 0.0001:
+        return '<span style="color:#94a3b8;font-size:0.72rem">→ flat</span>'
+    pct  = abs(d / prev * 100)
+    arr  = "▲" if d > 0 else "▼"
+    good = (d > 0) == higher_good
+    c    = _V2_GREEN if good else _V2_RED
+    return f'<span style="color:{c};font-size:0.72rem">{arr} {pct:.0f}% vs prev</span>'
+
+
+def signal_card_v2(label: str, value: str, delta_html: str = "",
+                   color: str = "green", sub: str = "") -> str:
+    """Traffic-light KPI card for v2 pages."""
+    bg_map   = {"green": "#f0fdf4", "amber": "#fffbeb", "red": "#fef2f2", "slate": "#f8fafc"}
+    brd_map  = {"green": "#86efac", "amber": "#fde68a", "red": "#fca5a5", "slate": "#e2e8f0"}
+    val_map  = {"green": "#166534", "amber": "#92400e", "red": "#991b1b", "slate": "#475569"}
+    bg   = bg_map.get(color, "#f8fafc")
+    brd  = brd_map.get(color, "#e2e8f0")
+    vc   = val_map.get(color, "#0f172a")
+    return (
+        f'<div style="background:{bg};border:1.5px solid {brd};border-radius:10px;'
+        f'padding:14px 16px;min-height:90px">'
+        f'<div style="font-size:0.72rem;font-weight:600;color:#64748b;'
+        f'text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px">{label}</div>'
+        f'<div style="font-size:1.6rem;font-weight:700;color:{vc};line-height:1.1">{value}</div>'
+        f'{"<div style=margin-top:4px>" + delta_html + "</div>" if delta_html else ""}'
+        f'{"<div style=font-size:0.72rem;color:#94a3b8;margin-top:2px>" + sub + "</div>" if sub else ""}'
+        f'</div>'
+    )
+
+
+def compute_savings(sessions_df: pd.DataFrame) -> dict:
+    """Realized early-exit savings + projected shadow-CB savings."""
+    if sessions_df.empty:
+        return {"realized": 0.0, "realized_count": 0,
+                "projected": 0.0, "projected_count": 0, "avg_full_cost": 0.0}
+    full_runs = sessions_df[
+        sessions_df["terminal_reason"].isin(["converged", "eod_complete"])
+    ]["total_cost_usd"].dropna()
+    avg_full  = float(full_runs.mean()) if not full_runs.empty else 0.0
+    early     = sessions_df[sessions_df["terminal_reason"] == "no_viable_proposals"]
+    realized  = float(sum(max(0.0, avg_full - r) for r in early["total_cost_usd"].dropna()))
+    return {
+        "realized":       realized,
+        "realized_count": len(early),
+        "projected":      0.0,   # shadow CB savings — placeholder until CB fires stored
+        "projected_count": 0,
+        "avg_full_cost":  avg_full,
+    }
+
+
+def compute_impact_bridge(evals_df: pd.DataFrame, sessions_df: pd.DataFrame,
+                           mode: str = "operational", top_n: int = 3) -> list[dict]:
+    """
+    Compute eval-failure-to-outcome correlations.
+    mode='operational': binary pass/fail evals, non-quality agents.
+    mode='semantic': quality composite scores vs 0.60 threshold.
+    Returns list of dicts sorted by 0-trade rate delta descending.
+    """
+    if evals_df.empty or sessions_df.empty:
+        return []
+
+    zero_trade_sids = set(
+        sessions_df[sessions_df["trades_executed"] == 0]["id"].tolist()
+    )
+    incident_sids = set(
+        sessions_df[sessions_df.get("_inc_count", pd.Series(0, index=sessions_df.index)) > 0]["id"].tolist()
+        if "_inc_count" in sessions_df.columns else []
+    )
+
+    results = []
+
+    if mode == "operational":
+        ops = evals_df[~evals_df["agent"].str.endswith("_quality", na=False)].copy()
+        for (agent, eval_name), grp in ops.groupby(["agent", "eval_name"]):
+            passed_sids = set(grp[grp["passed"] == True]["session_id"].tolist())
+            failed_sids = set(grp[grp["passed"] == False]["session_id"].tolist())
+            if len(passed_sids) < 2 or len(failed_sids) < 2:
+                continue
+            pass_zt  = len(passed_sids & zero_trade_sids) / len(passed_sids)
+            fail_zt  = len(failed_sids & zero_trade_sids) / len(failed_sids)
+            pass_inc = len(passed_sids & incident_sids) / len(passed_sids)
+            fail_inc = len(failed_sids & incident_sids) / len(failed_sids)
+            results.append({
+                "agent": agent, "eval_name": eval_name,
+                "pass_0trade": pass_zt, "fail_0trade": fail_zt,
+                "pass_incident": pass_inc, "fail_incident": fail_inc,
+                "delta": abs(fail_zt - pass_zt),
+                "pass_count": len(passed_sids), "fail_count": len(failed_sids),
+                "label": f"{agent.title()} / {eval_name.replace('_', ' ').title()}",
+            })
+
+    elif mode == "semantic":
+        qual = evals_df[
+            evals_df["agent"].str.endswith("_quality", na=False) &
+            (evals_df["eval_name"] == "composite_score")
+        ].copy()
+        for agent, grp in qual.groupby("agent"):
+            above_sids = set(grp[grp["score"] >= 0.60]["session_id"].tolist())
+            below_sids = set(grp[grp["score"] <  0.60]["session_id"].tolist())
+            if len(above_sids) < 2 or len(below_sids) < 2:
+                continue
+            above_zt   = len(above_sids & zero_trade_sids) / len(above_sids)
+            below_zt   = len(below_sids & zero_trade_sids) / len(below_sids)
+            above_inc  = len(above_sids & incident_sids) / len(above_sids)
+            below_inc  = len(below_sids & incident_sids) / len(below_sids)
+            above_cost = sessions_df[sessions_df["id"].isin(above_sids)]["total_cost_usd"].mean()
+            below_cost = sessions_df[sessions_df["id"].isin(below_sids)]["total_cost_usd"].mean()
+            label = agent.replace("_quality", "").title()
+            results.append({
+                "agent": agent, "eval_name": "composite_score",
+                "above_0trade": above_zt, "below_0trade": below_zt,
+                "above_incident": above_inc, "below_incident": below_inc,
+                "above_cost": float(above_cost) if not pd.isna(above_cost) else 0.0,
+                "below_cost": float(below_cost) if not pd.isna(below_cost) else 0.0,
+                "delta": abs(below_zt - above_zt),
+                "above_count": len(above_sids), "below_count": len(below_sids),
+                "label": label,
+            })
+
+    results.sort(key=lambda x: x["delta"], reverse=True)
+    return results[:top_n] if top_n else results
+
+
+def _v2_fleet_strip(agent_pass_rates: dict[str, float],
+                    page: str, target_page: str = "Quality v2") -> str:
+    """
+    Aggregated pipeline fleet health strip for Overview v2.
+    Each node coloured by aggregate eval pass rate across all sessions in window.
+    """
+    _order  = ["orchestrator", "market", "news_analyst", "research", "risk", "orchestrator"]
+    _labels = {"market": "MKT", "news_analyst": "NEWS",
+               "research": "RES", "risk": "RSK", "orchestrator": "ORC"}
+    _orc_done = False
+
+    def _node_html(agent: str) -> str:
+        nonlocal _orc_done
+        lbl = _labels.get(agent, agent.upper()[:3])
+        if agent == "orchestrator":
+            if not _orc_done:
+                _orc_done = True
+                suffix = "coord"
+            else:
+                suffix = "synth"
+            title = f"ORC ({suffix})"
+        else:
+            title = lbl
+        pct = agent_pass_rates.get(agent)
+        if pct is None:
+            bg, fg, pct_str = "#e2e8f0", "#94a3b8", "—"
+        else:
+            bg, fg = _v2_pass_color(pct)
+            pct_str = f"{pct:.0f}%"
+        return (
+            f'<div style="display:flex;flex-direction:column;align-items:center;gap:2px">'
+            f'<div title="{title}" style="width:48px;height:48px;border-radius:50%;'
+            f'background:{bg};display:flex;align-items:center;justify-content:center;'
+            f'font-size:0.7rem;font-weight:700;color:{fg};cursor:pointer">{lbl}</div>'
+            f'<div style="font-size:0.65rem;color:#64748b;font-weight:600">{pct_str}</div>'
+            f'</div>'
+        )
+
+    def _arrow(a1: str, a2: str) -> str:
+        p1 = agent_pass_rates.get(a1, 100)
+        p2 = agent_pass_rates.get(a2, 100)
+        mn = min(p1, p2) if (p1 is not None and p2 is not None) else 100
+        c  = _v2_pass_color(mn)[0] if mn < 80 else "#cbd5e1"
+        return (
+            f'<div style="display:flex;align-items:center;padding-bottom:18px">'
+            f'<div style="width:28px;height:2px;background:{c}"></div>'
+            f'<div style="width:0;height:0;border-top:5px solid transparent;'
+            f'border-bottom:5px solid transparent;border-left:7px solid {c}"></div>'
+            f'</div>'
+        )
+
+    nodes = [
+        ("orchestrator", None),
+        ("market",       "orchestrator"),
+        ("news_analyst", "market"),
+        ("research",     "news_analyst"),
+        ("risk",         "research"),
+        ("orchestrator", "risk"),
+    ]
+    html = (
+        '<div style="display:flex;align-items:flex-end;gap:0;'
+        'padding:12px 0 4px;overflow:visible">'
+    )
+    for i, (agent, prev_agent) in enumerate(nodes):
+        if prev_agent:
+            html += _arrow(prev_agent, agent)
+        html += _node_html(agent)
+    html += '</div>'
+    html += (
+        '<div style="font-size:0.68rem;color:#94a3b8;margin-top:4px">'
+        'Click a node to drill into Quality v2 for that agent</div>'
+    )
+    return html
+
+
+def _v2_period_window(days: int) -> tuple[pd.Timestamp, pd.Timestamp, pd.Timestamp]:
+    """Return (now, window_start, prev_window_start) for a given day count."""
+    now   = pd.Timestamp.now(tz="UTC")
+    start = now - pd.Timedelta(days=days)
+    prev  = start - pd.Timedelta(days=days)
+    return now, start, prev
+
+
+def _v2_impact_card(item: dict, mode: str) -> str:
+    """Render one Impact Bridge card."""
+    if mode == "operational":
+        p_zt  = item["pass_0trade"]  * 100
+        f_zt  = item["fail_0trade"]  * 100
+        p_inc = item["pass_incident"]* 100
+        f_inc = item["fail_incident"]* 100
+        ratio = f_zt / p_zt if p_zt > 0 else 0
+        ratio_str = f"{ratio:.1f}× more 0-trade when fails" if ratio > 1.1 else "similar 0-trade rate"
+        return (
+            f'<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;'
+            f'padding:12px 14px;flex:1;min-width:200px">'
+            f'<div style="font-size:0.72rem;font-weight:700;color:#0f172a;margin-bottom:8px">'
+            f'{item["label"]}</div>'
+            f'<div style="font-size:0.8rem;color:#64748b;margin-bottom:2px">'
+            f'<span style="color:{_V2_RED};font-weight:600">When FAILS</span>: '
+            f'0-trade {f_zt:.0f}% &nbsp;·&nbsp; Incident {f_inc:.0f}%</div>'
+            f'<div style="font-size:0.8rem;color:#64748b;margin-bottom:8px">'
+            f'<span style="color:{_V2_GREEN};font-weight:600">When PASSES</span>: '
+            f'0-trade {p_zt:.0f}% &nbsp;·&nbsp; Incident {p_inc:.0f}%</div>'
+            f'<div style="font-size:0.72rem;color:#475569;font-style:italic">{ratio_str}</div>'
+            f'<div style="font-size:0.68rem;color:#94a3b8;margin-top:4px">'
+            f'{item["pass_count"]} passed · {item["fail_count"]} failed sessions</div>'
+            f'</div>'
+        )
+    else:  # semantic
+        ab_zt  = item["above_0trade"] * 100
+        bl_zt  = item["below_0trade"] * 100
+        ab_inc = item["above_incident"] * 100
+        bl_inc = item["below_incident"] * 100
+        ratio  = bl_zt / ab_zt if ab_zt > 0 else 0
+        ratio_str = f"{ratio:.1f}× more 0-trade when quality < 0.60" if ratio > 1.1 else "similar 0-trade rate"
+        return (
+            f'<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;'
+            f'padding:12px 14px;flex:1;min-width:200px">'
+            f'<div style="font-size:0.72rem;font-weight:700;color:#0f172a;margin-bottom:8px">'
+            f'{item["label"]} Quality</div>'
+            f'<div style="font-size:0.8rem;color:#64748b;margin-bottom:2px">'
+            f'<span style="color:{_V2_RED};font-weight:600">Quality &lt; 0.60</span>: '
+            f'0-trade {bl_zt:.0f}% &nbsp;·&nbsp; Incident {bl_inc:.0f}% &nbsp;·&nbsp; '
+            f'Avg cost ${item["below_cost"]:.4f}</div>'
+            f'<div style="font-size:0.8rem;color:#64748b;margin-bottom:8px">'
+            f'<span style="color:{_V2_GREEN};font-weight:600">Quality &ge; 0.60</span>: '
+            f'0-trade {ab_zt:.0f}% &nbsp;·&nbsp; Incident {ab_inc:.0f}% &nbsp;·&nbsp; '
+            f'Avg cost ${item["above_cost"]:.4f}</div>'
+            f'<div style="font-size:0.72rem;color:#475569;font-style:italic">{ratio_str}</div>'
+            f'<div style="font-size:0.68rem;color:#94a3b8;margin-top:4px">'
+            f'{item["above_count"]} above · {item["below_count"]} below threshold</div>'
+            f'</div>'
+        )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE: Overview v2
+# ══════════════════════════════════════════════════════════════════════════════
+if page == "Overview v2":
+
+    # ── Header ────────────────────────────────────────────────────────────────
+    _h1, _h2, _h3 = st.columns([4, 2, 1])
+    with _h1:
+        st.markdown("## System Overview")
+        st.caption(f"As of {pd.Timestamp.now(tz='UTC').strftime('%Y-%m-%d %H:%M UTC')}")
+    with _h2:
+        _ov2_range = st.radio("Period", ["7d", "14d", "30d"], horizontal=True,
+                              index=0, label_visibility="collapsed", key="ov2_range")
+    with _h3:
+        if st.button("↺ Refresh", use_container_width=True, key="ov2_ref"):
+            load_sessions.clear(); load_traces.clear(); load_all_evals.clear(); st.rerun()
+
+    _ov2_days           = int(_ov2_range[:-1])
+    _ov2_now, _ov2_cut, _ov2_prev_cut = _v2_period_window(_ov2_days)
+
+    if sessions.empty:
+        st.info("No sessions found.")
+        st.stop()
+
+    _ov2_s = sessions.copy()
+    _ov2_s["started_at"] = pd.to_datetime(_ov2_s["started_at"], errors="coerce", utc=True)
+    _ov2_curr = _ov2_s[_ov2_s["started_at"] >= _ov2_cut]
+    _ov2_prev = _ov2_s[(_ov2_s["started_at"] >= _ov2_prev_cut) & (_ov2_s["started_at"] < _ov2_cut)]
+
+    _ov2_i = incidents.copy() if not incidents.empty else pd.DataFrame()
+    if not _ov2_i.empty and "created_at" in _ov2_i.columns:
+        _ov2_i["created_at"] = pd.to_datetime(_ov2_i["created_at"], errors="coerce", utc=True)
+    _ov2_i_curr = _ov2_i[_ov2_i["created_at"] >= _ov2_cut] if not _ov2_i.empty else pd.DataFrame()
+    _ov2_i_prev = (
+        _ov2_i[(_ov2_i["created_at"] >= _ov2_prev_cut) & (_ov2_i["created_at"] < _ov2_cut)]
+        if not _ov2_i.empty else pd.DataFrame()
+    )
+    _ov2_inc_sids_curr = set(_ov2_i_curr["session_id"].unique()) if not _ov2_i_curr.empty else set()
+    _ov2_inc_sids_prev = set(_ov2_i_prev["session_id"].unique()) if not _ov2_i_prev.empty else set()
+
+    # ── Compute signal values ─────────────────────────────────────────────────
+    def _ov2_reliability(sess_df, inc_sids):
+        if sess_df.empty: return None
+        clean = int((~sess_df["id"].isin(inc_sids)).sum())
+        return clean / len(sess_df) * 100
+
+    def _ov2_cost_eff(sess_df):
+        if sess_df.empty: return None
+        tot  = sess_df["total_cost_usd"].sum()
+        prod = sess_df[sess_df["trades_executed"] > 0]["total_cost_usd"].sum()
+        return (prod / tot * 100) if tot > 0 else 0.0
+
+    _ov2_ae = load_all_evals()
+
+    def _ov2_op_quality(sess_ids):
+        if _ov2_ae.empty: return None
+        sub = _ov2_ae[
+            _ov2_ae["session_id"].isin(sess_ids) &
+            ~_ov2_ae["agent"].str.endswith("_quality", na=False)
+        ]
+        if sub.empty: return None
+        return float(sub["passed"].sum()) / len(sub) * 100
+
+    def _ov2_sem_quality(sess_ids):
+        if _ov2_ae.empty: return None
+        sub = _ov2_ae[
+            _ov2_ae["session_id"].isin(sess_ids) &
+            _ov2_ae["agent"].str.endswith("_quality", na=False) &
+            (_ov2_ae["eval_name"] == "composite_score")
+        ]
+        if sub.empty: return None
+        return float(sub["score"].mean())
+
+    _ov2_curr_ids = set(_ov2_curr["id"].tolist())
+    _ov2_prev_ids = set(_ov2_prev["id"].tolist())
+
+    _rel_c   = _ov2_reliability(_ov2_curr, _ov2_inc_sids_curr)
+    _rel_p   = _ov2_reliability(_ov2_prev, _ov2_inc_sids_prev)
+    _cef_c   = _ov2_cost_eff(_ov2_curr)
+    _cef_p   = _ov2_cost_eff(_ov2_prev)
+    _opq_c   = _ov2_op_quality(_ov2_curr_ids)
+    _opq_p   = _ov2_op_quality(_ov2_prev_ids)
+    _semq_c  = _ov2_sem_quality(_ov2_curr_ids)
+    _semq_p  = _ov2_sem_quality(_ov2_prev_ids)
+
+    # ── Section 1: 4 Signal Cards ─────────────────────────────────────────────
+    _sc1, _sc2, _sc3, _sc4 = st.columns(4)
+    with _sc1:
+        _rel_color = "green" if (_rel_c or 0) >= 85 else "amber" if (_rel_c or 0) >= 60 else "red"
+        st.markdown(signal_card_v2(
+            "Reliability",
+            f"{_rel_c:.0f}%" if _rel_c is not None else "—",
+            _v2_delta_html(_rel_c or 0, _rel_p, higher_good=True),
+            _rel_color,
+            "sessions with zero incidents",
+        ), unsafe_allow_html=True)
+
+    with _sc2:
+        _cef_color = "green" if (_cef_c or 0) >= 70 else "amber" if (_cef_c or 0) >= 40 else "red"
+        st.markdown(signal_card_v2(
+            "Cost Efficiency",
+            f"{_cef_c:.0f}%" if _cef_c is not None else "—",
+            _v2_delta_html(_cef_c or 0, _cef_p, higher_good=True),
+            _cef_color,
+            "spend that produced trades",
+        ), unsafe_allow_html=True)
+
+    with _sc3:
+        _opq_color = "green" if (_opq_c or 0) >= 80 else "amber" if (_opq_c or 0) >= 60 else "red"
+        st.markdown(signal_card_v2(
+            "Operational Quality",
+            f"{_opq_c:.0f}%" if _opq_c is not None else "—",
+            _v2_delta_html(_opq_c or 0, _opq_p, higher_good=True),
+            _opq_color,
+            "eval pass rate, all agents",
+        ), unsafe_allow_html=True)
+
+    with _sc4:
+        _semq_color = "green" if (_semq_c or 0) >= 0.60 else "amber" if (_semq_c or 0) >= 0.40 else "red"
+        st.markdown(signal_card_v2(
+            "Semantic Quality",
+            f"{_semq_c:.2f}" if _semq_c is not None else "—",
+            _v2_delta_html(_semq_c or 0, _semq_p, higher_good=True),
+            _semq_color,
+            "avg LLM-judge composite score",
+        ), unsafe_allow_html=True)
+
+    st.markdown("<div style='margin:12px 0'></div>", unsafe_allow_html=True)
+
+    # ── Section 2: Fleet Health Strip ────────────────────────────────────────
+    st.markdown("#### Pipeline Fleet Health")
+    st.caption("Aggregate eval pass rate per agent across all sessions in the selected window.")
+
+    if not _ov2_ae.empty and not _ov2_curr.empty:
+        _fleet_rates: dict[str, float] = {}
+        for _ag in ["market", "news_analyst", "research", "risk", "orchestrator"]:
+            _sub = _ov2_ae[
+                _ov2_ae["session_id"].isin(_ov2_curr_ids) &
+                (_ov2_ae["agent"] == _ag) &
+                ~_ov2_ae["agent"].str.endswith("_quality", na=False)
+            ]
+            if not _sub.empty:
+                _fleet_rates[_ag] = float(_sub["passed"].sum()) / len(_sub) * 100
+
+        st.markdown(_v2_fleet_strip(_fleet_rates, page), unsafe_allow_html=True)
+
+        # Clickable node navigation (use buttons below the strip)
+        _fn_cols = st.columns(6)
+        _agent_nav_map = [
+            ("ORC coord", "orchestrator"), ("MKT", "market"),
+            ("NEWS", "news_analyst"), ("RES", "research"),
+            ("RSK", "risk"), ("ORC synth", "orchestrator"),
+        ]
+        for _fi, (_lbl, _ag) in enumerate(_agent_nav_map):
+            with _fn_cols[_fi]:
+                if st.button(_lbl, key=f"fleet_{_ag}_{_fi}", use_container_width=True):
+                    st.query_params["page"]  = "Quality v2"
+                    st.query_params["agent"] = _ag
+                    st.rerun()
+    else:
+        st.info("No eval data available for fleet health.")
+
+    st.markdown("<div style='margin:8px 0'></div>", unsafe_allow_html=True)
+
+    # ── Section 3 + 4: Outcomes chart + Active Incidents ─────────────────────
+    _chart_col, _inc_col = st.columns([6, 4])
+
+    with _chart_col:
+        st.markdown("#### Session Outcomes")
+        if not _ov2_curr.empty:
+            _ov2_cd = _ov2_curr.copy()
+            _ov2_cd["_date"] = _ov2_cd["started_at"].dt.date
+            _ov2_cd["_inc"]  = _ov2_cd["id"].isin(_ov2_inc_sids_curr)
+            _ov2_cd["_type"] = _ov2_cd.apply(
+                lambda r: "Incident" if r["_inc"]
+                else ("0-Trade" if r["trades_executed"] == 0 else "Clean"),
+                axis=1,
+            )
+            # Daily cost for hover
+            _daily_cost = (
+                _ov2_cd.groupby("_date")["total_cost_usd"].sum().reset_index()
+                .rename(columns={"total_cost_usd": "_cost"})
+            )
+            _grp = (
+                _ov2_cd.groupby(["_date", "_type"]).size()
+                .reset_index(name="n").sort_values("_date")
+            )
+            _grp = _grp.merge(_daily_cost, on="_date", how="left")
+
+            _type_colors = {"Clean": _V2_GREEN, "0-Trade": _V2_AMBER, "Incident": _V2_RED}
+            _fig_out = go.Figure()
+            for _typ in ["Clean", "0-Trade", "Incident"]:
+                _sub = _grp[_grp["_type"] == _typ]
+                if _sub.empty:
+                    continue
+                _fig_out.add_trace(go.Bar(
+                    x=_sub["_date"].astype(str), y=_sub["n"],
+                    name=_typ, marker_color=_type_colors[_typ],
+                    customdata=_sub["_cost"],
+                    hovertemplate=(
+                        "<b>%{x}</b><br>"
+                        f"{_typ}: %{{y}}<br>"
+                        "Daily spend: $%{customdata:.4f}"
+                        "<extra></extra>"
+                    ),
+                ))
+            _fig_out.update_layout(
+                barmode="stack", height=280,
+                paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
+                font=dict(color="#1e293b", size=11),
+                margin=dict(t=10, b=45, l=0, r=10),
+                legend=dict(orientation="h", y=-0.35, x=0, font=dict(size=11)),
+                xaxis=dict(gridcolor="#e2e8f0", tickangle=-30),
+                yaxis=dict(gridcolor="#e2e8f0", title="Sessions"),
+            )
+            st.plotly_chart(_fig_out, use_container_width=True,
+                            config={"displayModeBar": False})
+        else:
+            st.info("No sessions in this range.")
+
+    with _inc_col:
+        st.markdown("#### Active Incidents")
+        if not _ov2_i_curr.empty:
+            # Donut
+            _sev_counts = {"critical": 0, "warning": 0, "info": 0}
+            for _sv in _ov2_i_curr.get("severity", pd.Series(dtype=str)).dropna():
+                if _sv in _sev_counts:
+                    _sev_counts[_sv] += 1
+
+            _donut_fig = go.Figure(go.Pie(
+                labels=["Critical", "Warning", "Info"],
+                values=[_sev_counts["critical"], _sev_counts["warning"], _sev_counts["info"]],
+                hole=0.60,
+                marker=dict(colors=[_V2_RED, _V2_AMBER, "#3b82f6"]),
+                textinfo="none",
+                hovertemplate="<b>%{label}</b>: %{value}<extra></extra>",
+                direction="clockwise", sort=False,
+            ))
+            _donut_fig.add_annotation(
+                text=f"<b>{len(_ov2_i_curr)}</b>",
+                x=0.5, y=0.5, showarrow=False,
+                font=dict(size=18, color="#0f172a"),
+            )
+            _donut_fig.update_layout(
+                height=160, margin=dict(t=0, b=0, l=0, r=0),
+                paper_bgcolor="rgba(0,0,0,0)", showlegend=True,
+                legend=dict(orientation="h", y=-0.15, x=0.1, font=dict(size=10)),
+            )
+            st.plotly_chart(_donut_fig, use_container_width=True,
+                            config={"displayModeBar": False})
+
+            # Sort toggle + top 2
+            _sort_mode = st.radio("Sort by", ["Severity", "Date"], horizontal=True,
+                                  key="ov2_inc_sort", label_visibility="collapsed")
+            _sev_order = {"critical": 0, "warning": 1, "info": 2}
+            _inc_disp  = _ov2_i_curr.copy()
+            if _sort_mode == "Severity":
+                _inc_disp["_so"] = _inc_disp["severity"].map(_sev_order).fillna(3)
+                _inc_disp = _inc_disp.sort_values(["_so", "created_at"], ascending=[True, False])
+            else:
+                _inc_disp = _inc_disp.sort_values("created_at", ascending=False)
+
+            for _, _ir in _inc_disp.head(2).iterrows():
+                _sev  = str(_ir.get("severity") or "info").lower()
+                _pat  = str(_ir.get("pattern_name") or "Unknown").replace("_", " ").title()
+                _ag   = str(_ir.get("agent") or "")
+                _ts   = pd.to_datetime(_ir.get("created_at"), errors="coerce", utc=True)
+                _ts_s = _ts.strftime("%b-%d %H:%M") if pd.notna(_ts) else "—"
+                _sev_c = {"critical": _V2_RED, "warning": _V2_AMBER, "info": "#3b82f6"}.get(_sev, _V2_SLATE)
+                st.markdown(
+                    f'<div style="background:#f8fafc;border-left:3px solid {_sev_c};'
+                    f'border-radius:0 6px 6px 0;padding:6px 10px;margin-top:6px;'
+                    f'font-size:0.78rem">'
+                    f'<span style="background:{_sev_c};color:#fff;border-radius:3px;'
+                    f'padding:1px 6px;font-size:0.68rem;font-weight:700">{_sev.upper()}</span>'
+                    f'&nbsp;<strong>{_pat}</strong>'
+                    f'{"&nbsp;·&nbsp;" + _ag if _ag else ""}'
+                    f'&nbsp;·&nbsp;<span style="color:#94a3b8">{_ts_s}</span>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+                if st.button("→ RCA", key=f"ov2_rca_{_ir.get('id', _ts_s)}",
+                             use_container_width=True):
+                    st.session_state["rca_incident"] = _ir.to_dict()
+                    st.session_state["rca_sid"]      = _ir.get("session_id", "")
+                    st.query_params["page"] = "RCA View"
+                    st.rerun()
+
+            st.markdown("<div style='margin-top:8px'></div>", unsafe_allow_html=True)
+            if st.button(f"View all {len(_ov2_i_curr)} incidents →", key="ov2_all_inc",
+                         use_container_width=True):
+                st.query_params["page"] = "Incidents Feed"
+                st.rerun()
+        else:
+            st.markdown(
+                f'<div style="background:#f0fdf4;border:1px solid #86efac;'
+                f'border-radius:8px;padding:20px;text-align:center;color:#166534">'
+                f'<div style="font-size:1.2rem">✓</div>'
+                f'No incidents in this period</div>',
+                unsafe_allow_html=True,
+            )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE: Ledger v2
+# ══════════════════════════════════════════════════════════════════════════════
+elif page == "Ledger v2":
+
+    _l2_h1, _l2_h2, _l2_h3, _l2_h4 = st.columns([3, 2, 1, 1])
+    with _l2_h1:
+        st.markdown("## Cost Ledger")
+        st.caption(f"As of {pd.Timestamp.now(tz='UTC').strftime('%Y-%m-%d %H:%M UTC')}")
+    with _l2_h2:
+        _l2_range = st.radio("Period", ["7d", "14d", "30d"], horizontal=True,
+                             index=0, label_visibility="collapsed", key="l2_range")
+    with _l2_h3:
+        _l2_gen = st.button("Generate Summary", key="l2_gen", use_container_width=True)
+    with _l2_h4:
+        if st.button("↺ Refresh", use_container_width=True, key="l2_ref"):
+            load_sessions.clear(); load_traces.clear(); st.rerun()
+
+    if sessions.empty:
+        st.info("No sessions found.")
+        st.stop()
+
+    _l2_days              = int(_l2_range[:-1])
+    _l2_now, _l2_cut, _l2_prev_cut = _v2_period_window(_l2_days)
+
+    _l2_s = sessions.copy()
+    _l2_s["started_at"] = pd.to_datetime(_l2_s["started_at"], errors="coerce", utc=True)
+    _l2_curr = _l2_s[_l2_s["started_at"] >= _l2_cut]
+    _l2_prev = _l2_s[(_l2_s["started_at"] >= _l2_prev_cut) & (_l2_s["started_at"] < _l2_cut)]
+
+    # ── KPI values ────────────────────────────────────────────────────────────
+    def _l2_kpis(df):
+        if df.empty:
+            return {"total": 0.0, "cpt": 0.0, "wasted": 0.0, "wasted_pct": 0.0, "eff": 0.0}
+        tot   = float(df["total_cost_usd"].sum())
+        trades = int(df["trades_executed"].sum())
+        wasted_df = df[(df["trades_executed"] == 0) & (df["total_cost_usd"] > 0)]
+        wasted = float(wasted_df["total_cost_usd"].sum())
+        prod   = int((df["trades_executed"] > 0).sum())
+        return {
+            "total":       tot,
+            "cpt":         tot / trades if trades > 0 else 0.0,
+            "wasted":      wasted,
+            "wasted_pct":  wasted / tot * 100 if tot > 0 else 0.0,
+            "eff":         prod / len(df) * 100 if len(df) > 0 else 0.0,
+        }
+
+    _kc  = _l2_kpis(_l2_curr)
+    _kp  = _l2_kpis(_l2_prev)
+
+    # ── Section 1: 4 KPI Cards ────────────────────────────────────────────────
+    _lk1, _lk2, _lk3, _lk4 = st.columns(4)
+    with _lk1:
+        st.markdown(signal_card_v2(
+            "Total Spend", f"${_kc['total']:.4f}",
+            _v2_delta_html(_kc["total"], _kp["total"], higher_good=False),
+            "slate", f"{len(_l2_curr)} sessions",
+        ), unsafe_allow_html=True)
+    with _lk2:
+        _cpt_c = "green" if _kc["cpt"] < 0.05 else "amber" if _kc["cpt"] < 0.15 else "red"
+        st.markdown(signal_card_v2(
+            "Cost per Trade",
+            f"${_kc['cpt']:.4f}" if _kc["cpt"] > 0 else "—",
+            _v2_delta_html(_kc["cpt"], _kp["cpt"], higher_good=False),
+            _cpt_c,
+        ), unsafe_allow_html=True)
+    with _lk3:
+        _wst_c = "green" if _kc["wasted_pct"] < 15 else "amber" if _kc["wasted_pct"] < 40 else "red"
+        st.markdown(signal_card_v2(
+            "Wasted Spend",
+            f"${_kc['wasted']:.4f}",
+            _v2_delta_html(_kc["wasted"], _kp["wasted"], higher_good=False),
+            _wst_c,
+            f"{_kc['wasted_pct']:.0f}% of total spend",
+        ), unsafe_allow_html=True)
+    with _lk4:
+        _eff_c = "green" if _kc["eff"] >= 70 else "amber" if _kc["eff"] >= 40 else "red"
+        st.markdown(signal_card_v2(
+            "Pipeline Efficiency",
+            f"{_kc['eff']:.0f}%",
+            _v2_delta_html(_kc["eff"], _kp["eff"], higher_good=True),
+            _eff_c,
+            "sessions that produced trades",
+        ), unsafe_allow_html=True)
+
+    st.markdown("<div style='margin:10px 0'></div>", unsafe_allow_html=True)
+
+    # ── Section 2: Savings Strip ──────────────────────────────────────────────
+    _sav = compute_savings(_l2_curr)
+    _sav_c1, _sav_c2 = st.columns(2)
+    with _sav_c1:
+        st.markdown(
+            f'<div style="background:#f0fdf4;border:1.5px solid #86efac;'
+            f'border-radius:10px;padding:14px 16px">'
+            f'<div style="font-size:0.68rem;font-weight:700;color:#166534;'
+            f'text-transform:uppercase;letter-spacing:0.05em">Realized Savings</div>'
+            f'<div style="font-size:1.5rem;font-weight:700;color:#166534">'
+            f'${_sav["realized"]:.4f}</div>'
+            f'<div style="font-size:0.78rem;color:#4ade80;margin-top:2px">'
+            f'{_sav["realized_count"]} early exits before Research/Risk ran</div>'
+            f'<div style="font-size:0.72rem;color:#64748b;margin-top:4px">'
+            f'Avg full-run cost: ${_sav["avg_full_cost"]:.4f}</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+    with _sav_c2:
+        st.markdown(
+            f'<div style="background:#f0fdf4;border:1.5px dashed #86efac;'
+            f'border-radius:10px;padding:14px 16px">'
+            f'<div style="font-size:0.68rem;font-weight:700;color:#166534;'
+            f'text-transform:uppercase;letter-spacing:0.05em">Projected Savings</div>'
+            f'<div style="font-size:1.5rem;font-weight:700;color:#166534">'
+            f'${_sav["projected"]:.4f}</div>'
+            f'<div style="font-size:0.78rem;color:#64748b;margin-top:2px">'
+            f'Shadow circuit breakers fired {_sav["projected_count"]} times</div>'
+            f'<div style="font-size:0.72rem;color:#94a3b8;margin-top:4px">'
+            f'Enable circuit breakers to realise these savings (coming soon)</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+    st.markdown("<div style='margin:8px 0'></div>", unsafe_allow_html=True)
+
+    # ── On-demand CFO Summary ─────────────────────────────────────────────────
+    if _l2_gen:
+        _api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
+        if not _api_key:
+            st.warning("Add ANTHROPIC_API_KEY to Streamlit secrets to enable AI summaries.")
+        else:
+            with st.spinner("Generating CFO summary..."):
+                try:
+                    _cl = anthropic.Anthropic(api_key=_api_key)
+                    _top_waste = "unknown"
+                    if not _l2_curr.empty:
+                        _wdf = _l2_curr[_l2_curr["trades_executed"] == 0]
+                        if not _wdf.empty and "terminal_reason" in _wdf.columns:
+                            _top_waste = _wdf["terminal_reason"].value_counts().index[0]
+                    _prompt = (
+                        f"Write a 3-4 sentence CFO audit brief. Formal, factual, no filler.\n"
+                        f"Period: last {_l2_days} days. Sessions: {len(_l2_curr)}. "
+                        f"Total spend: ${_kc['total']:.4f}. "
+                        f"Pipeline efficiency: {_kc['eff']:.0f}% (sessions that produced trades). "
+                        f"Wasted spend: ${_kc['wasted']:.4f} ({_kc['wasted_pct']:.0f}% of total). "
+                        f"Top waste driver: {_top_waste}. "
+                        f"Realized savings from early exits: ${_sav['realized']:.4f}. "
+                        f"Prev period efficiency: {_kp['eff']:.0f}%. "
+                        f"Include: total spend and efficiency ratio, largest waste driver, "
+                        f"trend vs previous period, one actionable observation."
+                    )
+                    _resp = _cl.messages.create(
+                        model="claude-haiku-4-5-20251001", max_tokens=200,
+                        messages=[{"role": "user", "content": _prompt}],
+                    )
+                    st.markdown(
+                        f'<div style="background:#f8fafc;border-left:4px solid #3b82f6;'
+                        f'border-radius:0 8px 8px 0;padding:12px 16px;margin-bottom:8px;'
+                        f'font-size:0.88rem;color:#1e293b">'
+                        f'<div style="font-size:0.68rem;font-weight:700;color:#3b82f6;'
+                        f'text-transform:uppercase;margin-bottom:6px">CFO Summary</div>'
+                        f'{_resp.content[0].text}</div>',
+                        unsafe_allow_html=True,
+                    )
+                except Exception as _e:
+                    st.warning(f"CFO summary unavailable: {_e}")
+
+    # ── Section 4: Cost Waterfall ─────────────────────────────────────────────
+    st.markdown("#### Cost Breakdown")
+
+    _agent_costs_wf: dict[str, float] = defaultdict(float)
+    _agent_waste_wf: dict[str, float] = defaultdict(float)
+    for _, _wr in _l2_curr.iterrows():
+        _bd = _wr.get("cost_breakdown") or {}
+        if not isinstance(_bd, dict):
+            continue
+        _is_wasted = int(_wr.get("trades_executed") or 0) == 0
+        for _ak, _av in _bd.items():
+            if not isinstance(_av, dict):
+                continue
+            _norm = "research" if _ak.startswith("research_") else _ak
+            _agent_costs_wf[_norm] += _av.get("cost_usd", 0)
+            if _is_wasted:
+                _agent_waste_wf[_norm] += _av.get("cost_usd", 0)
+
+    _total_wf   = _kc["total"]
+    _prod_wf    = _kc["total"] - _kc["wasted"]
+    _wasted_wf  = _kc["wasted"]
+    _saved_wf   = _sav["realized"]
+    _agents_wf  = sorted(_agent_costs_wf, key=_agent_costs_wf.get, reverse=True)
+
+    if _agents_wf:
+        _wf_labels  = ["Total"] + [a.title() for a in _agents_wf] + \
+                      ["Productive", "Wasted", "Saved (exits)"]
+        _wf_values  = (
+            [_total_wf]
+            + [-_agent_costs_wf[a] for a in _agents_wf]
+            + [_prod_wf, -_wasted_wf, _saved_wf]
+        )
+        _wf_measure = (
+            ["absolute"]
+            + ["relative"] * len(_agents_wf)
+            + ["absolute", "absolute", "absolute"]
+        )
+        _agent_c = {
+            "research": "#f59e0b", "risk": "#10b981", "orchestrator": "#3b82f6",
+            "market": "#8b5cf6", "market_shadow": "#6b7280",
+        }
+        _wf_colors = (
+            ["#94a3b8"]
+            + [_agent_c.get(a, "#94a3b8") for a in _agents_wf]
+            + [_V2_GREEN, _V2_RED, "#86efac"]
+        )
+        _wf_n_sessions = (
+            [len(_l2_curr)]
+            + [0] * len(_agents_wf)
+            + [int((_l2_curr["trades_executed"] > 0).sum()),
+               int((_l2_curr["trades_executed"] == 0).sum()),
+               _sav["realized_count"]]
+        )
+        _fig_wf = go.Figure(go.Waterfall(
+            orientation="h",
+            measure=_wf_measure,
+            x=_wf_values,
+            y=_wf_labels,
+            connector=dict(line=dict(color="#e2e8f0", width=1)),
+            decreasing=dict(marker_color=_V2_RED),
+            increasing=dict(marker_color=_V2_GREEN),
+            totals=dict(marker_color="#94a3b8"),
+            text=[f"${abs(v):.4f}" for v in _wf_values],
+            textposition="outside",
+            customdata=_wf_n_sessions,
+            hovertemplate="<b>%{y}</b><br>$%{x:.4f}<br>%{customdata} sessions<extra></extra>",
+        ))
+        # Override colors per bar
+        _fig_wf.data[0].marker.color = _wf_colors
+        _fig_wf.update_layout(
+            height=max(320, 50 + len(_wf_labels) * 38),
+            paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
+            font=dict(color="#1e293b", size=11),
+            margin=dict(t=10, b=10, l=110, r=80),
+            xaxis=dict(gridcolor="#e2e8f0", tickformat="$.4f", title="Cost (USD)"),
+            yaxis=dict(autorange="reversed"),
+            showlegend=False,
+        )
+        st.plotly_chart(_fig_wf, use_container_width=True,
+                        config={"displayModeBar": False})
+
+        # ── Agent Detail Panel ────────────────────────────────────────────────
+        st.caption("Click an agent pill to drill down.")
+        _sel_agent_wf = st.pills("Agent detail", _agents_wf, selection_mode="single",
+                                  key="l2_agent_drill", label_visibility="collapsed")
+        if _sel_agent_wf:
+            _atr2 = traces_all[
+                (traces_all["agent"].str.startswith(_sel_agent_wf) if _sel_agent_wf == "research"
+                 else traces_all["agent"] == _sel_agent_wf) &
+                (traces_all["step_type"] == "tool_call")
+            ]
+            _wst_a = _agent_waste_wf.get(_sel_agent_wf, 0)
+            _tot_a = _agent_costs_wf.get(_sel_agent_wf, 0)
+            _wpct_a = _wst_a / _tot_a * 100 if _tot_a > 0 else 0
+            _wpct_c = _V2_GREEN if _wpct_a < 25 else _V2_AMBER if _wpct_a < 50 else _V2_RED
+            st.markdown(
+                f'<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;'
+                f'padding:12px 16px;margin-top:4px">'
+                f'<strong>{_sel_agent_wf.title()}</strong> &nbsp;·&nbsp; '
+                f'${_tot_a:.4f} total &nbsp;·&nbsp; '
+                f'<span style="color:{_wpct_c}">${_wst_a:.4f} ({_wpct_a:.0f}%) in 0-trade sessions</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+            if not _atr2.empty:
+                _tc = (
+                    _atr2.groupby("tool_name")
+                    .agg(Calls=("tool_name", "count"),
+                         Latency=("latency_ms", "mean"),
+                         Errors=("error", lambda x: x.notna().sum()))
+                    .reset_index().rename(columns={"tool_name": "Tool"})
+                    .sort_values("Calls", ascending=False)
+                )
+                _tc["Latency (ms)"] = _tc["Latency"].round(0).astype(int)
+                _tc["Error %"] = (_tc["Errors"] / _tc["Calls"] * 100).round(1).astype(str) + "%"
+                st.dataframe(_tc[["Tool", "Calls", "Latency (ms)", "Errors", "Error %"]],
+                             use_container_width=True, hide_index=True, height=180)
+
+    else:
+        st.info("No cost breakdown data available for this period.")
+
+    st.markdown("<div style='margin:8px 0'></div>", unsafe_allow_html=True)
+
+    # ── Section 6: Spend Over Time ────────────────────────────────────────────
+    st.markdown("#### Spend Over Time")
+    if not _l2_curr.empty:
+        _sot = _l2_curr.copy()
+        _sot["_date"] = _sot["started_at"].dt.date
+        _daily = _sot.groupby("_date")["total_cost_usd"].sum().reset_index()
+        _daily["_roll7"] = _daily["total_cost_usd"].rolling(7, min_periods=1).mean()
+        _fig_sot = go.Figure()
+        _fig_sot.add_trace(go.Scatter(
+            x=_daily["_date"].astype(str), y=_daily["total_cost_usd"],
+            mode="lines+markers", name="Daily spend",
+            line=dict(color="#3b82f6", width=2), marker=dict(size=5),
+            hovertemplate="<b>%{x}</b><br>Daily: $%{y:.4f}<extra></extra>",
+        ))
+        _fig_sot.add_trace(go.Scatter(
+            x=_daily["_date"].astype(str), y=_daily["_roll7"],
+            mode="lines", name="7-day avg",
+            line=dict(color="#94a3b8", width=1.5, dash="dash"),
+            hovertemplate="<b>%{x}</b><br>7d avg: $%{y:.4f}<extra></extra>",
+        ))
+        _fig_sot.update_layout(
+            height=200, paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
+            font=dict(color="#1e293b", size=11),
+            margin=dict(t=10, b=40, l=0, r=10),
+            legend=dict(orientation="h", y=-0.4, x=0),
+            xaxis=dict(gridcolor="#e2e8f0", tickangle=-30),
+            yaxis=dict(gridcolor="#e2e8f0", tickformat="$.4f", title="Cost (USD)"),
+        )
+        st.plotly_chart(_fig_sot, use_container_width=True,
+                        config={"displayModeBar": False})
+    else:
+        st.info("No sessions in this range.")
+
+    st.markdown("<div style='margin:8px 0'></div>", unsafe_allow_html=True)
+
+    # ── Section 7: Waste / Savings Analysis ───────────────────────────────────
+    st.markdown("#### Waste and Savings by Exit Type")
+    _wa_col, _ag_col = st.columns([55, 45])
+
+    with _wa_col:
+        # Bifurcated horizontal bar: savings (left, green) vs waste (right, red)
+        _exit_savings = {"no_viable_proposals": 0.0}
+        _exit_waste   = {}
+        _neutral      = {"eod_complete", "superseded", "converged"}
+        for _, _er in _l2_curr.iterrows():
+            _tr = str(_er.get("terminal_reason") or "unknown")
+            _cv = float(_er.get("total_cost_usd") or 0)
+            if _tr == "no_viable_proposals":
+                _exit_savings[_tr] = _exit_savings.get(_tr, 0) + max(
+                    0, _sav["avg_full_cost"] - _cv
+                )
+            elif _tr not in _neutral:
+                _exit_waste[_tr] = _exit_waste.get(_tr, 0) + _cv
+
+        _all_exits = sorted(
+            set(list(_exit_savings.keys()) + list(_exit_waste.keys()))
+        )
+        if _all_exits:
+            _fig_bi = go.Figure()
+            _fig_bi.add_trace(go.Bar(
+                name="Saved", orientation="h",
+                y=_all_exits,
+                x=[-_exit_savings.get(e, 0) for e in _all_exits],
+                marker_color=_V2_GREEN,
+                text=[f"${_exit_savings.get(e,0):.4f}" if _exit_savings.get(e,0) > 0 else ""
+                      for e in _all_exits],
+                textposition="outside",
+                hovertemplate="<b>%{y}</b><br>Saved $%{x:.4f}<extra></extra>",
+            ))
+            _fig_bi.add_trace(go.Bar(
+                name="Wasted", orientation="h",
+                y=_all_exits,
+                x=[_exit_waste.get(e, 0) for e in _all_exits],
+                marker_color=_V2_RED,
+                text=[f"${_exit_waste.get(e,0):.4f}" if _exit_waste.get(e,0) > 0 else ""
+                      for e in _all_exits],
+                textposition="outside",
+                hovertemplate="<b>%{y}</b><br>Wasted $%{x:.4f}<extra></extra>",
+            ))
+            _fig_bi.update_layout(
+                barmode="overlay", height=280,
+                paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
+                font=dict(color="#1e293b", size=10),
+                margin=dict(t=10, b=10, l=130, r=60),
+                legend=dict(orientation="h", y=-0.2),
+                xaxis=dict(gridcolor="#e2e8f0", tickformat="$.4f",
+                           title="← Saved  |  Wasted →"),
+                yaxis=dict(gridcolor="rgba(0,0,0,0)"),
+            )
+            _fig_bi.add_vline(x=0, line_width=1.5, line_color="#e2e8f0")
+            st.plotly_chart(_fig_bi, use_container_width=True,
+                            config={"displayModeBar": False})
+        else:
+            st.info("No exit type data for this period.")
+
+    with _ag_col:
+        if _agents_wf:
+            _fig_wp = go.Figure(go.Bar(
+                y=[a.title() for a in _agents_wf],
+                x=[(_agent_waste_wf.get(a, 0) / _agent_costs_wf.get(a, 1) * 100)
+                   for a in _agents_wf],
+                orientation="h",
+                marker_color=[
+                    _V2_GREEN if (_agent_waste_wf.get(a, 0) / _agent_costs_wf.get(a, 1) * 100) < 25
+                    else _V2_AMBER if (_agent_waste_wf.get(a, 0) / _agent_costs_wf.get(a, 1) * 100) < 50
+                    else _V2_RED
+                    for a in _agents_wf
+                ],
+                text=[f"{(_agent_waste_wf.get(a,0)/_agent_costs_wf.get(a,1)*100):.0f}%"
+                      for a in _agents_wf],
+                textposition="outside",
+                customdata=[f"${_agent_waste_wf.get(a,0):.4f} of ${_agent_costs_wf.get(a,0):.4f}"
+                            for a in _agents_wf],
+                hovertemplate="<b>%{y}</b><br>%{x:.0f}% wasted<br>%{customdata}<extra></extra>",
+            ))
+            _fig_wp.update_layout(
+                height=280, paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
+                font=dict(color="#1e293b", size=10),
+                margin=dict(t=10, b=10, l=10, r=50),
+                xaxis=dict(gridcolor="#e2e8f0", title="Wasted %", ticksuffix="%"),
+                yaxis=dict(gridcolor="rgba(0,0,0,0)"),
+                title=dict(text="Wasted % per Agent", font=dict(size=12), x=0),
+            )
+            st.plotly_chart(_fig_wp, use_container_width=True,
+                            config={"displayModeBar": False})
+
+    st.markdown("<div style='margin:8px 0'></div>", unsafe_allow_html=True)
+
+    # ── Section 8: Session Ledger ─────────────────────────────────────────────
+    st.markdown("#### Session Ledger")
+
+    _l2_disp = _l2_s.copy().sort_values("started_at", ascending=False)
+
+    if not incidents.empty:
+        _l2_ic = incidents.groupby("session_id").size().reset_index(name="_inc")
+        _l2_disp = _l2_disp.merge(_l2_ic, left_on="id", right_on="session_id", how="left")
+        _l2_disp["_inc"] = _l2_disp["_inc"].fillna(0).astype(int)
+    else:
+        _l2_disp["_inc"] = 0
+
+    _l2_disp["Duration (s)"] = (_l2_disp["total_latency_ms"] / 1000).round(0).astype(int)
+    _l2_disp["Waste"] = _l2_disp.apply(
+        lambda r: "⚠" if (r["trades_executed"] == 0 and r["total_cost_usd"] > 0.01) else "",
+        axis=1,
+    )
+
+    _gf_c1, _gf_c2, _gf_sp = st.columns([2, 2, 5])
+    _l2_only_inc   = _gf_c1.checkbox("Incidents only", key="l2_inc_filter")
+    _l2_only_waste = _gf_c2.checkbox("0-trade only",   key="l2_waste_filter")
+    if _l2_only_inc:
+        _l2_disp = _l2_disp[_l2_disp["_inc"] > 0]
+    if _l2_only_waste:
+        _l2_disp = _l2_disp[_l2_disp["trades_executed"] == 0]
+
+    _l2_tbl = _l2_disp[["started_at", "total_cost_usd", "trades_executed",
+                          "terminal_reason", "Duration (s)", "_inc", "Waste"]].copy()
+    _l2_tbl = _l2_tbl.rename(columns={
+        "started_at": "Session", "total_cost_usd": "Cost ($)",
+        "trades_executed": "Trades", "terminal_reason": "Exit Reason",
+        "_inc": "Incidents",
+    })
+    _l2_tbl["Session"] = _l2_tbl["Session"].dt.strftime("%m-%d %H:%M")
+    _l2_tbl["Cost ($)"] = _l2_tbl["Cost ($)"].map("${:.4f}".format)
+    _l2_tbl.insert(0, "_id", _l2_disp["id"].values)
+    _l2_tbl.insert(1, "_has_inc", (_l2_disp["_inc"] > 0).values)
+    _l2_tbl.insert(2, "_zero_trade", (_l2_disp["trades_executed"] == 0).values)
+
+    _l2_PAGE = 10
+    _l2_gb = GridOptionsBuilder.from_dataframe(_l2_tbl)
+    _l2_gb.configure_default_column(suppressMenu=True, sortable=True, resizable=False, filter=False)
+    _l2_gb.configure_column("_id",         hide=True)
+    _l2_gb.configure_column("_has_inc",    hide=True)
+    _l2_gb.configure_column("_zero_trade", hide=True)
+    _l2_gb.configure_column("Waste",       width=60,  suppressSizeToFit=True)
+    _l2_gb.configure_column("Session",     width=110, suppressSizeToFit=True)
+    _l2_gb.configure_column("Cost ($)",    width=90,  suppressSizeToFit=True)
+    _l2_gb.configure_column("Trades",      width=70,  suppressSizeToFit=True)
+    _l2_gb.configure_column("Duration (s)",width=90,  suppressSizeToFit=True)
+    _l2_gb.configure_column("Incidents",   width=80,  suppressSizeToFit=True)
+    _l2_gb.configure_column("Exit Reason", flex=1,    cellStyle=JsCode("""
+        function(p) {
+            var v = p.value || '';
+            if (v === 'converged') return {color:'#166534',fontWeight:'600'};
+            if (v === 'no_viable_proposals' || v === 'all_rejected') return {color:'#c2410c',fontWeight:'600'};
+            if (v === 'watchdog_timeout' || v === 'timeout') return {color:'#991b1b',fontWeight:'700'};
+            if (v === 'eod_complete' || v === 'superseded') return {color:'#475569'};
+        }
+    """))
+    _l2_gb.configure_selection("single", use_checkbox=False)
+    _l2_gb.configure_grid_options(
+        pagination=True,
+        paginationPageSize=_l2_PAGE,
+        suppressPaginationPanel=len(_l2_tbl) <= _l2_PAGE,
+        getRowStyle=JsCode("""
+            function(p) {
+                if (p.data._has_inc) return {background:'#fee2e2',color:'#7f1d1d'};
+                if (p.data._zero_trade) return {background:'#fffbeb',color:'#713f12'};
+            }
+        """),
+        rowHeight=34, headerHeight=36, suppressHorizontalScroll=True,
+    )
+    _l2_resp = AgGrid(
+        _l2_tbl,
+        gridOptions=_l2_gb.build(),
+        update_mode=GridUpdateMode.SELECTION_CHANGED,
+        height=max(120, min(560, 56 + min(len(_l2_tbl), _l2_PAGE) * 34 +
+                            (0 if len(_l2_tbl) <= _l2_PAGE else 60))),
+        use_container_width=True, allow_unsafe_jscode=True,
+        fit_columns_on_grid_load=True, theme="streamlit",
+    )
+
+    # CSV export
+    import base64 as _b64
+    _csv_cols = ["Session", "Cost ($)", "Trades", "Exit Reason",
+                 "Duration (s)", "Incidents", "Waste"]
+    _csv_data = _l2_tbl[_csv_cols].to_csv(index=False).encode()
+    st.download_button(
+        label="📊 Export CSV",
+        data=_csv_data,
+        file_name=f"cost_ledger_{_l2_range}_{pd.Timestamp.now().strftime('%Y%m%d')}.csv",
+        mime="text/csv",
+        key="l2_csv",
+    )
+
+    # Pipeline strip on row selection
+    _l2_sel = _l2_resp.selected_rows
+    if _l2_sel is not None and len(_l2_sel) > 0:
+        _l2_sel_row = _l2_sel.iloc[0] if isinstance(_l2_sel, pd.DataFrame) else _l2_sel[0]
+        _l2_sid     = _l2_sel_row["_id"]
+        _l2_full    = sessions[sessions["id"] == _l2_sid]
+        _l2_incs    = incidents[incidents["session_id"] == _l2_sid] if not incidents.empty else pd.DataFrame()
+        if not _l2_full.empty:
+            _l2_sr    = _l2_full.iloc[0]
+            _l2_strip = pipeline_strip(_l2_sid, traces_all, load_all_evals(),
+                                       session_agents=_l2_sr.get("agents_invoked") or [])
+            _l2_cost  = float(_l2_sr.get("total_cost_usd") or 0)
+            _l2_tr    = int(_l2_sr.get("trades_executed") or 0)
+            _l2_dur   = int((_l2_sr.get("total_latency_ms") or 0) / 1000)
+            _l2_exit  = str(_l2_sr.get("terminal_reason") or "")
+            _ec_fg, _ec_bg = {
+                "converged":           ("#166534", "#dcfce7"),
+                "eod_complete":        ("#334155", "#f1f5f9"),
+                "no_viable_proposals": ("#c2410c", "#fff7ed"),
+                "all_rejected":        ("#c2410c", "#fff7ed"),
+                "watchdog_timeout":    ("#991b1b", "#fee2e2"),
+                "timeout":             ("#991b1b", "#fee2e2"),
+            }.get(_l2_exit, ("#475569", "#f8fafc"))
+            _l2_accent = "#ef4444" if not _l2_incs.empty else "#3b82f6"
+            st.markdown(
+                f'<div style="margin-top:8px;border-left:4px solid {_l2_accent};'
+                f'border-radius:0 8px 8px 0;padding:12px 16px 20px;background:#f8fafc;'
+                f'border:1px solid #e2e8f0;overflow:visible">'
+                f'<div style="font-size:0.7rem;color:#94a3b8;margin-bottom:8px">'
+                f'PIPELINE DETAIL</div>'
+                f'<div style="display:flex;align-items:flex-start;gap:16px;overflow:visible">'
+                f'{_l2_strip}'
+                f'<div style="display:flex;gap:16px;flex-wrap:wrap;'
+                f'border-left:1px solid #e2e8f0;padding-left:16px">'
+                f'<span style="font-size:0.82rem"><strong style="color:#64748b">Cost</strong>'
+                f'&nbsp;${_l2_cost:.4f}</span>'
+                f'<span style="font-size:0.82rem"><strong style="color:#64748b">Trades</strong>'
+                f'&nbsp;{_l2_tr}</span>'
+                f'<span style="font-size:0.82rem"><strong style="color:#64748b">Duration</strong>'
+                f'&nbsp;{_l2_dur}s</span>'
+                f'<span style="background:{_ec_bg};color:{_ec_fg};border-radius:4px;'
+                f'padding:2px 8px;font-size:0.75rem;font-weight:600">{_l2_exit or "unknown"}</span>'
+                f'</div></div></div>',
+                unsafe_allow_html=True,
+            )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE: Quality v2
+# ══════════════════════════════════════════════════════════════════════════════
+elif page == "Quality v2":
+
+    _q2_agent_filter = st.query_params.get("agent", None)
+
+    _q2_h1, _q2_h2, _q2_h3 = st.columns([4, 2, 1])
+    with _q2_h1:
+        st.markdown("## Quality Analysis v2")
+    with _q2_h2:
+        _q2_range = st.radio("Period", ["7d", "14d", "30d"], horizontal=True,
+                             index=0, label_visibility="collapsed", key="q2_range")
+    with _q2_h3:
+        if st.button("↺ Refresh", use_container_width=True, key="q2_ref"):
+            load_sessions.clear(); load_all_evals.clear(); st.rerun()
+
+    if sessions.empty:
+        st.info("No sessions found.")
+        st.stop()
+
+    _q2_days              = int(_q2_range[:-1])
+    _q2_now, _q2_cut, _q2_prev_cut = _v2_period_window(_q2_days)
+
+    _q2_s = sessions.copy()
+    _q2_s["started_at"] = pd.to_datetime(_q2_s["started_at"], errors="coerce", utc=True)
+    _q2_curr = _q2_s[_q2_s["started_at"] >= _q2_cut]
+    _q2_prev = _q2_s[(_q2_s["started_at"] >= _q2_prev_cut) & (_q2_s["started_at"] < _q2_cut)]
+    _q2_curr_ids = set(_q2_curr["id"].tolist())
+    _q2_prev_ids = set(_q2_prev["id"].tolist())
+
+    _q2_ae = load_all_evals()
+    if not _q2_ae.empty and not sessions.empty:
+        _q2_ae = _q2_ae.merge(
+            _q2_s[["id", "started_at"]].rename(columns={"id": "session_id"}),
+            on="session_id", how="left",
+        )
+
+    _q2_ae_curr = (
+        _q2_ae[_q2_ae["session_id"].isin(_q2_curr_ids)]
+        if not _q2_ae.empty else pd.DataFrame()
+    )
+    _q2_ae_prev = (
+        _q2_ae[_q2_ae["session_id"].isin(_q2_prev_ids)]
+        if not _q2_ae.empty else pd.DataFrame()
+    )
+
+    # Add incident count to sessions for impact bridge
+    _q2_s_for_bridge = _q2_curr.copy()
+    if not incidents.empty:
+        _q2_ic = incidents.groupby("session_id").size().reset_index(name="_inc_count")
+        _q2_s_for_bridge = _q2_s_for_bridge.merge(
+            _q2_ic.rename(columns={"session_id": "_qb_sid"}),
+            left_on="id", right_on="_qb_sid", how="left",
+        )
+        _q2_s_for_bridge["_inc_count"] = _q2_s_for_bridge["_inc_count"].fillna(0).astype(int)
+    else:
+        _q2_s_for_bridge["_inc_count"] = 0
+
+    _q2_tab_op, _q2_tab_sem = st.tabs([
+        "Operational Health", "Semantic Quality"
+    ])
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # TAB 1: OPERATIONAL HEALTH
+    # ══════════════════════════════════════════════════════════════════════════
+    with _q2_tab_op:
+        if _q2_ae_curr.empty:
+            st.info("No eval data available for this period.")
+        else:
+            _ops = _q2_ae_curr[~_q2_ae_curr["agent"].str.endswith("_quality", na=False)]
+
+            # ── 4 KPI Cards ───────────────────────────────────────────────────
+            _opr  = float(_ops["passed"].sum()) / len(_ops) * 100 if not _ops.empty else 0
+            _opr_prev = None
+            if not _q2_ae_prev.empty:
+                _ops_p = _q2_ae_prev[~_q2_ae_prev["agent"].str.endswith("_quality", na=False)]
+                _opr_prev = float(_ops_p["passed"].sum()) / len(_ops_p) * 100 if not _ops_p.empty else None
+
+            _fail_agents = 0
+            for _qag in ["market", "research", "risk", "orchestrator"]:
+                _sub = _ops[_ops["agent"] == _qag]
+                if not _sub.empty and float(_sub["passed"].sum()) / len(_sub) * 100 < 80:
+                    _fail_agents += 1
+
+            _top_fail_eval = "—"
+            if not _ops.empty:
+                _efr = _ops.groupby("eval_name")["passed"].mean()
+                if not _efr.empty:
+                    _top_fail_eval = _efr.idxmin().replace("_", " ").title()
+
+            _sess_fail_pct = 0.0
+            if not _q2_curr.empty and not _ops.empty:
+                _fail_sids = set(_ops[_ops["passed"] == False]["session_id"].tolist())
+                _sess_fail_pct = len(_fail_sids & _q2_curr_ids) / len(_q2_curr_ids) * 100
+
+            _ok1, _ok2, _ok3, _ok4 = st.columns(4)
+            with _ok1:
+                _opr_c = "green" if _opr >= 80 else "amber" if _opr >= 60 else "red"
+                st.markdown(signal_card_v2(
+                    "Overall Pass Rate", f"{_opr:.0f}%",
+                    _v2_delta_html(_opr, _opr_prev, higher_good=True),
+                    _opr_c, "all operational evals",
+                ), unsafe_allow_html=True)
+            with _ok2:
+                _fa_c = "green" if _fail_agents == 0 else "amber" if _fail_agents == 1 else "red"
+                st.markdown(signal_card_v2(
+                    "Failing Agents", str(_fail_agents),
+                    "", _fa_c, "agents with pass rate < 80%",
+                ), unsafe_allow_html=True)
+            with _ok3:
+                st.markdown(signal_card_v2(
+                    "Top Failing Eval", _top_fail_eval,
+                    "", "slate", "lowest pass rate in window",
+                ), unsafe_allow_html=True)
+            with _ok4:
+                _sf_c = "green" if _sess_fail_pct < 15 else "amber" if _sess_fail_pct < 40 else "red"
+                st.markdown(signal_card_v2(
+                    "Sessions with Failures", f"{_sess_fail_pct:.0f}%",
+                    "", _sf_c, "had at least one eval fail",
+                ), unsafe_allow_html=True)
+
+            st.markdown("<div style='margin:14px 0'></div>", unsafe_allow_html=True)
+
+            # ── Bubble Matrix ─────────────────────────────────────────────────
+            st.markdown("#### Agent × Eval Health")
+            st.caption(
+                "Bubble color = pass rate (green ≥80%, amber 60–80%, red <60%). "
+                "Bubble size = sessions evaluated (larger = more confident). "
+                "Click agent button below to expand sparklines."
+            )
+
+            _bubble_data = []
+            for (_bag, _bev), _bg in _ops.groupby(["agent", "eval_name"]):
+                _n   = len(_bg)
+                _pr  = float(_bg["passed"].sum()) / _n * 100
+                _bubble_data.append({
+                    "agent": _bag, "eval_name": _bev,
+                    "pass_rate": _pr, "n": _n,
+                })
+            _bdf = pd.DataFrame(_bubble_data)
+
+            if not _bdf.empty:
+                # Filter to specific agent if navigated from fleet strip
+                _agents_in_matrix = sorted(_bdf["agent"].unique())
+                _evals_in_matrix  = sorted(_bdf["eval_name"].unique())
+
+                # Encode pass rate to color
+                def _bubble_rgb(pct):
+                    if pct >= 80: return _V2_GREEN
+                    if pct >= 60: return _V2_AMBER
+                    return _V2_RED
+
+                _bdf["color"] = _bdf["pass_rate"].apply(_bubble_rgb)
+                # Size: map n to 10–30 range
+                _n_max = max(_bdf["n"].max(), 1)
+                _bdf["size"] = 10 + (_bdf["n"] / _n_max * 20).round(0)
+
+                _fig_bub = go.Figure()
+                _fig_bub.add_trace(go.Scatter(
+                    x=_bdf["eval_name"],
+                    y=_bdf["agent"],
+                    mode="markers+text",
+                    marker=dict(
+                        size=_bdf["size"],
+                        color=_bdf["color"],
+                        line=dict(width=1.5, color="#ffffff"),
+                    ),
+                    text=_bdf["pass_rate"].apply(lambda v: f"{v:.0f}%"),
+                    textposition="middle center",
+                    textfont=dict(size=9, color="#ffffff"),
+                    customdata=list(zip(_bdf["pass_rate"], _bdf["n"])),
+                    hovertemplate=(
+                        "<b>%{y} / %{x}</b><br>"
+                        "Pass rate: %{customdata[0]:.0f}%<br>"
+                        "Sessions: %{customdata[1]}"
+                        "<extra></extra>"
+                    ),
+                ))
+                _fig_bub.update_layout(
+                    height=max(280, 60 + len(_agents_in_matrix) * 60),
+                    paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
+                    font=dict(color="#1e293b", size=10),
+                    margin=dict(t=10, b=80, l=110, r=20),
+                    xaxis=dict(
+                        tickangle=-40, gridcolor="#f1f5f9",
+                        categoryarray=_evals_in_matrix,
+                    ),
+                    yaxis=dict(
+                        gridcolor="#f1f5f9",
+                        categoryarray=_agents_in_matrix,
+                    ),
+                )
+                st.plotly_chart(_fig_bub, use_container_width=True,
+                                config={"displayModeBar": False})
+
+                # Sparkline expand on agent click
+                _spark_agent = st.pills(
+                    "Expand agent sparklines",
+                    _agents_in_matrix,
+                    selection_mode="single",
+                    key="q2_spark_agent",
+                    label_visibility="collapsed",
+                )
+                if _spark_agent:
+                    st.markdown(f"**{_spark_agent.title()} — Eval trend (last sessions)**")
+                    _sp_data = _q2_ae[
+                        (_q2_ae["agent"] == _spark_agent) &
+                        ~_q2_ae["agent"].str.endswith("_quality", na=False)
+                    ].copy()
+                    if not _sp_data.empty and "started_at" in _sp_data.columns:
+                        _sp_data = _sp_data.sort_values("started_at")
+                        _sp_evals = sorted(_sp_data["eval_name"].unique())
+                        _sp_cols  = st.columns(min(3, len(_sp_evals)))
+                        for _si, _sev in enumerate(_sp_evals):
+                            _sp_sub = _sp_data[_sp_data["eval_name"] == _sev].copy()
+                            _sp_sub["_lbl"] = pd.to_datetime(
+                                _sp_sub["started_at"], errors="coerce"
+                            ).dt.strftime("%m-%d")
+                            _sp_pr = float(_sp_sub["passed"].sum()) / len(_sp_sub) * 100
+                            _sp_c  = _V2_GREEN if _sp_pr >= 80 else _V2_AMBER if _sp_pr >= 60 else _V2_RED
+                            with _sp_cols[_si % 3]:
+                                _fig_sp = go.Figure()
+                                _fig_sp.add_hline(y=0.80, line_dash="dot",
+                                                  line_color="#94a3b8", line_width=1)
+                                _fig_sp.add_trace(go.Scatter(
+                                    x=_sp_sub["_lbl"],
+                                    y=_sp_sub["passed"].astype(int),
+                                    mode="lines+markers",
+                                    line=dict(color=_sp_c, width=2, shape="hv"),
+                                    marker=dict(size=6, color=_sp_c),
+                                    hovertemplate="%{x}: %{y}<extra></extra>",
+                                ))
+                                _fig_sp.update_layout(
+                                    title=dict(
+                                        text=f"{_sev.replace('_',' ').title()}<br>"
+                                             f"<span style='font-size:11px'>{_sp_pr:.0f}% pass</span>",
+                                        font=dict(size=11), x=0,
+                                    ),
+                                    height=160,
+                                    paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
+                                    font=dict(color="#1e293b", size=9),
+                                    margin=dict(t=50, b=30, l=20, r=10),
+                                    yaxis=dict(range=[-0.1, 1.1], tickvals=[0, 1],
+                                               ticktext=["Fail", "Pass"],
+                                               gridcolor="#f1f5f9"),
+                                    xaxis=dict(gridcolor="#f1f5f9", tickangle=-30),
+                                    showlegend=False,
+                                )
+                                st.plotly_chart(_fig_sp, use_container_width=True,
+                                                config={"displayModeBar": False})
+
+            st.markdown("<div style='margin:14px 0'></div>", unsafe_allow_html=True)
+
+            # ── Impact Bridge — Operational ───────────────────────────────────
+            st.markdown("#### Impact Bridge")
+            st.caption(
+                "When these evals fail, what actually happens to outcomes? "
+                "Ranked by largest delta in 0-trade rate between pass and fail."
+            )
+            _bridge_op = compute_impact_bridge(_q2_ae_curr, _q2_s_for_bridge,
+                                               mode="operational", top_n=3)
+            if _bridge_op:
+                _bop_cols = st.columns(len(_bridge_op))
+                for _bi, _bitem in enumerate(_bridge_op):
+                    with _bop_cols[_bi]:
+                        st.markdown(_v2_impact_card(_bitem, "operational"),
+                                    unsafe_allow_html=True)
+            else:
+                st.info("Not enough data for impact correlation (need ≥2 sessions in each pass/fail group).")
+
+            with st.expander("Explore all eval correlations ▼"):
+                _all_bridge_op = compute_impact_bridge(_q2_ae_curr, _q2_s_for_bridge,
+                                                       mode="operational", top_n=None)
+                if _all_bridge_op:
+                    _exp_opts = [b["label"] for b in _all_bridge_op]
+                    _exp_sel  = st.selectbox("Select eval", _exp_opts, key="q2_op_explore")
+                    _exp_item = next((b for b in _all_bridge_op if b["label"] == _exp_sel), None)
+                    if _exp_item:
+                        st.markdown(_v2_impact_card(_exp_item, "operational"),
+                                    unsafe_allow_html=True)
+                else:
+                    st.info("No correlations available.")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # TAB 2: SEMANTIC QUALITY
+    # ══════════════════════════════════════════════════════════════════════════
+    with _q2_tab_sem:
+        _quals = _q2_ae_curr[
+            _q2_ae_curr["agent"].str.endswith("_quality", na=False)
+        ] if not _q2_ae_curr.empty else pd.DataFrame()
+
+        _qual_composites = _quals[
+            _quals["eval_name"] == "composite_score"
+        ] if not _quals.empty else pd.DataFrame()
+
+        if _qual_composites.empty:
+            st.info("No semantic quality data available for this period.")
+        else:
+            _q_agents = [
+                ("research_quality",     "Research",     "#f59e0b"),
+                ("risk_quality",         "Risk",         "#10b981"),
+                ("orchestrator_quality", "Orchestrator", "#3b82f6"),
+                ("session_quality",      "Session",      "#8b5cf6"),
+            ]
+
+            def _q2_trend(agent_key, n=5):
+                sub = _qual_composites[_qual_composites["agent"] == agent_key].copy()
+                if "started_at" in sub.columns:
+                    sub = sub.sort_values("started_at")
+                if len(sub) < 1:
+                    return None
+                scores = sub["score"].values
+                last_n = scores[-n:]
+                curr   = float(last_n[-1])
+                slp    = float(np.polyfit(np.arange(len(last_n)), last_n, 1)[0]) \
+                         if len(last_n) > 1 else 0.0
+                chg    = float(last_n[-1] - last_n[0]) if len(last_n) > 1 else 0.0
+                return {"current": curr, "slope": slp, "change": chg, "n": len(last_n)}
+
+            # ── Trend Direction Cards ─────────────────────────────────────────
+            _td_cols = st.columns(4)
+            for _tdi, (_qkey, _qlbl, _qclr) in enumerate(_q_agents):
+                _tdd = _q2_trend(_qkey)
+                with _td_cols[_tdi]:
+                    if not _tdd:
+                        st.markdown(
+                            f'<div style="background:#f8fafc;border:1px solid #e2e8f0;'
+                            f'border-radius:8px;padding:12px;text-align:center">'
+                            f'<div style="font-size:0.75rem;font-weight:600;color:{_qclr}">'
+                            f'{_qlbl}</div>'
+                            f'<div style="font-size:1.4rem;font-weight:700;color:#334155">—</div>'
+                            f'<div style="font-size:0.65rem;color:#94a3b8">no data</div>'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
+                        continue
+                    _sl = _tdd["slope"]
+                    if _sl > 0.01:
+                        _arr, _aclr, _atxt = "▲", "#16a34a", "improving"
+                        _cbg, _cbrd = "#f0fdf4", "#a7f3d0"
+                    elif _sl < -0.01:
+                        _arr, _aclr, _atxt = "▼", "#dc2626", "declining"
+                        _cbg, _cbrd = "#fef2f2", "#fca5a5"
+                    else:
+                        _arr, _aclr, _atxt = "→", "#64748b", "stable"
+                        _cbg, _cbrd = "#f8fafc", "#e2e8f0"
+                    _chg_str = f"{_tdd['change']:+.3f}"
+                    st.markdown(
+                        f'<div style="background:{_cbg};border:1px solid {_cbrd};'
+                        f'border-radius:8px;padding:12px 10px;text-align:center">'
+                        f'<div style="font-size:0.75rem;font-weight:600;color:{_qclr};'
+                        f'margin-bottom:4px">{_qlbl}</div>'
+                        f'<div style="font-size:1.4rem;font-weight:700;color:#0f172a">'
+                        f'{_tdd["current"]:.2f}</div>'
+                        f'<div style="font-size:1.0rem;color:{_aclr};font-weight:700;'
+                        f'margin:2px 0">{_arr} {_atxt}</div>'
+                        f'<div style="font-size:0.65rem;color:#64748b">'
+                        f'{_chg_str} over {_tdd["n"]} sessions</div>'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
+
+            st.markdown("<div style='margin:14px 0'></div>", unsafe_allow_html=True)
+
+            # ── Quality Drift Charts (3-col + system) ─────────────────────────
+            st.markdown("#### Quality Drift Over Time")
+            _q2_ae_ts = _q2_ae[
+                _q2_ae["agent"].str.endswith("_quality", na=False) &
+                (_q2_ae["eval_name"] == "composite_score")
+            ].copy() if not _q2_ae.empty else pd.DataFrame()
+
+            _inc_sid_set = (
+                set(incidents["session_id"].unique())
+                if not incidents.empty else set()
+            )
+
+            def _q2_drift_chart(agent_key, color, height=200):
+                sub = _q2_ae_ts[_q2_ae_ts["agent"] == agent_key].copy()
+                if sub.empty or "started_at" not in sub.columns:
+                    return None
+                sub = sub.sort_values("started_at")
+                sub["lbl"] = sub["started_at"].dt.strftime("%m-%d %H:%M")
+                xs = np.arange(len(sub), dtype=float)
+                sl, ic = np.polyfit(xs, sub["score"].values, 1) if len(sub) > 1 else (0, 0)
+                trend = (sl * xs + ic).tolist()
+                fig   = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=sub["lbl"], y=sub["score"],
+                    mode="lines+markers", name="score",
+                    line=dict(color=color, width=2),
+                    marker=dict(size=5, color=color),
+                    fill="tozeroy",
+                    fillcolor=color.replace(")", ",0.07)").replace("rgb", "rgba")
+                    if "rgb" in color else color + "12",
+                    hovertemplate="%{x}<br>Score: %{y:.3f}<extra></extra>",
+                ))
+                fig.add_trace(go.Scatter(
+                    x=sub["lbl"], y=trend, mode="lines",
+                    line=dict(color="#b45309", width=1.5, dash="dash"),
+                    hoverinfo="skip",
+                ))
+                fig.add_hline(y=0.60, line_dash="dot", line_color="#94a3b8",
+                              annotation_text="0.60", annotation_position="bottom right",
+                              annotation_font_size=9)
+                # Incident dots
+                inc_sub = sub[sub["session_id"].isin(_inc_sid_set)]
+                if not inc_sub.empty:
+                    fig.add_trace(go.Scatter(
+                        x=inc_sub["lbl"], y=inc_sub["score"],
+                        mode="markers",
+                        marker=dict(size=10, color=_V2_RED,
+                                    symbol="circle", line=dict(width=2, color="#ffffff")),
+                        hovertemplate="%{x}<br>Score: %{y:.3f}<br>Incident<extra></extra>",
+                    ))
+                fig.update_layout(
+                    height=height, paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
+                    font=dict(color="#1e293b", size=9),
+                    margin=dict(t=10, b=40, l=20, r=10),
+                    xaxis=dict(gridcolor="#e2e8f0", tickangle=-30),
+                    yaxis=dict(gridcolor="#e2e8f0", range=[0, 1.05]),
+                    showlegend=False,
+                )
+                return fig
+
+            _dc1, _dc2, _dc3 = st.columns(3)
+            for _dci, (_qkey, _qlbl, _qclr) in enumerate(
+                [_q_agents[0], _q_agents[1], _q_agents[2]]
+            ):
+                with [_dc1, _dc2, _dc3][_dci]:
+                    st.markdown(
+                        f'<span style="font-size:0.9rem;font-weight:700;color:{_qclr}">'
+                        f'● {_qlbl}</span>',
+                        unsafe_allow_html=True,
+                    )
+                    _fig_dc = _q2_drift_chart(_qkey, _qclr)
+                    if _fig_dc:
+                        st.plotly_chart(_fig_dc, use_container_width=True,
+                                        config={"displayModeBar": False})
+                    else:
+                        st.caption("No data")
+
+            # System composite
+            _sys = _q2_ae_ts.copy()
+            if not _sys.empty and "started_at" in _sys.columns:
+                _sys = (
+                    _sys.groupby(["session_id", "started_at"])["score"]
+                    .mean().reset_index().sort_values("started_at")
+                )
+                _sys["lbl"] = _sys["started_at"].dt.strftime("%m-%d %H:%M")
+                _fig_sys = _q2_drift_chart("session_quality", "#8b5cf6", height=160)
+                st.markdown(
+                    '<span style="font-size:0.9rem;font-weight:700;color:#8b5cf6">'
+                    '● Session Composite</span>',
+                    unsafe_allow_html=True,
+                )
+                if _fig_sys:
+                    st.plotly_chart(_fig_sys, use_container_width=True,
+                                    config={"displayModeBar": False})
+
+            st.markdown("<div style='margin:14px 0'></div>", unsafe_allow_html=True)
+
+            # ── Radar Charts ──────────────────────────────────────────────────
+            st.markdown("#### Agent Quality Profile (Radar)")
+            st.caption(
+                "Solid = current period · Dashed = previous period · "
+                "Shrinking shape = quality degrading · Collapsed spoke = specific dimension failing"
+            )
+
+            _RADAR_DIMS = {
+                "research_quality":     ["data_grounding", "thesis_coherence", "actionability",
+                                         "catalyst_specificity", "volatility_accounting",
+                                         "risk_acknowledgment"],
+                "risk_quality":         ["research_consistency", "parameter_completeness",
+                                         "position_sizing_rationale", "stop_loss_quality"],
+                "orchestrator_quality": ["decision_consistency", "resolution_completeness",
+                                         "reasoning_transparency", "upstream_integration",
+                                         "pipeline_coherence", "reasoning_chain"],
+                "session_quality":      ["pipeline_completion", "cost_efficiency",
+                                         "research_conversion", "proposal_acceptance"],
+            }
+
+            def _radar_values(ae_df, agent_key):
+                dims = _RADAR_DIMS.get(agent_key, [])
+                sub  = ae_df[
+                    (ae_df["agent"] == agent_key) &
+                    (ae_df["eval_name"].isin(dims))
+                ]
+                if sub.empty:
+                    return dims, [0.0] * len(dims)
+                vals = [
+                    float(sub[sub["eval_name"] == d]["score"].mean())
+                    if not sub[sub["eval_name"] == d].empty else 0.0
+                    for d in dims
+                ]
+                return dims, vals
+
+            _rad_fig = make_subplots(
+                rows=1, cols=4,
+                specs=[[{"type": "polar"}] * 4],
+                subplot_titles=["Research", "Risk", "Orchestrator", "Session"],
+            )
+
+            for _ri, (_qkey, _qlbl, _qclr) in enumerate(_q_agents):
+                _dims, _vals_c = _radar_values(_q2_ae_curr, _qkey)
+                _dims_p, _vals_p = _radar_values(_q2_ae_prev, _qkey) if not _q2_ae_prev.empty else (_dims, [])
+                if not _dims:
+                    continue
+                _labels = [d.replace("_", " ").title() for d in _dims]
+                _labels_closed = _labels + [_labels[0]]
+                _vals_closed   = _vals_c + [_vals_c[0]]
+
+                _rad_fig.add_trace(
+                    go.Scatterpolar(
+                        r=_vals_closed, theta=_labels_closed,
+                        fill="toself",
+                        fillcolor=_qclr + "22",
+                        line=dict(color=_qclr, width=2),
+                        name=f"{_qlbl} (current)",
+                        hovertemplate="%{theta}: %{r:.2f}<extra></extra>",
+                    ),
+                    row=1, col=_ri + 1,
+                )
+                if _vals_p and len(_vals_p) == len(_dims):
+                    _vals_p_closed = _vals_p + [_vals_p[0]]
+                    _rad_fig.add_trace(
+                        go.Scatterpolar(
+                            r=_vals_p_closed, theta=_labels_closed,
+                            line=dict(color="#94a3b8", width=1.5, dash="dash"),
+                            fill="none",
+                            name=f"{_qlbl} (prev)",
+                            hovertemplate="%{theta}: %{r:.2f}<extra></extra>",
+                        ),
+                        row=1, col=_ri + 1,
+                    )
+                # Threshold ring at 0.60
+                _th_r = [0.60] * (len(_dims) + 1)
+                _rad_fig.add_trace(
+                    go.Scatterpolar(
+                        r=_th_r, theta=_labels_closed,
+                        line=dict(color="#e2e8f0", width=1, dash="dot"),
+                        fill="none", hoverinfo="skip",
+                        showlegend=False,
+                    ),
+                    row=1, col=_ri + 1,
+                )
+
+            _rad_fig.update_polars(
+                radialaxis=dict(range=[0, 1], tickvals=[0.2, 0.4, 0.6, 0.8, 1.0],
+                                tickfont=dict(size=8), gridcolor="#f1f5f9"),
+                angularaxis=dict(tickfont=dict(size=8)),
+            )
+            _rad_fig.update_layout(
+                height=340,
+                paper_bgcolor="#f8fafc",
+                font=dict(color="#1e293b", size=9),
+                margin=dict(t=40, b=10, l=10, r=10),
+                showlegend=False,
+            )
+            st.plotly_chart(_rad_fig, use_container_width=True,
+                            config={"displayModeBar": False})
+
+            st.markdown("<div style='margin:14px 0'></div>", unsafe_allow_html=True)
+
+            # ── Impact Bridge — Semantic ──────────────────────────────────────
+            st.markdown("#### Impact Bridge")
+            st.caption(
+                "When quality drops below 0.60, what happens to outcomes? "
+                "Ranked by largest delta in 0-trade rate."
+            )
+            _bridge_sem = compute_impact_bridge(
+                _q2_ae_curr, _q2_s_for_bridge, mode="semantic", top_n=3
+            )
+            if _bridge_sem:
+                _bsem_cols = st.columns(len(_bridge_sem))
+                for _bi, _bitem in enumerate(_bridge_sem):
+                    with _bsem_cols[_bi]:
+                        st.markdown(_v2_impact_card(_bitem, "semantic"),
+                                    unsafe_allow_html=True)
+            else:
+                st.info("Not enough data for impact correlation "
+                        "(need ≥2 sessions above and below 0.60 threshold per agent).")
+
+            with st.expander("Explore all quality correlations ▼"):
+                _all_bridge_sem = compute_impact_bridge(
+                    _q2_ae_curr, _q2_s_for_bridge, mode="semantic", top_n=None
+                )
+                if _all_bridge_sem:
+                    _sexp_opts = [b["label"] for b in _all_bridge_sem]
+                    _sexp_sel  = st.selectbox("Select agent", _sexp_opts, key="q2_sem_explore")
+                    _sexp_item = next((b for b in _all_bridge_sem if b["label"] == _sexp_sel), None)
+                    if _sexp_item:
+                        st.markdown(_v2_impact_card(_sexp_item, "semantic"),
+                                    unsafe_allow_html=True)
+                else:
+                    st.info("No correlations available.")
+
+            st.markdown("<div style='margin:14px 0'></div>", unsafe_allow_html=True)
+
+            # ── Session Detail AgGrid ─────────────────────────────────────────
+            with st.expander("**Session Detail**  ·  Quality scores per session", expanded=False):
+                # Reuse the fully-fixed Session Detail from Quality v1
+                # (same logic — pivot quality composites, build grid, pipeline strip)
+                _q2d_composites = _qual_composites[
+                    ["session_id", "agent", "score"]
+                ].copy()
+                if not _q2d_composites.empty:
+                    _q2d_pivot = (
+                        _q2d_composites
+                        .pivot_table(index="session_id", columns="agent",
+                                     values="score", aggfunc="first")
+                        .reset_index()
+                    )
+                    _q2d_pivot.columns.name = None
+                    _q2d_pivot = _q2d_pivot.rename(columns={"session_id": "_q2piv_sid"})
+                else:
+                    _q2d_pivot = pd.DataFrame(columns=["_q2piv_sid"])
+
+                _q2d_cols = [c for c in ["id", "started_at", "terminal_reason",
+                    "total_cost_usd", "trades_executed", "agents_invoked"]
+                    if c in _q2_s.columns]
+                _q2d_sess = _q2_s.sort_values("started_at", ascending=False)[_q2d_cols].copy()
+                if "started_at" in _q2d_sess.columns:
+                    _q2d_sess["label"] = pd.to_datetime(
+                        _q2d_sess["started_at"], errors="coerce"
+                    ).dt.strftime("%m-%d %H:%M")
+
+                _q2d_merged = _q2d_sess.merge(
+                    _q2d_pivot, left_on="id", right_on="_q2piv_sid", how="left"
+                )
+                _q2d_merged = _q2d_merged.drop(columns=["_q2piv_sid"], errors="ignore")
+
+                if not incidents.empty:
+                    _q2d_inc_c = (incidents.groupby("session_id").size()
+                                  .reset_index(name="_inc_count")
+                                  .rename(columns={"session_id": "_q2inc_sid"}))
+                    _q2d_merged = _q2d_merged.merge(
+                        _q2d_inc_c, left_on="id", right_on="_q2inc_sid", how="left"
+                    )
+                    _q2d_merged = _q2d_merged.drop(columns=["_q2inc_sid"], errors="ignore")
+                    _q2d_merged["_inc_count"] = _q2d_merged["_inc_count"].fillna(0).astype(int)
+                else:
+                    _q2d_merged["_inc_count"] = 0
+
+                def _q2score(row, col):
+                    v = row.get(col)
+                    return round(float(v), 2) if v is not None and not pd.isna(v) else None
+
+                _q2d_rows = []
+                for _, _q2r in _q2d_merged.iterrows():
+                    _q2d_rows.append({
+                        "_id":          _q2r.get("id"),
+                        "_has_inc":     int(_q2r.get("_inc_count", 0)) > 0,
+                        "Session":      _q2r.get("label", "—"),
+                        "Research":     _q2score(_q2r, "research_quality"),
+                        "Risk":         _q2score(_q2r, "risk_quality"),
+                        "Orchestrator": _q2score(_q2r, "orchestrator_quality"),
+                        "Session Q":    _q2score(_q2r, "session_quality"),
+                        "Exit":         str(_q2r.get("terminal_reason") or ""),
+                        "Incidents":    int(_q2r.get("_inc_count", 0)),
+                    })
+                _q2d_tbl = pd.DataFrame(_q2d_rows)
+
+                if _q2d_tbl.empty:
+                    st.info("No session data.")
+                else:
+                    _q2_score_cell = JsCode("""
+                        function(p) {
+                            var v = p.value;
+                            if (v === null || v === undefined) return {};
+                            if (v >= 0.60) return {color:'#166534',fontWeight:'600'};
+                            if (v >= 0.40) return {color:'#92400e',fontWeight:'600'};
+                            return {color:'#991b1b',fontWeight:'700'};
+                        }
+                    """)
+                    _q2d_PAGE = 10
+                    _q2d_gb   = GridOptionsBuilder.from_dataframe(_q2d_tbl)
+                    _q2d_gb.configure_default_column(suppressMenu=True, sortable=False,
+                                                     resizable=False, filter=False)
+                    _q2d_gb.configure_column("_id",         hide=True)
+                    _q2d_gb.configure_column("_has_inc",    hide=True)
+                    _q2d_gb.configure_column("Session",      width=110, suppressSizeToFit=True)
+                    _q2d_gb.configure_column("Research",     width=90,  suppressSizeToFit=True,
+                                             cellStyle=_q2_score_cell)
+                    _q2d_gb.configure_column("Risk",         width=70,  suppressSizeToFit=True,
+                                             cellStyle=_q2_score_cell)
+                    _q2d_gb.configure_column("Orchestrator", width=110, suppressSizeToFit=True,
+                                             cellStyle=_q2_score_cell)
+                    _q2d_gb.configure_column("Session Q",    width=90,  suppressSizeToFit=True,
+                                             cellStyle=_q2_score_cell)
+                    _q2d_gb.configure_column("Exit", flex=1, cellStyle=JsCode("""
+                        function(p) {
+                            var v = p.value || '';
+                            if (v==='converged') return {color:'#166534',fontWeight:'600'};
+                            if (v==='no_viable_proposals'||v==='all_rejected')
+                                return {color:'#c2410c',fontWeight:'600'};
+                            if (v==='watchdog_timeout'||v==='timeout')
+                                return {color:'#991b1b',fontWeight:'700'};
+                            if (v==='eod_complete'||v==='superseded') return {color:'#475569'};
+                        }
+                    """))
+                    _q2d_gb.configure_column("Incidents", width=80, suppressSizeToFit=True)
+                    _q2d_gb.configure_selection("single", use_checkbox=False)
+                    _q2d_gb.configure_grid_options(
+                        pagination=True,
+                        paginationPageSize=_q2d_PAGE,
+                        suppressPaginationPanel=len(_q2d_tbl) <= _q2d_PAGE,
+                        getRowStyle=JsCode("""
+                            function(p){if(p.data._has_inc)
+                                return{background:'#fee2e2',color:'#7f1d1d'};}
+                        """),
+                        rowHeight=34, headerHeight=36, suppressHorizontalScroll=True,
+                    )
+                    _q2d_resp = AgGrid(
+                        _q2d_tbl,
+                        gridOptions=_q2d_gb.build(),
+                        update_mode=GridUpdateMode.SELECTION_CHANGED,
+                        height=max(120, min(560, 56 + min(len(_q2d_tbl), _q2d_PAGE) * 34 +
+                                           (0 if len(_q2d_tbl) <= _q2d_PAGE else 60))),
+                        use_container_width=True, allow_unsafe_jscode=True,
+                        fit_columns_on_grid_load=True, theme="streamlit",
+                    )
+                    _q2d_sel = _q2d_resp.selected_rows
+                    if _q2d_sel is not None and len(_q2d_sel) > 0:
+                        _q2d_row = (_q2d_sel.iloc[0] if isinstance(_q2d_sel, pd.DataFrame)
+                                    else _q2d_sel[0])
+                        _q2d_sid = _q2d_row["_id"]
+                        _q2d_sf  = sessions[sessions["id"] == _q2d_sid]
+                        if not _q2d_sf.empty:
+                            _q2d_sr   = _q2d_sf.iloc[0]
+                            _q2d_strip = pipeline_strip(
+                                _q2d_sid, traces_all, load_all_evals(),
+                                session_agents=_q2d_sr.get("agents_invoked") or [],
+                            )
+                            st.markdown(
+                                f'<div style="margin-top:8px;border-left:3px solid #8b5cf6;'
+                                f'border-radius:0 8px 8px 0;padding:12px 16px 20px;'
+                                f'background:#f8fafc;overflow:visible">'
+                                f'{_q2d_strip}</div>',
+                                unsafe_allow_html=True,
+                            )
