@@ -2126,6 +2126,22 @@ if page == "Ledger":
         suppressMenu=True, sortable=True, resizable=False, filter=False,
     )
     _gb.configure_column("_id", hide=True, suppressColumnsToolPanel=True)
+    _gb.configure_column("Exit Reason", cellStyle=JsCode("""
+        function(params) {
+            var v = params.value || '';
+            if (v === 'converged')
+                return {'color': '#166534', 'fontWeight': '600'};
+            if (v === 'skip_propagated' || v === 'eod_complete' || v === 'superseded')
+                return {'color': '#475569'};
+            if (v === 'no_viable_candidates' || v === 'caution_no_retry')
+                return {'color': '#92400e', 'fontWeight': '600'};
+            if (v === 'no_viable_proposals' || v === 'structural_block' || v === 'all_rejected')
+                return {'color': '#c2410c', 'fontWeight': '600'};
+            if (v === 'watchdog_timeout' || v === 'timeout')
+                return {'color': '#991b1b', 'fontWeight': '700'};
+            return {};
+        }
+    """))
     _gb.configure_selection("single", use_checkbox=False)
     _gb.configure_grid_options(
         getRowStyle=JsCode("""
