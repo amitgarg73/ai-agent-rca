@@ -1790,15 +1790,20 @@ if page == "Ledger":
             unsafe_allow_html=True,
         )
 
-    c1, c2, c3, c4, c5 = st.columns(5)
+    _cost_per_trade = total_cost / total_trade if total_trade > 0 else 0
+    _cpt_color = "#ef4444" if _cost_per_trade > 100 else ("#f59e0b" if _cost_per_trade > 50 else "#10b981")
+
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.markdown(kpi("Total Sessions", str(len(sessions))), unsafe_allow_html=True)
     c2.markdown(kpi("Total Spend", f"${total_cost:.2f}"), unsafe_allow_html=True)
     c3.markdown(kpi("Trades Executed", str(int(total_trade))), unsafe_allow_html=True)
-    c4.markdown(kpi("Wasted Sessions",
+    _cpt_val = f'<span style="color:{_cpt_color}">${_cost_per_trade:.2f}</span>' if total_trade > 0 else "—"
+    c4.markdown(kpi("Cost / Trade", _cpt_val), unsafe_allow_html=True)
+    c5.markdown(kpi("Wasted Sessions",
         f"{len(wasted)} · ${wasted_cost:.2f}",
         f"{wasted_pct:.0f}% of spend" if total_cost else ""),
         unsafe_allow_html=True)
-    c5.markdown(kpi("Incidents Detected", str(inc_count)), unsafe_allow_html=True)
+    c6.markdown(kpi("Incidents Detected", str(inc_count)), unsafe_allow_html=True)
 
     st.divider()
 
@@ -1966,6 +1971,79 @@ if page == "Ledger":
                         'Select an agent below the chart</div>',
                         unsafe_allow_html=True,
                     )
+
+        st.divider()
+
+    # ── Wasted vs Productive cost split ──────────────────────────────────────
+    if sessions["cost_breakdown"].notna().any():
+        st.markdown("#### Where Wasted Spend Goes")
+        st.caption("Agent cost split: sessions that executed trades vs. sessions that burned budget with 0 trades.")
+
+        _productive = sessions[sessions["trades_executed"] > 0]
+
+        def _agent_cost_sum(subset: pd.DataFrame) -> dict[str, float]:
+            totals: dict[str, float] = defaultdict(float)
+            for _, _r in subset.iterrows():
+                _bd = _r.get("cost_breakdown") or {}
+                if not isinstance(_bd, dict):
+                    continue
+                for _k, _v in _bd.items():
+                    if isinstance(_v, dict):
+                        _norm = "research" if _k.startswith("research_") else _k
+                        totals[_norm] += _v.get("cost_usd", 0)
+            return dict(totals)
+
+        _wasted_costs     = _agent_cost_sum(wasted)
+        _productive_costs = _agent_cost_sum(_productive)
+        _split_agents     = sorted(set(list(_wasted_costs.keys()) | set(_productive_costs.keys())))
+
+        if _split_agents:
+            _fig_split = go.Figure()
+            _fig_split.add_trace(go.Bar(
+                name="Wasted (0 trades)",
+                x=_split_agents,
+                y=[_wasted_costs.get(a, 0) for a in _split_agents],
+                marker_color="#ef4444",
+                text=[f"${_wasted_costs.get(a, 0):.4f}" for a in _split_agents],
+                textposition="outside",
+            ))
+            _fig_split.add_trace(go.Bar(
+                name="Productive",
+                x=_split_agents,
+                y=[_productive_costs.get(a, 0) for a in _split_agents],
+                marker_color="#10b981",
+                text=[f"${_productive_costs.get(a, 0):.4f}" for a in _split_agents],
+                textposition="outside",
+            ))
+            _fig_split.update_layout(
+                barmode="group",
+                yaxis_title="Cost USD",
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                font_color="#1e293b",
+                height=300,
+                margin=dict(t=30, b=10, l=0, r=0),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            )
+            st.plotly_chart(_fig_split, use_container_width=True)
+
+            # Per-agent "% wasted" callout cards
+            _card_cols = st.columns(min(len(_split_agents), 4))
+            for _i, _ag in enumerate(_split_agents[:4]):
+                _wc = _wasted_costs.get(_ag, 0)
+                _pc = _productive_costs.get(_ag, 0)
+                _tot = _wc + _pc
+                _wpct = round(_wc / _tot * 100) if _tot > 0 else 0
+                _clr = "#ef4444" if _wpct > 50 else ("#f59e0b" if _wpct > 25 else "#10b981")
+                _card_cols[_i].markdown(
+                    f'<div style="padding:10px 14px;background:#f8fafc;border-radius:8px;'
+                    f'border-left:3px solid {_clr};margin-top:4px">'
+                    f'<div style="font-size:0.72rem;color:#94a3b8;text-transform:uppercase">{_ag}</div>'
+                    f'<div style="font-size:1.3rem;font-weight:700;color:{_clr}">{_wpct}% wasted</div>'
+                    f'<div style="font-size:0.8rem;color:#64748b">${_wc:.4f} of ${_tot:.4f}</div>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
 
         st.divider()
 
