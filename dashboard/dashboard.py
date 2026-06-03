@@ -2301,29 +2301,19 @@ if page == "Ledger":
     tbl["Session"] = tbl["Session"].dt.strftime("%m-%d %H:%M")
     tbl["Cost ($)"] = tbl["Cost ($)"].map("${:.4f}".format)
 
-    _PAGE_SIZE = 20
-    if "ledger_page" not in st.session_state:
-        st.session_state.ledger_page = 0
-    if "ledger_selected_id" not in st.session_state:
-        st.session_state.ledger_selected_id = None
-    # Reset to page 0 when filters change
-    _filter_key = (_only_incidents, _only_wasted)
-    if st.session_state.get("_ledger_filter_key") != _filter_key:
-        st.session_state.ledger_page = 0
-        st.session_state["_ledger_filter_key"] = _filter_key
-    _total_pages = max(1, (len(tbl) + _PAGE_SIZE - 1) // _PAGE_SIZE)
-    st.session_state.ledger_page = min(st.session_state.ledger_page, _total_pages - 1)
-    _p = st.session_state.ledger_page
+    _LDG_PAGE = 10
+    _full_tbl = tbl.copy()
+    _full_tbl.insert(0, "_id", display["id"].values)
+    _full_tbl.insert(1, "_has_inc", (display["Incidents"] > 0).values)
+    _full_tbl.insert(2, "_zero_trade", (display["trades_executed"] == 0).values)
 
-    _page_ids  = display["id"].iloc[_p * _PAGE_SIZE : (_p + 1) * _PAGE_SIZE].reset_index(drop=True)
-    _page_tbl  = tbl.iloc[_p * _PAGE_SIZE : (_p + 1) * _PAGE_SIZE].reset_index(drop=True).copy()
-    _page_tbl.insert(0, "_id", _page_ids.values)
-
-    _gb = GridOptionsBuilder.from_dataframe(_page_tbl)
+    _gb = GridOptionsBuilder.from_dataframe(_full_tbl)
     _gb.configure_default_column(
         suppressMenu=True, sortable=True, resizable=False, filter=False,
     )
-    _gb.configure_column("_id", hide=True, suppressColumnsToolPanel=True)
+    _gb.configure_column("_id",         hide=True)
+    _gb.configure_column("_has_inc",    hide=True)
+    _gb.configure_column("_zero_trade", hide=True)
     _gb.configure_column("Exit Reason", cellStyle=JsCode("""
         function(params) {
             var v = params.value || '';
@@ -2342,12 +2332,13 @@ if page == "Ledger":
     """))
     _gb.configure_selection("single", use_checkbox=False)
     _gb.configure_grid_options(
+        pagination=True,
+        paginationPageSize=_LDG_PAGE,
+        suppressPaginationPanel=len(_full_tbl) <= _LDG_PAGE,
         getRowStyle=JsCode("""
             function(params) {
-                if (params.data.Incidents > 0)
-                    return {'background': '#fee2e2', 'color': '#7f1d1d'};
-                if (parseInt(params.data.Trades) === 0)
-                    return {'background': '#fef9c3', 'color': '#713f12'};
+                if (params.data._has_inc)    return {'background':'#fee2e2','color':'#7f1d1d'};
+                if (params.data._zero_trade) return {'background':'#fef9c3','color':'#713f12'};
             }
         """),
         rowHeight=34,
@@ -2355,57 +2346,140 @@ if page == "Ledger":
         suppressHorizontalScroll=True,
     )
     _resp = AgGrid(
-        _page_tbl,
+        _full_tbl,
         gridOptions=_gb.build(),
         update_mode=GridUpdateMode.SELECTION_CHANGED,
-        height=250,
+        height=min(600, 56 + min(len(_full_tbl), _LDG_PAGE) * 34 + (0 if len(_full_tbl) <= _LDG_PAGE else 60)),
         use_container_width=True,
         allow_unsafe_jscode=True,
         fit_columns_on_grid_load=True,
         theme="streamlit",
     )
+    st.markdown(
+        f"<div style='font-size:0.8rem;color:#94a3b8;margin-top:4px'>"
+        f"{len(_full_tbl)} sessions · Red = incident · Amber = 0 trades · "
+        "Click a row for pipeline detail · Pipeline nodes: green = passed · red = failed · "
+        "slate = ran, not evaluated · hollow = did not run</div>",
+        unsafe_allow_html=True,
+    )
+
     _sel = _resp.selected_rows
+    _dsid = None
     if _sel is not None and len(_sel) > 0:
-        _row = _sel.iloc[0] if hasattr(_sel, "iloc") else _sel[0]
-        st.session_state.ledger_selected_id = _row["_id"]
+        _ldg_row = _sel.iloc[0] if isinstance(_sel, pd.DataFrame) else _sel[0]
+        _dsid = _ldg_row["_id"]
 
-    _ca, _cb, _cc = st.columns([1, 3, 1])
-    with _ca:
-        if st.button("← Prev", disabled=(_p == 0), key="ledger_prev"):
-            st.session_state.ledger_page -= 1
-            st.session_state.ledger_selected_id = None
-            st.rerun()
-    with _cb:
-        st.caption(
-            f"Page {_p + 1} of {_total_pages} · {len(tbl)} sessions · "
-            "Red = incidents · Amber = 0 trades · Click a row for details"
-        )
-    with _cc:
-        if st.button("Next →", disabled=(_p >= _total_pages - 1), key="ledger_next"):
-            st.session_state.ledger_page += 1
-            st.session_state.ledger_selected_id = None
-            st.rerun()
-
-    # ── Inline session detail (row-click driven) ──────────────────────────────
-    _dsid = st.session_state.ledger_selected_id
+    # ── Pipeline strip detail panel (row-click driven) ───────────────────────
     if _dsid:
-        st.divider()
-        st.markdown("#### Session Detail")
-        _drow = sessions[sessions["id"] == _dsid].iloc[0].to_dict()
+        _drow_full = sessions[sessions["id"] == _dsid]
+        if not _drow_full.empty:
+            _drow = _drow_full.iloc[0]
+            _d_cost   = float(_drow.get("total_cost_usd") or 0)
+            _d_trades = int(_drow.get("trades_executed") or 0)
+            _d_dur    = int((_drow.get("total_latency_ms") or 0) / 1000)
+            _d_tok    = int((_drow.get("total_tokens_input") or 0) + (_drow.get("total_tokens_output") or 0))
+            _d_exit   = str(_drow.get("terminal_reason") or "")
+            _d_date   = pd.to_datetime(_drow.get("started_at"), errors="coerce", utc=True)
+            _d_date_s = _d_date.strftime("%Y-%m-%d %H:%M UTC") if pd.notna(_d_date) else "-"
+            _d_agents = _drow.get("agents_invoked") or []
 
-        dc1, dc2, dc3, dc4 = st.columns(4)
-        dc1.metric("Cost",     f"${_drow['total_cost_usd']:.4f}")
-        dc2.metric("Duration", f"{int(_drow['total_latency_ms']//1000)}s")
-        dc3.metric("Tokens",   f"{int(_drow['total_tokens_input']+_drow['total_tokens_output']):,}")
-        dc4.metric("Trades",   str(int(_drow["trades_executed"])))
+            _d_inc    = incidents[incidents["session_id"] == _dsid] if not incidents.empty else pd.DataFrame()
+            _d_has_inc = not _d_inc.empty
+            _d_accent  = "#ef4444" if _d_has_inc else "#f59e0b" if _d_trades == 0 else "#3b82f6"
 
-        if _drow.get("terminal_reason"):
-            st.info(f"Exit reason: {_drow['terminal_reason']}")
+            _d_strip = pipeline_strip(_dsid, traces_all, load_all_evals(), session_agents=_d_agents)
+
+            _d_ec_fg, _d_ec_bg = {
+                "converged":           ("#166534", "#dcfce7"),
+                "eod_complete":        ("#334155", "#f1f5f9"),
+                "superseded":          ("#334155", "#f1f5f9"),
+                "no_viable_proposals": ("#c2410c", "#fff7ed"),
+                "all_rejected":        ("#c2410c", "#fff7ed"),
+                "watchdog_timeout":    ("#991b1b", "#fee2e2"),
+                "timeout":             ("#991b1b", "#fee2e2"),
+            }.get(_d_exit, ("#475569", "#f8fafc"))
+
+            _d_exit_exp = {
+                "converged":           "All agents completed. Orchestrator found viable proposals and executed trades.",
+                "eod_complete":        "End-of-day session. Open positions closed, P&L reconciled.",
+                "no_viable_proposals": "Market conditions did not support any trades. Pipeline stopped at Market agent, saving Research/Risk/Orchestrator cost.",
+                "all_rejected":        "Research and Risk ran but all proposals were rejected against risk criteria. No trades placed.",
+                "superseded":          "Session replaced by a newer run.",
+                "watchdog_timeout":    "Session exceeded the watchdog time limit and was force-shut down.",
+                "timeout":             "An agent or tool call exceeded its time limit. Session aborted.",
+            }.get(_d_exit, "")
+
+            _d_eff_html = ""
+            if _d_exit in {"no_viable_proposals", "all_rejected"}:
+                _full_runs = sessions[
+                    sessions["terminal_reason"].isin(["converged", "eod_complete"])
+                ]["total_cost_usd"].dropna()
+                if not _full_runs.empty:
+                    _avg_full = _full_runs.mean()
+                    _saved    = max(0.0, _avg_full - _d_cost)
+                    if _saved > 0.0001:
+                        _d_eff_html = (
+                            f'<div style="display:inline-flex;align-items:center;gap:6px;'
+                            f'background:#f0fdf4;border:1px solid #86efac;border-radius:6px;'
+                            f'padding:5px 10px;margin-top:8px;font-size:0.78rem;color:#166534">'
+                            f'<strong>Pipeline efficiency</strong>&nbsp;'
+                            f'Stopped at Market — saved ~<strong>${_saved:.4f}</strong> vs avg full run '
+                            f'(${_avg_full:.4f}).</div>'
+                        )
+
+            _d_inc_html = ""
+            for _, _ir in _d_inc.iterrows():
+                _sev = str(_ir.get("severity") or "").lower()
+                _ibg = "#fee2e2" if _sev == "critical" else "#fef9c3"
+                _ifg = "#7f1d1d" if _sev == "critical" else "#713f12"
+                _d_inc_html += (
+                    f'<div style="background:{_ibg};color:{_ifg};border-radius:6px;'
+                    f'padding:6px 10px;font-size:0.78rem;margin-top:4px;display:flex;'
+                    f'align-items:center;justify-content:space-between">'
+                    f'<span><strong>{_sev.upper()}</strong> · {_ir.get("pattern_name","")} '
+                    + (f'— {str(_ir.get("root_cause",""))[:80]}' if _ir.get("root_cause") else "")
+                    + f'</span></div>'
+                )
+
+            _d_legend = """
+<div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:10px;padding-top:8px;
+            border-top:1px solid #e2e8f0;font-size:0.72rem;color:#64748b;align-items:center">
+  <span style="font-weight:600;color:#94a3b8;letter-spacing:0.04em">NODES</span>
+  <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#10b981;margin-right:4px;vertical-align:middle"></span>Passed evals</span>
+  <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#f59e0b;margin-right:4px;vertical-align:middle"></span>Partial pass</span>
+  <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#ef4444;margin-right:4px;vertical-align:middle"></span>Failed evals</span>
+  <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#475569;margin-right:4px;vertical-align:middle"></span>Ran, not evaluated</span>
+  <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;border:2px solid #cbd5e1;background:#e2e8f0;margin-right:4px;vertical-align:middle"></span>Did not run</span>
+</div>"""
+
+            st.markdown(f"""
+<div style="margin-top:8px;border-left:4px solid {_d_accent};border-radius:0 8px 8px 0;
+            padding:12px 16px 20px 14px;background:#f8fafc;border-top:1px solid #e2e8f0;
+            border-right:1px solid #e2e8f0;border-bottom:1px solid #e2e8f0;overflow:visible">
+  <div style="font-size:0.7rem;color:#94a3b8;margin-bottom:8px;letter-spacing:0.03em">
+    PIPELINE DETAIL &nbsp;·&nbsp; {_d_date_s}{"&nbsp;&nbsp;<span style='color:#ef4444'>Red row = incident flagged, not a pipeline failure</span>" if _d_has_inc and _d_exit in ("converged","eod_complete") else ""}
+  </div>
+  <div style="display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap;overflow:visible;padding-bottom:4px">
+    {_d_strip}
+    <div style="display:flex;gap:16px;flex-wrap:wrap;margin-left:8px;border-left:1px solid #e2e8f0;padding-left:16px">
+      <span style="font-size:0.82rem"><strong style="color:#64748b">Cost</strong>&nbsp;${_d_cost:.4f}</span>
+      <span style="font-size:0.82rem"><strong style="color:#64748b">Trades</strong>&nbsp;{_d_trades}</span>
+      <span style="font-size:0.82rem"><strong style="color:#64748b">Duration</strong>&nbsp;{_d_dur}s</span>
+      <span style="font-size:0.82rem"><strong style="color:#64748b">Tokens</strong>&nbsp;{_d_tok:,}</span>
+      <span style="background:{_d_ec_bg};color:{_d_ec_fg};border-radius:4px;padding:2px 8px;
+                  font-size:0.75rem;font-weight:600">{_d_exit or "unknown"}</span>
+    </div>
+  </div>
+  {"<div style='font-size:0.78rem;color:#475569;margin-top:8px;padding-top:8px;border-top:1px solid #e2e8f0'><strong style='color:#64748b'>Exit:</strong> " + _d_exit_exp + "</div>" if _d_exit_exp else ""}
+  {_d_eff_html}
+  {_d_inc_html}
+  {_d_legend}
+</div>""", unsafe_allow_html=True)
 
         if not incidents.empty:
             _dinc = incidents[incidents["session_id"] == _dsid]
             if not _dinc.empty:
-                st.markdown("**Incidents**")
+                st.markdown("**Incidents** — click RCA → for full root cause breakdown")
                 for _, _inc in _dinc.iterrows():
                     _ic1, _ic2 = st.columns([6, 1])
                     with _ic1:
