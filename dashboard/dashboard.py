@@ -1667,7 +1667,7 @@ if page == "Overview":
     if not sessions.empty:
         _ov_rs = sessions.copy()
         _ov_rs["started_at"] = pd.to_datetime(_ov_rs["started_at"], errors="coerce", utc=True)
-        _ov_rs = _ov_rs.sort_values("started_at", ascending=False).head(20)
+        _ov_rs = _ov_rs.sort_values("started_at", ascending=False).head(50)
 
         _ov_rows = []
         for _, _ov_row in _ov_rs.iterrows():
@@ -1719,8 +1719,12 @@ if page == "Overview":
                 return {};
             }
         """))
+        _ov_PAGE = 15
         _ov_gb.configure_selection("single", use_checkbox=False)
         _ov_gb.configure_grid_options(
+            pagination=True,
+            paginationPageSize=_ov_PAGE,
+            suppressPaginationPanel=False,
             getRowStyle=JsCode("""
                 function(params) {
                     if (params.data._has_inc)    return {'background':'#fee2e2','color':'#7f1d1d'};
@@ -1735,7 +1739,7 @@ if page == "Overview":
             _ov_tbl,
             gridOptions=_ov_gb.build(),
             update_mode=GridUpdateMode.NO_UPDATE,
-            height=min(500, 56 + len(_ov_tbl) * 34),
+            height=min(600, 56 + min(len(_ov_tbl), _ov_PAGE) * 34 + 60),
             use_container_width=True,
             allow_unsafe_jscode=True,
             fit_columns_on_grid_load=True,
@@ -1743,7 +1747,7 @@ if page == "Overview":
         )
         st.markdown(
             "<div style='font-size:0.8rem;color:#94a3b8;margin-top:4px'>"
-            "Red = incident \u00b7 Amber = 0 trades \u00b7 Showing last 20 sessions</div>",
+            "Red = incident \u00b7 Amber = 0 trades \u00b7 Showing last 50 sessions</div>",
             unsafe_allow_html=True,
         )
 
