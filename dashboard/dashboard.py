@@ -5161,28 +5161,27 @@ def signal_card_v2(label: str, value: str, delta_html: str = "",
     brd = brd_map.get(color, "#e2e8f0")
     vc  = val_map.get(color, "#0f172a")
     spark = (
-        f'<div style="flex-shrink:0;padding-top:2px">{sparkline_html}</div>'
+        f'<div style="flex-shrink:0">{sparkline_html}</div>'
         if sparkline_html else ""
     )
     biz = (
-        f'<div style="font-size:0.68rem;color:#94a3b8;margin-top:8px;'
-        f'padding-top:6px;border-top:1px solid {brd};font-style:italic">'
+        f'<div style="font-size:0.67rem;color:#94a3b8;margin-top:5px;font-style:italic">'
         f'{business_ctx}</div>'
         if business_ctx else ""
     )
     return (
         f'<div style="background:{bg};border:1.5px solid {brd};border-radius:10px;'
-        f'padding:14px 16px;min-height:160px;box-sizing:border-box">'
-        f'<div style="font-size:0.72rem;font-weight:600;color:#64748b;'
-        f'text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px">{label}</div>'
-        f'<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:6px">'
+        f'padding:10px 14px;min-height:115px;box-sizing:border-box">'
+        f'<div style="font-size:0.7rem;font-weight:600;color:#64748b;'
+        f'text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px">{label}</div>'
+        f'<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:4px">'
         f'<div>'
-        f'<div style="font-size:1.6rem;font-weight:700;color:{vc};line-height:1.1">{value}</div>'
-        f'{"<div style=margin-top:4px>" + delta_html + "</div>" if delta_html else ""}'
+        f'<div style="font-size:1.5rem;font-weight:700;color:{vc};line-height:1.1">{value}</div>'
+        f'{"<div style=margin-top:2px>" + delta_html + "</div>" if delta_html else ""}'
         f'</div>'
         f'{spark}'
         f'</div>'
-        f'{"<div style=font-size:0.72rem;color:#64748b;margin-top:4px>" + sub + "</div>" if sub else ""}'
+        f'{"<div style=font-size:0.7rem;color:#64748b;margin-top:3px>" + sub + "</div>" if sub else ""}'
         f'{biz}'
         f'</div>'
     )
@@ -5348,8 +5347,8 @@ def _v2_fleet_strip(agent_data: dict[str, dict],
         mn = min(p1, p2) if (p1 is not None and p2 is not None) else 100
         c  = _v2_pass_color(mn)[0] if mn < 80 else "#cbd5e1"
         return (
-            f'<div style="display:flex;align-items:center;padding-bottom:44px">'
-            f'<div style="width:24px;height:2px;background:{c}"></div>'
+            f'<div style="display:flex;height:64px;align-items:center;flex-shrink:0">'
+            f'<div style="width:20px;height:2px;background:{c}"></div>'
             f'<div style="width:0;height:0;border-top:5px solid transparent;'
             f'border-bottom:5px solid transparent;border-left:7px solid {c}"></div>'
             f'</div>'
@@ -5445,16 +5444,18 @@ def _v2_impact_card(item: dict, mode: str) -> str:
 if page == "Overview v2":
 
     # ── Header ────────────────────────────────────────────────────────────────
-    _h1, _h2, _h3 = st.columns([4, 2, 1])
+    _h1, _h2 = st.columns([5, 2])
     with _h1:
         st.markdown("## System Overview")
         st.caption(f"As of {pd.Timestamp.now(tz='UTC').strftime('%Y-%m-%d %H:%M UTC')}")
     with _h2:
-        _ov2_range = st.radio("Period", ["7d", "14d", "30d"], horizontal=True,
-                              index=0, label_visibility="collapsed", key="ov2_range")
-    with _h3:
-        if st.button("↺ Refresh", use_container_width=True, key="ov2_ref"):
-            load_sessions.clear(); load_traces.clear(); load_all_evals.clear(); st.rerun()
+        _pc, _rc = st.columns([5, 1])
+        with _pc:
+            _ov2_range = st.radio("Period", ["7d", "14d", "30d"], horizontal=True,
+                                  index=0, label_visibility="collapsed", key="ov2_range")
+        with _rc:
+            if st.button("↺", key="ov2_ref", help="Refresh data"):
+                load_sessions.clear(); load_traces.clear(); load_all_evals.clear(); st.rerun()
 
     _ov2_days           = int(_ov2_range[:-1])
     _ov2_now, _ov2_cut, _ov2_prev_cut = _v2_period_window(_ov2_days)
