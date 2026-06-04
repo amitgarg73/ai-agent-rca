@@ -6745,6 +6745,13 @@ elif page == "Quality v2":
                 if not incidents.empty else set()
             )
 
+            def _to_rgba(color, alpha):
+                if "rgb" in color:
+                    return color.replace(")", f",{alpha})").replace("rgb(", "rgba(")
+                h = color.lstrip("#")
+                r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+                return f"rgba({r},{g},{b},{alpha})"
+
             def _q2_drift_chart(agent_key, color, height=200):
                 sub = _q2_ae_ts[_q2_ae_ts["agent"] == agent_key].copy()
                 if sub.empty or "started_at" not in sub.columns:
@@ -6761,8 +6768,7 @@ elif page == "Quality v2":
                     line=dict(color=color, width=2),
                     marker=dict(size=5, color=color),
                     fill="tozeroy",
-                    fillcolor=color.replace(")", ",0.07)").replace("rgb", "rgba")
-                    if "rgb" in color else color + "12",
+                    fillcolor=_to_rgba(color, 0.07),
                     hovertemplate="%{x}<br>Score: %{y:.3f}<extra></extra>",
                 ))
                 fig.add_trace(go.Scatter(
@@ -6884,7 +6890,7 @@ elif page == "Quality v2":
                     go.Scatterpolar(
                         r=_vals_closed, theta=_labels_closed,
                         fill="toself",
-                        fillcolor=_qclr + "22",
+                        fillcolor=_to_rgba(_qclr, 0.13),
                         line=dict(color=_qclr, width=2),
                         name=f"{_qlbl} (current)",
                         hovertemplate="%{theta}: %{r:.2f}<extra></extra>",
