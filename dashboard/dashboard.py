@@ -598,10 +598,11 @@ def compute_cb_savings(sid: str, row: dict, evals_df, traces_df) -> tuple:
 
 
 def pipeline_strip(sid: str, traces_df, evals_df, session_agents=None) -> str:
-    """Pipeline strip: ORC coordinates → MKT → NEWS → RES → RSK → ORC synthesizes."""
-    _sub_agents = ["market", "news_analyst", "research", "risk"]
+    """Pipeline strip: ORC coordinates → MKT → SA → NEWS → RES → RSK → ORC synthesizes."""
+    _sub_agents = ["market", "scanner", "news_analyst", "research", "risk"]
     _labels     = {
         "market":       "MKT",
+        "scanner":      "SA",
         "news_analyst": "NEWS",
         "research":     "RES",
         "risk":         "RSK",
@@ -5307,10 +5308,10 @@ def _v2_fleet_strip(agent_data: dict[str, dict],
     agent_data[agent] = {"rate": float (%), "pass_n": int, "total_n": int}
     """
     _full_names = {
-        "market": "Market", "news_analyst": "News Analyst",
+        "market": "Market", "scanner": "Scanner", "news_analyst": "News Analyst",
         "research": "Research", "risk": "Risk", "orchestrator": "Orchestrator",
     }
-    _labels = {"market": "MKT", "news_analyst": "NEWS",
+    _labels = {"market": "MKT", "scanner": "SA", "news_analyst": "NEWS",
                "research": "RES", "risk": "RSK", "orchestrator": "ORC"}
     _orc_done = False
 
@@ -5665,9 +5666,9 @@ if page == "Overview v2":
         st.markdown(_v2_fleet_strip(_fleet_data, page), unsafe_allow_html=True)
 
         # Clickable node navigation (use buttons below the strip)
-        _fn_cols = st.columns(6)
+        _fn_cols = st.columns(7)
         _agent_nav_map = [
-            ("ORC coord", "orchestrator"), ("MKT", "market"),
+            ("ORC coord", "orchestrator"), ("MKT", "market"), ("SA", "scanner"),
             ("NEWS", "news_analyst"), ("RES", "research"),
             ("RSK", "risk"), ("ORC synth", "orchestrator"),
         ]
