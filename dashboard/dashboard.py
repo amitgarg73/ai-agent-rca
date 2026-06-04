@@ -1656,7 +1656,7 @@ if page == "Overview":
             'Trend</th>'
             '</tr></thead><tbody>'
         )
-        for _ov_ag in ["orchestrator", "market", "research", "risk"]:
+        for _ov_ag in ["orchestrator", "market", "research", "risk", "scanner"]:
             _ov_sub = _ov_ae[_ov_ae["agent"] == _ov_ag]
             _ov_p7  = _ov_pr(_ov_sub, _ov_ids_7d)
             _ov_p30 = _ov_pr(_ov_sub, _ov_ids_30d)
@@ -2641,9 +2641,11 @@ elif page == "Quality Drift":
         _recent_sids = s.iloc[-_n_recent:]["id"].tolist()
         _prev_sids   = s.iloc[-_n_recent - _n_prev : -_n_recent]["id"].tolist() if _n_prev else []
         _op_evals_ts = evals_ts[~evals_ts["agent"].str.endswith("_quality", na=False)]
-        _op_recent   = _op_evals_ts[_op_evals_ts["session_id"].isin(_recent_sids)]["passed"].mean()
-        _op_prev     = _op_evals_ts[_op_evals_ts["session_id"].isin(_prev_sids)]["passed"].mean() if _prev_sids else None
-        _op_delta    = (_op_recent - _op_prev) if _op_prev is not None else None
+        _op_recent_raw = _op_evals_ts[_op_evals_ts["session_id"].isin(_recent_sids)]["passed"].mean()
+        _op_recent     = None if pd.isna(_op_recent_raw) else float(_op_recent_raw)
+        _op_prev_raw   = _op_evals_ts[_op_evals_ts["session_id"].isin(_prev_sids)]["passed"].mean() if _prev_sids else None
+        _op_prev       = None if (_op_prev_raw is None or pd.isna(_op_prev_raw)) else float(_op_prev_raw)
+        _op_delta      = (_op_recent - _op_prev) if (_op_recent is not None and _op_prev is not None) else None
         _qual_raw    = evals_ts[
             evals_ts["agent"].str.endswith("_quality", na=False) &
             (evals_ts["eval_name"] == "composite_score") &
@@ -2654,11 +2656,13 @@ elif page == "Quality Drift":
         _op_recent = _op_delta = _qual_recent = None
 
     if not biz_evals_df.empty:
-        _biz_recent = biz_evals_df[biz_evals_df["session_id"].isin(s.iloc[-_n_recent:]["id"].tolist())]["passed"].mean()
-        _biz_prev   = biz_evals_df[biz_evals_df["session_id"].isin(
+        _biz_recent_raw = biz_evals_df[biz_evals_df["session_id"].isin(s.iloc[-_n_recent:]["id"].tolist())]["passed"].mean()
+        _biz_recent     = None if pd.isna(_biz_recent_raw) else float(_biz_recent_raw)
+        _biz_prev_raw   = biz_evals_df[biz_evals_df["session_id"].isin(
             s.iloc[-_n_recent - _n_prev : -_n_recent]["id"].tolist() if _n_prev else []
         )]["passed"].mean() if _n_prev else None
-        _biz_delta  = (_biz_recent - _biz_prev) if _biz_prev is not None else None
+        _biz_prev       = None if (_biz_prev_raw is None or pd.isna(_biz_prev_raw)) else float(_biz_prev_raw)
+        _biz_delta      = (_biz_recent - _biz_prev) if (_biz_recent is not None and _biz_prev is not None) else None
     else:
         _biz_recent = _biz_delta = None
 
