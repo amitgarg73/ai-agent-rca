@@ -295,6 +295,22 @@ def load_traces() -> pd.DataFrame:
 
 
 @st.cache_data(ttl=60)
+def load_scanner_traces(days: int = 30) -> pd.DataFrame:
+    from datetime import date, timedelta
+    since = (date.today() - timedelta(days=days)).isoformat()
+    try:
+        r = _db().table("c_traces").select(
+            "session_id,agent,step_type,tool_name,tool_input,tool_output,outcome,created_at"
+        ).eq("agent", "scanner").gte("created_at", since).order("created_at").execute()
+        df = pd.DataFrame(r.data or [])
+        if not df.empty:
+            df["created_at"] = pd.to_datetime(df["created_at"], errors="coerce")
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=60)
 def load_positions() -> pd.DataFrame:
     r = _db().table("c_positions").select(
         "id,session_id,ticker,status,realized_pnl,entry_price,close_time,open_date"
@@ -1335,7 +1351,7 @@ def _build_cost_donut(sess_row: dict, sess_traces: list):
 _NAV_PAGES = [
     "Overview", "Ledger", "Quality Drift",
     "Incidents Feed", "RCA View", "Failure Simulator", "Trace Inspector",
-    "Overview v2", "Ledger v2", "Quality v2",
+    "Overview v2", "Ledger v2", "Quality v2", "Scanner",
 ]
 
 if "_page" in st.session_state:
@@ -7115,3 +7131,230 @@ elif page == "Quality v2":
                                 f'{_q2d_strip}</div>',
                                 unsafe_allow_html=True,
                             )
+
+# ── Scanner Agent page ────────────────────────────────────────────────────────
+
+elif page == "Scanner":
+    import json as _json
+
+    _sc_h1, _sc_h2, _sc_h3 = st.columns([4, 2, 1])
+    with _sc_h1:
+        st.markdown("## Scanner Agent")
+        st.caption("Regime-aware candidate selection — funnel, cost, and regime accuracy")
+    with _sc_h2:
+        _sc_range = st.radio("Period", ["7d", "14d", "30d"], horizontal=True,
+                             index=1, label_visibility="collapsed", key="sc_range")
+    with _sc_h3:
+        if st.button("↺ Refresh", use_container_width=True, key="sc_ref"):
+            load_scanner_traces.clear()
+            load_sessions.clear()
+            st.rerun()
+
+    _sc_days = int(_sc_range[:-1])
+    _sc_traces = load_scanner_traces(days=_sc_days)
+    _sc_now, _sc_cut, _sc_prev_cut = _v2_period_window(_sc_days)
+
+    _sc_s = sessions.copy()
+    if not _sc_s.empty:
+        _sc_s["started_at"] = pd.to_datetime(_sc_s["started_at"], errors="coerce", utc=True)
+        _sc_s = _sc_s[_sc_s["started_at"] >= _sc_cut]
+
+    # ── Parse tool_output for decision rows ──────────────────────────────────
+
+    def _sc_parse_output(raw):
+        if isinstance(raw, dict):
+            return raw
+        if isinstance(raw, str):
+            try:
+                return _json.loads(raw)
+            except Exception:
+                return {}
+        return {}
+
+    _sc_decisions = {}
+    if not _sc_traces.empty:
+        for _, _r in _sc_traces[
+            (_sc_traces["step_type"] == "decision") & (_sc_traces["agent"] == "scanner")
+        ].iterrows():
+            _sc_decisions[_r["session_id"]] = _sc_parse_output(_r.get("tool_output"))
+
+    # ── Build funnel rows ─────────────────────────────────────────────────────
+
+    _sc_funnel = []
+    for _, _sess in _sc_s.iterrows():
+        _sid = _sess["id"]
+        _detail = _sc_decisions.get(_sid)
+        if not _detail:
+            continue
+        _n_cand = _detail.get("n_returned", 0)
+        _proposed = int(_sess.get("trades_proposed") or 0)
+        _approved = int(_sess.get("trades_approved") or 0)
+        _executed = int(_sess.get("trades_executed") or 0)
+        _cb = _sess.get("cost_breakdown") or {}
+        if isinstance(_cb, str):
+            try:
+                _cb = _json.loads(_cb)
+            except Exception:
+                _cb = {}
+        _sc_cost = (_cb.get("scanner") or {}).get("cost_usd", 0.0) if isinstance(_cb, dict) else 0.0
+        _sc_funnel.append({
+            "date":            str(_sess.get("date") or ""),
+            "session_id":      _sid[:8],
+            "candidates":      _n_cand,
+            "proposed":        _proposed,
+            "approved":        _approved,
+            "executed":        _executed,
+            "regime":          _detail.get("regime", "—"),
+            "dropped":         _detail.get("dropped_count", 0),
+            "sel_rate":        round(_proposed / _n_cand, 2) if _n_cand else 0.0,
+            "trade_rate":      round(_executed / _n_cand, 2) if _n_cand else 0.0,
+            "scanner_cost":    round(_sc_cost, 4),
+            "cost_per_trade":  round(_sc_cost / _executed, 4) if _executed else None,
+        })
+
+    # ── KPI tiles ─────────────────────────────────────────────────────────────
+
+    _sc_n_sess      = len(_sc_funnel)
+    _sc_total_cand  = sum(f["candidates"]   for f in _sc_funnel)
+    _sc_total_exec  = sum(f["executed"]     for f in _sc_funnel)
+    _sc_total_cost  = sum(f["scanner_cost"] for f in _sc_funnel)
+    _sc_trade_rate  = _sc_total_exec / _sc_total_cand if _sc_total_cand else 0.0
+    _sc_avg_cpt     = _sc_total_cost / _sc_total_exec if _sc_total_exec else None
+    _sc_avg_cand    = _sc_total_cand / _sc_n_sess if _sc_n_sess else 0.0
+
+    _k1, _k2, _k3, _k4 = st.columns(4)
+    with _k1:
+        st.markdown(signal_card_v2(
+            "Sessions with Scanner",
+            str(_sc_n_sess),
+            "",
+            "slate",
+            f"{_sc_days}d window",
+        ), unsafe_allow_html=True)
+    with _k2:
+        _cand_c = "green" if _sc_avg_cand >= 10 else "amber" if _sc_avg_cand >= 5 else "red"
+        st.markdown(signal_card_v2(
+            "Avg Candidates / Session",
+            f"{_sc_avg_cand:.1f}",
+            "",
+            _cand_c,
+            f"{_sc_total_cand} total",
+        ), unsafe_allow_html=True)
+    with _k3:
+        _tr_c = "green" if _sc_trade_rate >= 0.15 else "amber" if _sc_trade_rate >= 0.05 else "red"
+        st.markdown(signal_card_v2(
+            "Cand → Trade Rate",
+            f"{_sc_trade_rate:.1%}",
+            "",
+            _tr_c,
+            f"{_sc_total_exec} trades executed",
+        ), unsafe_allow_html=True)
+    with _k4:
+        _cpt_c = "green" if (_sc_avg_cpt or 99) < 0.05 else "amber" if (_sc_avg_cpt or 99) < 0.15 else "red"
+        st.markdown(signal_card_v2(
+            "Scanner Cost / Trade",
+            f"${_sc_avg_cpt:.4f}" if _sc_avg_cpt else "—",
+            "",
+            _cpt_c,
+            f"${_sc_total_cost:.4f} total",
+        ), unsafe_allow_html=True)
+
+    st.markdown("---")
+
+    # ── Tool usage + Regime accuracy side by side ─────────────────────────────
+
+    _sc_col1, _sc_col2 = st.columns(2)
+
+    with _sc_col1:
+        st.markdown("**Tool Call Frequency**")
+        if not _sc_traces.empty:
+            _sc_tool_calls = _sc_traces[_sc_traces["step_type"] == "tool_call"]
+            if not _sc_tool_calls.empty:
+                _tool_counts = _sc_tool_calls["tool_name"].value_counts().reset_index()
+                _tool_counts.columns = ["tool", "calls"]
+                _tc_fig = {
+                    "data": [{"type": "bar", "x": _tool_counts["tool"].tolist(),
+                               "y": _tool_counts["calls"].tolist(),
+                               "marker": {"color": "#6366f1"}}],
+                    "layout": {"margin": {"t": 10, "b": 60, "l": 40, "r": 10},
+                               "height": 220,
+                               "xaxis": {"tickangle": -30},
+                               "yaxis": {"title": "calls"},
+                               "paper_bgcolor": "rgba(0,0,0,0)",
+                               "plot_bgcolor": "rgba(0,0,0,0)"},
+                }
+                st.plotly_chart(_tc_fig, use_container_width=True, config={"displayModeBar": False})
+            else:
+                st.info("No tool calls logged yet.")
+        else:
+            st.info("No scanner traces in this window.")
+
+    with _sc_col2:
+        st.markdown("**Regime Accuracy — Avg Dropped by Regime**")
+        if _sc_funnel:
+            _sc_regime_rows = {}
+            for _f in _sc_funnel:
+                _rg = _f["regime"] or "unknown"
+                if _rg not in _sc_regime_rows:
+                    _sc_regime_rows[_rg] = []
+                _sc_regime_rows[_rg].append(_f["dropped"])
+            _sc_rg_labels = list(_sc_regime_rows.keys())
+            _sc_rg_avgs   = [round(sum(v)/len(v), 1) for v in _sc_regime_rows.values()]
+            _color_map = {"high_vix": "#ef4444", "elevated_vix": "#f59e0b",
+                          "low_vix": "#10b981", "caution": "#f97316"}
+            _rg_colors = [_color_map.get(l, "#94a3b8") for l in _sc_rg_labels]
+            _rg_fig = {
+                "data": [{"type": "bar", "x": _sc_rg_labels, "y": _sc_rg_avgs,
+                           "marker": {"color": _rg_colors},
+                           "text": [str(v) for v in _sc_rg_avgs],
+                           "textposition": "outside"}],
+                "layout": {"margin": {"t": 10, "b": 60, "l": 40, "r": 10},
+                           "height": 220,
+                           "yaxis": {"title": "avg dropped"},
+                           "paper_bgcolor": "rgba(0,0,0,0)",
+                           "plot_bgcolor": "rgba(0,0,0,0)"},
+            }
+            st.plotly_chart(_rg_fig, use_container_width=True, config={"displayModeBar": False})
+
+            _high_regimes = {"high_vix", "caution"}
+            _high_dropped = [f["dropped"] for f in _sc_funnel if f["regime"] in _high_regimes]
+            _low_dropped  = [f["dropped"] for f in _sc_funnel if f["regime"] == "low_vix"]
+            if _high_dropped and _low_dropped:
+                _avg_h = sum(_high_dropped) / len(_high_dropped)
+                _avg_l = sum(_low_dropped)  / len(_low_dropped)
+                _diff_ok = _avg_h > _avg_l
+                _diff_label = "Filters more strictly in high-VIX" if _diff_ok else "No differentiation — check prompt"
+                _diff_color = "#10b981" if _diff_ok else "#ef4444"
+                st.markdown(
+                    f'<div style="font-size:0.78rem;color:{_diff_color};margin-top:4px">'
+                    f'{"✓" if _diff_ok else "✗"} {_diff_label}</div>',
+                    unsafe_allow_html=True,
+                )
+        else:
+            st.info("No funnel data yet.")
+
+    st.markdown("---")
+
+    # ── Per-session funnel table ──────────────────────────────────────────────
+
+    st.markdown("**Session Funnel**")
+    if _sc_funnel:
+        _sc_df = pd.DataFrame(_sc_funnel)
+        _sc_df["sel_rate"]   = (_sc_df["sel_rate"]   * 100).round(1).astype(str) + "%"
+        _sc_df["trade_rate"] = (_sc_df["trade_rate"] * 100).round(1).astype(str) + "%"
+        _sc_df["cost_per_trade"] = _sc_df["cost_per_trade"].apply(
+            lambda x: f"${x:.4f}" if x is not None else "—"
+        )
+        st.dataframe(
+            _sc_df.rename(columns={
+                "date": "Date", "session_id": "Session",
+                "candidates": "Cands", "proposed": "Proposed",
+                "approved": "Approved", "executed": "Executed",
+                "regime": "Regime", "dropped": "Dropped",
+                "sel_rate": "Sel Rate", "trade_rate": "Trade Rate",
+                "scanner_cost": "Cost ($)", "cost_per_trade": "Cost/Trade",
+            }),
+            use_container_width=True, hide_index=True,
+        )
+    else:
+        st.info("No scanner sessions found in this window. Scanner Agent data appears once it runs premarket.")
