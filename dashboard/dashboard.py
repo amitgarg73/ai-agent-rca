@@ -5128,23 +5128,62 @@ def _v2_delta_html(curr, prev, higher_good=True) -> str:
     return f'<span style="color:{c};font-size:0.72rem">{arr} {pct:.0f}% vs prev</span>'
 
 
+def _v2_sparkline_html(values: list, max_val: float = 100.0) -> str:
+    """Tiny SVG sparkline for a list of daily metric values."""
+    vals = [float(v) if v is not None else 0.0 for v in values]
+    if len(vals) < 2 or max(vals) == 0:
+        return ""
+    w, h, pad = 72, 26, 3
+    y_scale = max(max_val, max(vals) * 1.05) or 1.0
+    def _y(v):
+        return h - pad - max(0.0, min(v / y_scale * (h - 2*pad), h - 2*pad))
+    pts = [(pad + i / (len(vals) - 1) * (w - 2*pad), _y(v)) for i, v in enumerate(vals)]
+    color = _V2_GREEN if vals[-1] >= vals[0] else _V2_RED
+    path = " ".join(f"{'M' if i==0 else 'L'}{x:.1f},{y:.1f}" for i, (x, y) in enumerate(pts))
+    return (
+        f'<svg width="{w}" height="{h}" xmlns="http://www.w3.org/2000/svg"'
+        f' style="display:block;opacity:0.85">'
+        f'<path d="{path}" stroke="{color}" stroke-width="1.5" fill="none"'
+        f' stroke-linecap="round" stroke-linejoin="round"/>'
+        f'<circle cx="{pts[-1][0]:.1f}" cy="{pts[-1][1]:.1f}" r="2.5" fill="{color}"/>'
+        f'</svg>'
+    )
+
+
 def signal_card_v2(label: str, value: str, delta_html: str = "",
-                   color: str = "green", sub: str = "") -> str:
+                   color: str = "green", sub: str = "",
+                   sparkline_html: str = "", business_ctx: str = "") -> str:
     """Traffic-light KPI card for v2 pages."""
-    bg_map   = {"green": "#f0fdf4", "amber": "#fffbeb", "red": "#fef2f2", "slate": "#f8fafc"}
-    brd_map  = {"green": "#86efac", "amber": "#fde68a", "red": "#fca5a5", "slate": "#e2e8f0"}
-    val_map  = {"green": "#166534", "amber": "#92400e", "red": "#991b1b", "slate": "#475569"}
-    bg   = bg_map.get(color, "#f8fafc")
-    brd  = brd_map.get(color, "#e2e8f0")
-    vc   = val_map.get(color, "#0f172a")
+    bg_map  = {"green": "#f0fdf4", "amber": "#fffbeb", "red": "#fef2f2", "slate": "#f8fafc"}
+    brd_map = {"green": "#86efac", "amber": "#fde68a", "red": "#fca5a5", "slate": "#e2e8f0"}
+    val_map = {"green": "#166534", "amber": "#92400e", "red": "#991b1b", "slate": "#475569"}
+    bg  = bg_map.get(color, "#f8fafc")
+    brd = brd_map.get(color, "#e2e8f0")
+    vc  = val_map.get(color, "#0f172a")
+    spark = (
+        f'<div style="flex-shrink:0;padding-top:2px">{sparkline_html}</div>'
+        if sparkline_html else ""
+    )
+    biz = (
+        f'<div style="font-size:0.68rem;color:#94a3b8;margin-top:8px;'
+        f'padding-top:6px;border-top:1px solid {brd};font-style:italic">'
+        f'{business_ctx}</div>'
+        if business_ctx else ""
+    )
     return (
         f'<div style="background:{bg};border:1.5px solid {brd};border-radius:10px;'
-        f'padding:14px 16px;min-height:90px">'
+        f'padding:14px 16px;min-height:160px;box-sizing:border-box">'
         f'<div style="font-size:0.72rem;font-weight:600;color:#64748b;'
-        f'text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px">{label}</div>'
+        f'text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px">{label}</div>'
+        f'<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:6px">'
+        f'<div>'
         f'<div style="font-size:1.6rem;font-weight:700;color:{vc};line-height:1.1">{value}</div>'
         f'{"<div style=margin-top:4px>" + delta_html + "</div>" if delta_html else ""}'
-        f'{"<div style=font-size:0.72rem;color:#94a3b8;margin-top:2px>" + sub + "</div>" if sub else ""}'
+        f'</div>'
+        f'{spark}'
+        f'</div>'
+        f'{"<div style=font-size:0.72rem;color:#64748b;margin-top:4px>" + sub + "</div>" if sub else ""}'
+        f'{biz}'
         f'</div>'
     )
 
@@ -5242,13 +5281,16 @@ def compute_impact_bridge(evals_df: pd.DataFrame, sessions_df: pd.DataFrame,
     return results[:top_n] if top_n else results
 
 
-def _v2_fleet_strip(agent_pass_rates: dict[str, float],
+def _v2_fleet_strip(agent_data: dict[str, dict],
                     page: str, target_page: str = "Quality v2") -> str:
     """
-    Aggregated pipeline fleet health strip for Overview v2.
-    Each node coloured by aggregate eval pass rate across all sessions in window.
+    Pipeline fleet health strip for Overview v2.
+    agent_data[agent] = {"rate": float (%), "pass_n": int, "total_n": int}
     """
-    _order  = ["orchestrator", "market", "news_analyst", "research", "risk", "orchestrator"]
+    _full_names = {
+        "market": "Market", "news_analyst": "News Analyst",
+        "research": "Research", "risk": "Risk", "orchestrator": "Orchestrator",
+    }
     _labels = {"market": "MKT", "news_analyst": "NEWS",
                "research": "RES", "risk": "RSK", "orchestrator": "ORC"}
     _orc_done = False
@@ -5259,35 +5301,55 @@ def _v2_fleet_strip(agent_pass_rates: dict[str, float],
         if agent == "orchestrator":
             if not _orc_done:
                 _orc_done = True
-                suffix = "coord"
+                orc_suffix = "coord"
             else:
-                suffix = "synth"
-            title = f"ORC ({suffix})"
+                orc_suffix = "synth"
+            full_name = f"ORC ({orc_suffix})"
         else:
-            title = lbl
-        pct = agent_pass_rates.get(agent)
-        if pct is None:
-            bg, fg, pct_str = "#e2e8f0", "#94a3b8", "—"
+            full_name = _full_names.get(agent, agent.title())
+
+        data = agent_data.get(agent)
+        if data is None or data.get("rate") is None:
+            bg, fg = "#e2e8f0", "#94a3b8"
+            pct_str  = "—"
+            count_str = ""
         else:
+            pct = data["rate"]
             bg, fg = _v2_pass_color(pct)
-            pct_str = f"{pct:.0f}%"
+            pct_str   = f"{pct:.0f}%"
+            pass_n    = data.get("pass_n", 0)
+            total_n   = data.get("total_n", 0)
+            count_str = f"{pass_n}/{total_n} evals" if total_n > 0 else ""
+
+        count_div = (
+            f'<div style="font-size:0.65rem;color:#94a3b8;text-align:center">'
+            f'{count_str}</div>'
+            if count_str else ""
+        )
         return (
-            f'<div style="display:flex;flex-direction:column;align-items:center;gap:2px">'
-            f'<div title="{title}" style="width:48px;height:48px;border-radius:50%;'
+            f'<div style="display:flex;flex-direction:column;align-items:center;'
+            f'gap:4px;min-width:80px">'
+            f'<div title="{full_name}" style="width:64px;height:64px;border-radius:50%;'
             f'background:{bg};display:flex;align-items:center;justify-content:center;'
-            f'font-size:0.7rem;font-weight:700;color:{fg};cursor:pointer">{lbl}</div>'
-            f'<div style="font-size:0.65rem;color:#64748b;font-weight:600">{pct_str}</div>'
+            f'font-size:0.8rem;font-weight:700;color:{fg};cursor:pointer;'
+            f'box-shadow:0 1px 4px rgba(0,0,0,0.12)">{lbl}</div>'
+            f'<div style="font-size:0.78rem;color:#1e293b;font-weight:700">{pct_str}</div>'
+            f'{count_div}'
+            f'<div style="font-size:0.70rem;color:#64748b;text-align:center;'
+            f'max-width:80px;line-height:1.3">{full_name}</div>'
             f'</div>'
         )
 
     def _arrow(a1: str, a2: str) -> str:
-        p1 = agent_pass_rates.get(a1, 100)
-        p2 = agent_pass_rates.get(a2, 100)
+        d1 = agent_data.get(a1) or {}
+        d2 = agent_data.get(a2) or {}
+        p1 = d1.get("rate", 100)
+        p2 = d2.get("rate", 100)
         mn = min(p1, p2) if (p1 is not None and p2 is not None) else 100
         c  = _v2_pass_color(mn)[0] if mn < 80 else "#cbd5e1"
         return (
-            f'<div style="display:flex;align-items:center;padding-bottom:18px">'
-            f'<div style="width:28px;height:2px;background:{c}"></div>'
+            f'<div style="display:flex;align-items:center;padding-bottom:44px">'
+            f'<div style="width:24px;height:2px;background:{c}"></div>'
             f'<div style="width:0;height:0;border-top:5px solid transparent;'
             f'border-bottom:5px solid transparent;border-left:7px solid {c}"></div>'
             f'</div>'
@@ -5302,8 +5364,8 @@ def _v2_fleet_strip(agent_pass_rates: dict[str, float],
         ("orchestrator", "risk"),
     ]
     html = (
-        '<div style="display:flex;align-items:flex-end;gap:0;'
-        'padding:12px 0 4px;overflow:visible">'
+        '<div style="display:flex;align-items:flex-start;gap:4px;'
+        'padding:16px 0 8px;overflow:visible">'
     )
     for i, (agent, prev_agent) in enumerate(nodes):
         if prev_agent:
@@ -5311,7 +5373,7 @@ def _v2_fleet_strip(agent_pass_rates: dict[str, float],
         html += _node_html(agent)
     html += '</div>'
     html += (
-        '<div style="font-size:0.68rem;color:#94a3b8;margin-top:4px">'
+        '<div style="font-size:0.68rem;color:#94a3b8;margin-top:2px">'
         'Click a node to drill into Quality v2 for that agent</div>'
     )
     return html
@@ -5397,6 +5459,14 @@ if page == "Overview v2":
     _ov2_days           = int(_ov2_range[:-1])
     _ov2_now, _ov2_cut, _ov2_prev_cut = _v2_period_window(_ov2_days)
 
+    st.markdown(
+        '<div style="margin:2px 0 16px;color:#475569;font-size:0.88rem;line-height:1.5">'
+        'Four signals across reliability, cost, operational quality, and semantic quality '
+        'give a complete picture of pipeline health for the selected window. '
+        'Red cards or fleet nodes are your highest-priority action items.</div>',
+        unsafe_allow_html=True,
+    )
+
     if sessions.empty:
         st.info("No sessions found.")
         st.stop()
@@ -5453,6 +5523,46 @@ if page == "Overview v2":
     _ov2_curr_ids = set(_ov2_curr["id"].tolist())
     _ov2_prev_ids = set(_ov2_prev["id"].tolist())
 
+    # ── Daily sparkline series ────────────────────────────────────────────────
+    _ov2_curr_sp = _ov2_curr.copy()
+    _ov2_curr_sp["_date"] = _ov2_curr_sp["started_at"].dt.date
+    _sp_dates = sorted(_ov2_curr_sp["_date"].unique())
+
+    _rel_daily: list = []
+    _cef_daily: list = []
+    _opq_daily: list = []
+    _semq_daily: list = []
+    for _sd in _sp_dates:
+        _day_df  = _ov2_curr_sp[_ov2_curr_sp["_date"] == _sd]
+        _day_sid = set(_day_df["id"])
+        _inc_d   = _ov2_inc_sids_curr & _day_sid
+        _rel_daily.append(
+            (len(_day_sid) - len(_inc_d)) / len(_day_sid) * 100 if _day_sid else 0
+        )
+        _tot_d = _day_df["total_cost_usd"].sum()
+        _prd_d = _day_df[_day_df["trades_executed"] > 0]["total_cost_usd"].sum()
+        _cef_daily.append((_prd_d / _tot_d * 100) if _tot_d > 0 else 0)
+        if not _ov2_ae.empty:
+            _dae_op = _ov2_ae[
+                _ov2_ae["session_id"].isin(_day_sid) &
+                ~_ov2_ae["agent"].str.endswith("_quality", na=False)
+            ]
+            _opq_daily.append(
+                float(_dae_op["passed"].sum()) / len(_dae_op) * 100
+                if not _dae_op.empty else 0
+            )
+            _dae_sq = _ov2_ae[
+                _ov2_ae["session_id"].isin(_day_sid) &
+                _ov2_ae["agent"].str.endswith("_quality", na=False) &
+                (_ov2_ae["eval_name"] == "composite_score")
+            ]
+            _semq_daily.append(
+                float(_dae_sq["score"].mean()) if not _dae_sq.empty else 0
+            )
+        else:
+            _opq_daily.append(0)
+            _semq_daily.append(0)
+
     _rel_c   = _ov2_reliability(_ov2_curr, _ov2_inc_sids_curr)
     _rel_p   = _ov2_reliability(_ov2_prev, _ov2_inc_sids_prev)
     _cef_c   = _ov2_cost_eff(_ov2_curr)
@@ -5472,6 +5582,8 @@ if page == "Overview v2":
             _v2_delta_html(_rel_c or 0, _rel_p, higher_good=True),
             _rel_color,
             "sessions with zero incidents",
+            sparkline_html=_v2_sparkline_html(_rel_daily),
+            business_ctx="Unreliable sessions burn spend with no output. Target ≥85%.",
         ), unsafe_allow_html=True)
 
     with _sc2:
@@ -5482,6 +5594,8 @@ if page == "Overview v2":
             _v2_delta_html(_cef_c or 0, _cef_p, higher_good=True),
             _cef_color,
             "spend that produced trades",
+            sparkline_html=_v2_sparkline_html(_cef_daily),
+            business_ctx="Sessions that run and produce no trade are pure waste. Target ≥70%.",
         ), unsafe_allow_html=True)
 
     with _sc3:
@@ -5492,6 +5606,8 @@ if page == "Overview v2":
             _v2_delta_html(_opq_c or 0, _opq_p, higher_good=True),
             _opq_color,
             "eval pass rate, all agents",
+            sparkline_html=_v2_sparkline_html(_opq_daily),
+            business_ctx="Pass rates dip before failures surface. This is your leading indicator.",
         ), unsafe_allow_html=True)
 
     with _sc4:
@@ -5502,6 +5618,8 @@ if page == "Overview v2":
             _v2_delta_html(_semq_c or 0, _semq_p, higher_good=True),
             _semq_color,
             "avg LLM-judge composite score",
+            sparkline_html=_v2_sparkline_html(_semq_daily, max_val=1.0),
+            business_ctx="Reasoning quality predicts trade decisions. Below 0.60 triggers review.",
         ), unsafe_allow_html=True)
 
     st.markdown("<div style='margin:12px 0'></div>", unsafe_allow_html=True)
@@ -5511,7 +5629,7 @@ if page == "Overview v2":
     st.caption("Aggregate eval pass rate per agent across all sessions in the selected window.")
 
     if not _ov2_ae.empty and not _ov2_curr.empty:
-        _fleet_rates: dict[str, float] = {}
+        _fleet_data: dict[str, dict] = {}
         for _ag in ["market", "news_analyst", "research", "risk", "orchestrator"]:
             _sub = _ov2_ae[
                 _ov2_ae["session_id"].isin(_ov2_curr_ids) &
@@ -5519,9 +5637,11 @@ if page == "Overview v2":
                 ~_ov2_ae["agent"].str.endswith("_quality", na=False)
             ]
             if not _sub.empty:
-                _fleet_rates[_ag] = float(_sub["passed"].sum()) / len(_sub) * 100
+                _pn = int(_sub["passed"].sum())
+                _tn = len(_sub)
+                _fleet_data[_ag] = {"rate": _pn / _tn * 100, "pass_n": _pn, "total_n": _tn}
 
-        st.markdown(_v2_fleet_strip(_fleet_rates, page), unsafe_allow_html=True)
+        st.markdown(_v2_fleet_strip(_fleet_data, page), unsafe_allow_html=True)
 
         # Clickable node navigation (use buttons below the strip)
         _fn_cols = st.columns(6)
@@ -5541,71 +5661,70 @@ if page == "Overview v2":
 
     st.markdown("<div style='margin:8px 0'></div>", unsafe_allow_html=True)
 
-    # ── Section 3 + 4: Outcomes chart + Active Incidents ─────────────────────
-    _chart_col, _inc_col = st.columns([6, 4])
+    # ── Section 3: Session Outcomes ───────────────────────────────────────────
+    st.markdown("#### Session Outcomes")
+    if not _ov2_curr.empty:
+        _ov2_cd = _ov2_curr.copy()
+        _ov2_cd["_date"] = _ov2_cd["started_at"].dt.date
+        _ov2_cd["_inc"]  = _ov2_cd["id"].isin(_ov2_inc_sids_curr)
+        _ov2_cd["_type"] = _ov2_cd.apply(
+            lambda r: "Incident" if r["_inc"]
+            else ("0-Trade" if r["trades_executed"] == 0 else "Clean"),
+            axis=1,
+        )
+        _daily_cost = (
+            _ov2_cd.groupby("_date")["total_cost_usd"].sum().reset_index()
+            .rename(columns={"total_cost_usd": "_cost"})
+        )
+        _grp = (
+            _ov2_cd.groupby(["_date", "_type"]).size()
+            .reset_index(name="n").sort_values("_date")
+        )
+        _grp = _grp.merge(_daily_cost, on="_date", how="left")
 
-    with _chart_col:
-        st.markdown("#### Session Outcomes")
-        if not _ov2_curr.empty:
-            _ov2_cd = _ov2_curr.copy()
-            _ov2_cd["_date"] = _ov2_cd["started_at"].dt.date
-            _ov2_cd["_inc"]  = _ov2_cd["id"].isin(_ov2_inc_sids_curr)
-            _ov2_cd["_type"] = _ov2_cd.apply(
-                lambda r: "Incident" if r["_inc"]
-                else ("0-Trade" if r["trades_executed"] == 0 else "Clean"),
-                axis=1,
-            )
-            # Daily cost for hover
-            _daily_cost = (
-                _ov2_cd.groupby("_date")["total_cost_usd"].sum().reset_index()
-                .rename(columns={"total_cost_usd": "_cost"})
-            )
-            _grp = (
-                _ov2_cd.groupby(["_date", "_type"]).size()
-                .reset_index(name="n").sort_values("_date")
-            )
-            _grp = _grp.merge(_daily_cost, on="_date", how="left")
+        _type_colors = {"Clean": _V2_GREEN, "0-Trade": _V2_AMBER, "Incident": _V2_RED}
+        _fig_out = go.Figure()
+        for _typ in ["Clean", "0-Trade", "Incident"]:
+            _sub = _grp[_grp["_type"] == _typ]
+            if _sub.empty:
+                continue
+            _fig_out.add_trace(go.Bar(
+                x=_sub["_date"].astype(str), y=_sub["n"],
+                name=_typ, marker_color=_type_colors[_typ],
+                customdata=_sub["_cost"],
+                hovertemplate=(
+                    "<b>%{x}</b><br>"
+                    f"{_typ}: %{{y}}<br>"
+                    "Daily spend: $%{customdata:.4f}"
+                    "<extra></extra>"
+                ),
+            ))
+        _fig_out.update_layout(
+            barmode="stack", height=260,
+            paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
+            font=dict(color="#1e293b", size=11),
+            margin=dict(t=10, b=45, l=0, r=10),
+            legend=dict(orientation="h", y=-0.35, x=0, font=dict(size=11)),
+            xaxis=dict(gridcolor="#e2e8f0", tickangle=-30),
+            yaxis=dict(gridcolor="#e2e8f0", title="Sessions"),
+        )
+        st.plotly_chart(_fig_out, use_container_width=True,
+                        config={"displayModeBar": False})
+    else:
+        st.info("No sessions in this range.")
 
-            _type_colors = {"Clean": _V2_GREEN, "0-Trade": _V2_AMBER, "Incident": _V2_RED}
-            _fig_out = go.Figure()
-            for _typ in ["Clean", "0-Trade", "Incident"]:
-                _sub = _grp[_grp["_type"] == _typ]
-                if _sub.empty:
-                    continue
-                _fig_out.add_trace(go.Bar(
-                    x=_sub["_date"].astype(str), y=_sub["n"],
-                    name=_typ, marker_color=_type_colors[_typ],
-                    customdata=_sub["_cost"],
-                    hovertemplate=(
-                        "<b>%{x}</b><br>"
-                        f"{_typ}: %{{y}}<br>"
-                        "Daily spend: $%{customdata:.4f}"
-                        "<extra></extra>"
-                    ),
-                ))
-            _fig_out.update_layout(
-                barmode="stack", height=280,
-                paper_bgcolor="#f8fafc", plot_bgcolor="#ffffff",
-                font=dict(color="#1e293b", size=11),
-                margin=dict(t=10, b=45, l=0, r=10),
-                legend=dict(orientation="h", y=-0.35, x=0, font=dict(size=11)),
-                xaxis=dict(gridcolor="#e2e8f0", tickangle=-30),
-                yaxis=dict(gridcolor="#e2e8f0", title="Sessions"),
-            )
-            st.plotly_chart(_fig_out, use_container_width=True,
-                            config={"displayModeBar": False})
-        else:
-            st.info("No sessions in this range.")
+    st.divider()
 
-    with _inc_col:
-        st.markdown("#### Active Incidents")
-        if not _ov2_i_curr.empty:
-            # Donut
+    # ── Section 4: Active Incidents ───────────────────────────────────────────
+    st.markdown("#### Active Incidents")
+    if not _ov2_i_curr.empty:
+        _id_left, _id_right = st.columns([1, 4])
+
+        with _id_left:
             _sev_counts = {"critical": 0, "warning": 0, "info": 0}
             for _sv in _ov2_i_curr.get("severity", pd.Series(dtype=str)).dropna():
                 if _sv in _sev_counts:
                     _sev_counts[_sv] += 1
-
             _donut_fig = go.Figure(go.Pie(
                 labels=["Critical", "Warning", "Info"],
                 values=[_sev_counts["critical"], _sev_counts["warning"], _sev_counts["info"]],
@@ -5618,17 +5737,17 @@ if page == "Overview v2":
             _donut_fig.add_annotation(
                 text=f"<b>{len(_ov2_i_curr)}</b>",
                 x=0.5, y=0.5, showarrow=False,
-                font=dict(size=18, color="#0f172a"),
+                font=dict(size=20, color="#0f172a"),
             )
             _donut_fig.update_layout(
-                height=160, margin=dict(t=0, b=0, l=0, r=0),
+                height=180, margin=dict(t=0, b=0, l=0, r=0),
                 paper_bgcolor="rgba(0,0,0,0)", showlegend=True,
-                legend=dict(orientation="h", y=-0.15, x=0.1, font=dict(size=10)),
+                legend=dict(orientation="v", x=0, y=-0.3, font=dict(size=10)),
             )
             st.plotly_chart(_donut_fig, use_container_width=True,
                             config={"displayModeBar": False})
 
-            # Sort toggle + top 2
+        with _id_right:
             _sort_mode = st.radio("Sort by", ["Severity", "Date"], horizontal=True,
                                   key="ov2_inc_sort", label_visibility="collapsed")
             _sev_order = {"critical": 0, "warning": 1, "info": 2}
@@ -5639,45 +5758,48 @@ if page == "Overview v2":
             else:
                 _inc_disp = _inc_disp.sort_values("created_at", ascending=False)
 
-            for _, _ir in _inc_disp.head(2).iterrows():
+            for _, _ir in _inc_disp.head(4).iterrows():
                 _sev  = str(_ir.get("severity") or "info").lower()
                 _pat  = str(_ir.get("pattern_name") or "Unknown").replace("_", " ").title()
                 _ag   = str(_ir.get("agent") or "")
                 _ts   = pd.to_datetime(_ir.get("created_at"), errors="coerce", utc=True)
                 _ts_s = _ts.strftime("%b-%d %H:%M") if pd.notna(_ts) else "—"
                 _sev_c = {"critical": _V2_RED, "warning": _V2_AMBER, "info": "#3b82f6"}.get(_sev, _V2_SLATE)
-                st.markdown(
-                    f'<div style="background:#f8fafc;border-left:3px solid {_sev_c};'
-                    f'border-radius:0 6px 6px 0;padding:6px 10px;margin-top:6px;'
-                    f'font-size:0.78rem">'
-                    f'<span style="background:{_sev_c};color:#fff;border-radius:3px;'
-                    f'padding:1px 6px;font-size:0.68rem;font-weight:700">{_sev.upper()}</span>'
-                    f'&nbsp;<strong>{_pat}</strong>'
-                    f'{"&nbsp;·&nbsp;" + _ag if _ag else ""}'
-                    f'&nbsp;·&nbsp;<span style="color:#94a3b8">{_ts_s}</span>'
-                    f'</div>',
-                    unsafe_allow_html=True,
-                )
-                if st.button("→ RCA", key=f"ov2_rca_{_ir.get('id', _ts_s)}",
-                             use_container_width=True):
-                    st.session_state["rca_incident"] = _ir.to_dict()
-                    st.session_state["rca_sid"]      = _ir.get("session_id", "")
-                    st.query_params["page"] = "RCA View"
-                    st.rerun()
+                _rc1, _rc2 = st.columns([5, 1])
+                with _rc1:
+                    st.markdown(
+                        f'<div style="background:#f8fafc;border-left:3px solid {_sev_c};'
+                        f'border-radius:0 6px 6px 0;padding:8px 12px;margin-top:6px;'
+                        f'font-size:0.82rem">'
+                        f'<span style="background:{_sev_c};color:#fff;border-radius:3px;'
+                        f'padding:1px 6px;font-size:0.7rem;font-weight:700">{_sev.upper()}</span>'
+                        f'&nbsp;<strong>{_pat}</strong>'
+                        f'{"&nbsp;&middot;&nbsp;<span style=color:#64748b>" + _ag + "</span>" if _ag else ""}'
+                        f'&nbsp;&middot;&nbsp;<span style="color:#94a3b8">{_ts_s}</span>'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
+                with _rc2:
+                    if st.button("RCA", key=f"ov2_rca_{_ir.get('id', _ts_s)}",
+                                 use_container_width=True):
+                        st.session_state["rca_incident"] = _ir.to_dict()
+                        st.session_state["rca_sid"]      = _ir.get("session_id", "")
+                        st.query_params["page"] = "RCA View"
+                        st.rerun()
 
-            st.markdown("<div style='margin-top:8px'></div>", unsafe_allow_html=True)
-            if st.button(f"View all {len(_ov2_i_curr)} incidents →", key="ov2_all_inc",
-                         use_container_width=True):
-                st.query_params["page"] = "Incidents Feed"
-                st.rerun()
-        else:
-            st.markdown(
-                f'<div style="background:#f0fdf4;border:1px solid #86efac;'
-                f'border-radius:8px;padding:20px;text-align:center;color:#166534">'
-                f'<div style="font-size:1.2rem">✓</div>'
-                f'No incidents in this period</div>',
-                unsafe_allow_html=True,
-            )
+        st.markdown("<div style='margin-top:10px'></div>", unsafe_allow_html=True)
+        if st.button(f"View all {len(_ov2_i_curr)} incidents →", key="ov2_all_inc",
+                     use_container_width=True):
+            st.query_params["page"] = "Incidents Feed"
+            st.rerun()
+    else:
+        st.markdown(
+            f'<div style="background:#f0fdf4;border:1px solid #86efac;'
+            f'border-radius:8px;padding:20px;text-align:center;color:#166534">'
+            f'<div style="font-size:1.2rem">✓</div>'
+            f'No incidents in this period</div>',
+            unsafe_allow_html=True,
+        )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
