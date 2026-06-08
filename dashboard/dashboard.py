@@ -2618,11 +2618,11 @@ elif page == "Quality Drift":
         st.info("No sessions found.")
         st.stop()
 
-    s = sessions.sort_values("started_at").copy()
+    s = sessions[~sessions["is_simulated"].fillna(False)].sort_values("started_at").copy()
     s["label"] = s["started_at"].dt.strftime("%m-%d %H:%M")
     all_evals  = load_all_evals()
 
-    # Join operational evals with session timestamps
+    # Join operational evals with session timestamps (simulated sessions excluded above)
     if not all_evals.empty and not s.empty:
         evals_ts = all_evals.merge(
             s[["id", "started_at", "label"]],
@@ -5493,7 +5493,7 @@ if page == "Overview v2":
         st.info("No sessions found.")
         st.stop()
 
-    _ov2_s = sessions.copy()
+    _ov2_s = sessions[~sessions["is_simulated"].fillna(False)].copy()
     _ov2_s["started_at"] = pd.to_datetime(_ov2_s["started_at"], errors="coerce", utc=True)
     _ov2_curr = _ov2_s[_ov2_s["started_at"] >= _ov2_cut]
     _ov2_prev = _ov2_s[(_ov2_s["started_at"] >= _ov2_prev_cut) & (_ov2_s["started_at"] < _ov2_cut)]
@@ -6413,7 +6413,7 @@ elif page == "Quality v2":
     _q2_days              = int(_q2_range[:-1])
     _q2_now, _q2_cut, _q2_prev_cut = _v2_period_window(_q2_days)
 
-    _q2_s = sessions.copy()
+    _q2_s = sessions[~sessions["is_simulated"].fillna(False)].copy()
     _q2_s["started_at"] = pd.to_datetime(_q2_s["started_at"], errors="coerce", utc=True)
     _q2_curr = _q2_s[_q2_s["started_at"] >= _q2_cut]
     _q2_prev = _q2_s[(_q2_s["started_at"] >= _q2_prev_cut) & (_q2_s["started_at"] < _q2_cut)]

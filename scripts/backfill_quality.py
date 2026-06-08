@@ -39,7 +39,7 @@ def main():
     db      = create_client(secrets["SUPABASE_URL"], secrets["SUPABASE_KEY"])
 
     print("Loading sessions...")
-    sessions = db.table("c_sessions").select("*").order("started_at").execute().data or []
+    sessions = db.table("c_sessions").select("*").eq("is_simulated", False).order("started_at").execute().data or []
     print(f"  {len(sessions)} sessions found")
 
     print("Loading traces...")

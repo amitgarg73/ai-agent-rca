@@ -568,6 +568,24 @@ class TestGroundingFailure:
         inc      = detect_grounding_failure(sessions[-1], sessions, evals)
         assert "0.30" in inc.root_cause
 
+    def test_does_not_fire_when_low_scores_are_from_simulated_sessions(self):
+        """Simulated sessions must be excluded by the caller before passing to the detector."""
+        real_sessions = _build_history(1)
+        sim_sessions  = [
+            {**_make_qual_session(i + 10), "is_simulated": True}
+            for i in range(2)
+        ]
+        # Caller filters out simulated sessions — detector only sees the 1 real session
+        window = [s for s in (sim_sessions + real_sessions) if not s.get("is_simulated")]
+        evals  = {
+            **{s["id"]: [_qeval(s["id"], "research_quality", "data_grounding", 0.25)]
+               for s in sim_sessions},
+            real_sessions[0]["id"]: [_qeval(real_sessions[0]["id"], "research_quality",
+                                            "data_grounding", 0.85)],
+        }
+        inc = detect_grounding_failure(real_sessions[-1], window, evals)
+        assert inc is None
+
 
 class TestCoherenceBreak:
     def test_fires_when_decision_consistency_below_threshold(self):

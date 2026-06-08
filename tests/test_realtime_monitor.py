@@ -147,3 +147,32 @@ class TestEvaluateSessionQualityIntegration:
             evaluate_session(session, db=mock_db, dry_run=True)
 
         mock_db.table.assert_not_called()
+
+
+class TestSimulatedSessionExclusion:
+
+    def test_load_recent_sessions_excludes_simulated_by_default(self):
+        """load_recent_sessions passes is_simulated=False filter to DB by default."""
+        from sdk.db import load_recent_sessions
+
+        mock_db = MagicMock()
+        mock_db.table.return_value.select.return_value.eq.return_value \
+               .order.return_value.limit.return_value.execute.return_value.data = []
+
+        load_recent_sessions(mock_db, limit=10)
+
+        mock_db.table.return_value.select.return_value.eq.assert_called_once_with(
+            "is_simulated", False
+        )
+
+    def test_load_recent_sessions_can_include_simulated(self):
+        """exclude_simulated=False skips the filter."""
+        from sdk.db import load_recent_sessions
+
+        mock_db = MagicMock()
+        mock_db.table.return_value.select.return_value \
+               .order.return_value.limit.return_value.execute.return_value.data = []
+
+        load_recent_sessions(mock_db, limit=10, exclude_simulated=False)
+
+        mock_db.table.return_value.select.return_value.eq.assert_not_called()

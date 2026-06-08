@@ -33,15 +33,16 @@ def load_recent_session_costs(db: Client, limit: int = 30) -> list[float]:
     return [float(row["total_cost_usd"] or 0) for row in (r.data or [])]
 
 
-def load_recent_sessions(db: Client, limit: int = 10) -> list[dict]:
-    """Return up to `limit` most recent sessions in chronological order (oldest first)."""
-    r = (
-        db.table("c_sessions")
-        .select("*")
-        .order("started_at", desc=True)
-        .limit(limit)
-        .execute()
-    )
+def load_recent_sessions(db: Client, limit: int = 10, exclude_simulated: bool = True) -> list[dict]:
+    """Return up to `limit` most recent sessions in chronological order (oldest first).
+
+    Excludes simulated sessions by default so quality pattern detectors don't
+    fire on injected demo data.
+    """
+    q = db.table("c_sessions").select("*")
+    if exclude_simulated:
+        q = q.eq("is_simulated", False)
+    r = q.order("started_at", desc=True).limit(limit).execute()
     return list(reversed(r.data or []))
 
 
