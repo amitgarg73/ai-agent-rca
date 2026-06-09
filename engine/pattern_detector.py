@@ -28,6 +28,26 @@ COST_ANOMALY_SIGMA_INC    = COST_ANOMALY_SIGMA
 HYPERACTIVE_POLL_THRESHOLD = 6       # same tool called 6+ times successfully = polling loop
 FABRICATION_LATENCY_MS    = 50       # tool_call faster than 50ms is suspicious
 FABRICATION_MIN_COUNT     = 2        # need at least 2 suspect traces to fire
+
+
+def _is_legitimate_fast_return(trace: dict) -> bool:
+    """True when a sub-50ms tool call has a declared reason for being fast.
+
+    Tools that short-circuit before making an external call (e.g. a premarket
+    guard returning available=false) legitimately complete in <1ms.  Real
+    fabrication returns realistic-looking data with no availability signal.
+    Checks tool_output if present; safe to call when the field is absent.
+    """
+    tool_output = trace.get("tool_output")
+    if not isinstance(tool_output, dict):
+        return False
+    # available=false: tool declared it has no data to fetch
+    if tool_output.get("available") is False:
+        return True
+    # explicit reason field: tool explains why it returned without an API call
+    if tool_output.get("reason"):
+        return True
+    return False
 _HTTP_ERROR_CODES         = {"400", "401", "403", "429", "500", "502", "503"}
 
 # Shadow circuit breaker config — which evals trigger a CB in shadow mode
@@ -400,6 +420,7 @@ def detect_tool_fabrication(
         if (t.get("step_type") or "") == "tool_call"
         and t.get("outcome") != "error"
         and 0 < (t.get("latency_ms") or 0) < FABRICATION_LATENCY_MS
+        and not _is_legitimate_fast_return(t)
     ]
     if len(suspects) >= FABRICATION_MIN_COUNT:
         session_id = session.get("id", "")

@@ -924,6 +924,48 @@ class TestToolCallFabrication:
         inc = detect_tool_fabrication(make_session(), [], EMPTY_EVALS)
         assert inc is None
 
+    def test_does_not_fire_when_tool_output_available_false(self):
+        # Tool declared it has no data (e.g. premarket guard) — not fabrication
+        traces = [
+            {**self._fast_tool_trace(10), "tool_output": {"available": False, "reason": "pre-market"}},
+            {**self._fast_tool_trace(8),  "tool_output": {"available": False, "reason": "pre-market"}},
+        ]
+        inc = detect_tool_fabrication(make_session(), traces, EMPTY_EVALS)
+        assert inc is None
+
+    def test_does_not_fire_when_tool_output_has_reason(self):
+        # Any explicit reason field counts as a declared fast return
+        traces = [
+            {**self._fast_tool_trace(5), "tool_output": {"reason": "market_closed"}},
+            {**self._fast_tool_trace(5), "tool_output": {"reason": "no_data"}},
+        ]
+        inc = detect_tool_fabrication(make_session(), traces, EMPTY_EVALS)
+        assert inc is None
+
+    def test_fires_when_fast_calls_have_realistic_output(self):
+        # Fast but returns realistic-looking data — genuine fabrication suspect
+        traces = [
+            {**self._fast_tool_trace(15), "tool_output": {"price": 142.5, "volume": 1_200_000}},
+            {**self._fast_tool_trace(12), "tool_output": {"atr_pct": 2.1, "orb_pct": 0.8}},
+        ]
+        inc = detect_tool_fabrication(make_session(), traces, EMPTY_EVALS)
+        assert inc is not None
+
+    def test_fires_when_fast_calls_have_no_tool_output(self):
+        # No tool_output field at all (old c_traces schema) — cannot confirm legitimacy
+        traces = [self._fast_tool_trace(20), self._fast_tool_trace(30)]
+        inc = detect_tool_fabrication(make_session(), traces, EMPTY_EVALS)
+        assert inc is not None
+
+    def test_mixed_legitimate_and_suspect(self):
+        # Only 1 genuine suspect after excluding premarket guard — below min count, no fire
+        traces = [
+            {**self._fast_tool_trace(8), "tool_output": {"available": False, "reason": "pre-market"}},
+            self._fast_tool_trace(20),  # no tool_output — counts as suspect
+        ]
+        inc = detect_tool_fabrication(make_session(), traces, EMPTY_EVALS)
+        assert inc is None  # only 1 suspect, needs >= 2
+
 
 # ── Handoff Schema Break ──────────────────────────────────────────────────────
 
